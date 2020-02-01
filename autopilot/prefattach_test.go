@@ -9,8 +9,8 @@ import (
 
 	prand "math/rand"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
 )
 
@@ -20,7 +20,7 @@ type testGraph interface {
 	ChannelGraph
 
 	addRandChannel(*btcec.PublicKey, *btcec.PublicKey,
-		btcutil.Amount) (*ChannelEdge, *ChannelEdge, error)
+		ltcutil.Amount) (*ChannelEdge, *ChannelEdge, error)
 
 	addRandNode() (*btcec.PublicKey, error)
 }
@@ -98,7 +98,7 @@ func TestPrefAttachmentSelectEmptyGraph(t *testing.T) {
 
 			// With the necessary state initialized, we'll now
 			// attempt to get the score for this one node.
-			const walletFunds = btcutil.SatoshiPerBitcoin
+			const walletFunds = ltcutil.SatoshiPerBitcoin
 			scores, err := prefAttach.NodeScores(graph, nil,
 				walletFunds, nodes)
 			if err != nil {
@@ -128,7 +128,7 @@ func TestPrefAttachmentSelectTwoVertexes(t *testing.T) {
 	prand.Seed(time.Now().Unix())
 
 	const (
-		maxChanSize = btcutil.Amount(btcutil.SatoshiPerBitcoin)
+		maxChanSize = ltcutil.Amount(ltcutil.SatoshiPerBitcoin)
 	)
 
 	for _, graph := range chanGraphs {
@@ -145,7 +145,7 @@ func TestPrefAttachmentSelectTwoVertexes(t *testing.T) {
 
 			// For this set, we'll load the memory graph with two
 			// nodes, and a random channel connecting them.
-			const chanCapacity = btcutil.SatoshiPerBitcoin
+			const chanCapacity = ltcutil.SatoshiPerBitcoin
 			edge1, edge2, err := graph.addRandChannel(nil, nil, chanCapacity)
 			if err != nil {
 				t1.Fatalf("unable to generate channel: %v", err)
@@ -228,7 +228,7 @@ func TestPrefAttachmentSelectGreedyAllocation(t *testing.T) {
 	prand.Seed(time.Now().Unix())
 
 	const (
-		maxChanSize = btcutil.Amount(btcutil.SatoshiPerBitcoin)
+		maxChanSize = ltcutil.Amount(ltcutil.SatoshiPerBitcoin)
 	)
 
 	for _, graph := range chanGraphs {
@@ -243,7 +243,7 @@ func TestPrefAttachmentSelectGreedyAllocation(t *testing.T) {
 
 			prefAttach := NewPrefAttachment()
 
-			const chanCapacity = btcutil.SatoshiPerBitcoin
+			const chanCapacity = ltcutil.SatoshiPerBitcoin
 
 			// Next, we'll add 3 nodes to the graph, creating an
 			// "open triangle topology".
@@ -326,7 +326,7 @@ func TestPrefAttachmentSelectGreedyAllocation(t *testing.T) {
 			// Imagine a few channels are being opened, and there's
 			// only 0.5 BTC left. That should leave us with channel
 			// candidates of that size.
-			const remBalance = btcutil.SatoshiPerBitcoin * 0.5
+			const remBalance = ltcutil.SatoshiPerBitcoin * 0.5
 			scores, err = prefAttach.NodeScores(graph, nil,
 				remBalance, nodes)
 			if err != nil {
@@ -362,7 +362,7 @@ func TestPrefAttachmentSelectSkipNodes(t *testing.T) {
 	prand.Seed(time.Now().Unix())
 
 	const (
-		maxChanSize = btcutil.Amount(btcutil.SatoshiPerBitcoin)
+		maxChanSize = ltcutil.Amount(ltcutil.SatoshiPerBitcoin)
 	)
 
 	for _, graph := range chanGraphs {
@@ -379,7 +379,7 @@ func TestPrefAttachmentSelectSkipNodes(t *testing.T) {
 
 			// Next, we'll create a simple topology of two nodes,
 			// with a single channel connecting them.
-			const chanCapacity = btcutil.SatoshiPerBitcoin
+			const chanCapacity = ltcutil.SatoshiPerBitcoin
 			_, _, err = graph.addRandChannel(nil, nil,
 				chanCapacity)
 			if err != nil {

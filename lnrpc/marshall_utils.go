@@ -3,7 +3,7 @@ package lnrpc
 import (
 	"errors"
 
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
@@ -25,7 +25,7 @@ func CalculateFeeLimit(feeLimit *FeeLimit,
 
 	case *FeeLimit_Fixed:
 		return lnwire.NewMSatFromSatoshis(
-			btcutil.Amount(feeLimit.GetFixed()),
+			ltcutil.Amount(feeLimit.GetFixed()),
 		)
 
 	case *FeeLimit_FixedMsat:
@@ -49,7 +49,7 @@ func UnmarshallAmt(amtSat, amtMsat int64) (lnwire.MilliSatoshi, error) {
 	}
 
 	if amtSat != 0 {
-		return lnwire.NewMSatFromSatoshis(btcutil.Amount(amtSat)), nil
+		return lnwire.NewMSatFromSatoshis(ltcutil.Amount(amtSat)), nil
 	}
 
 	return lnwire.MilliSatoshi(amtMsat), nil

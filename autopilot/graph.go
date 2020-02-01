@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/coreos/bbolt"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -142,7 +142,7 @@ func (d *databaseChannelGraph) ForEachNode(cb func(Node) error) error {
 // meant to aide in the generation of random graphs for use within test cases
 // the exercise the autopilot package.
 func (d *databaseChannelGraph) addRandChannel(node1, node2 *btcec.PublicKey,
-	capacity btcutil.Amount) (*ChannelEdge, *ChannelEdge, error) {
+	capacity ltcutil.Amount) (*ChannelEdge, *ChannelEdge, error) {
 
 	fetchNode := func(pub *btcec.PublicKey) (*channeldb.LightningNode, error) {
 		if pub != nil {
@@ -365,7 +365,7 @@ func randKey() (*btcec.PublicKey, error) {
 // meant to aide in the generation of random graphs for use within test cases
 // the exercise the autopilot package.
 func (m *memChannelGraph) addRandChannel(node1, node2 *btcec.PublicKey,
-	capacity btcutil.Amount) (*ChannelEdge, *ChannelEdge, error) {
+	capacity ltcutil.Amount) (*ChannelEdge, *ChannelEdge, error) {
 
 	var (
 		vertex1, vertex2 *memNode
@@ -517,7 +517,7 @@ func (m memNode) ForEachChannel(cb func(ChannelEdge) error) error {
 }
 
 // Median returns the median value in the slice of Amounts.
-func Median(vals []btcutil.Amount) btcutil.Amount {
+func Median(vals []ltcutil.Amount) ltcutil.Amount {
 	sort.Slice(vals, func(i, j int) bool {
 		return vals[i] < vals[j]
 	})

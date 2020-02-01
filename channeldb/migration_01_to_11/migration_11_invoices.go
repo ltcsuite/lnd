@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"io"
 
-	bitcoinCfg "github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/wire"
+	bitcoinCfg "github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/wire"
 	"github.com/coreos/bbolt"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/zpay32"
@@ -44,7 +44,7 @@ func MigrateInvoices(tx *bbolt.Tx) error {
 
 	nets := []*bitcoinCfg.Params{
 		&bitcoinCfg.MainNetParams, &bitcoinCfg.SimNetParams,
-		&bitcoinCfg.RegressionNetParams, &bitcoinCfg.TestNet3Params,
+		&bitcoinCfg.RegressionNetParams, &bitcoinCfg.TestNet4Params,
 	}
 
 	ltcNets := []*litecoinCfg.Params{

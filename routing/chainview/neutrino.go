@@ -5,12 +5,12 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/rpcclient"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcutil/gcs/builder"
-	"github.com/lightninglabs/neutrino"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/rpcclient"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcutil/gcs/builder"
+	"github.com/ltcsuite/neutrino"
 	"github.com/lightningnetwork/lnd/channeldb"
 )
 
@@ -145,7 +145,7 @@ func (c *CfFilteredChainView) Stop() error {
 // end of the main chain. Based on our current chain filter, the block may or
 // may not include any relevant transactions.
 func (c *CfFilteredChainView) onFilteredBlockConnected(height int32,
-	header *wire.BlockHeader, txns []*btcutil.Tx) {
+	header *wire.BlockHeader, txns []*ltcutil.Tx) {
 
 	mtxs := make([]*wire.MsgTx, len(txns))
 	for i, tx := range txns {

@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/coreos/bbolt"
 	"github.com/lightningnetwork/lnd/lnwire"
 )

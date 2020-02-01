@@ -11,10 +11,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/coreos/bbolt"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -207,14 +207,14 @@ type ChannelConstraints struct {
 	// DustLimit is the threshold (in satoshis) below which any outputs
 	// should be trimmed. When an output is trimmed, it isn't materialized
 	// as an actual output, but is instead burned to miner's fees.
-	DustLimit btcutil.Amount
+	DustLimit ltcutil.Amount
 
 	// ChanReserve is an absolute reservation on the channel for the
 	// owner of this set of constraints. This means that the current
 	// settled balance for this node CANNOT dip below the reservation
 	// amount. This acts as a defense against costless attacks when
 	// either side no longer has any skin in the game.
-	ChanReserve btcutil.Amount
+	ChanReserve ltcutil.Amount
 
 	// MaxPendingAmount is the maximum pending HTLC value that the
 	// owner of these constraints can offer the remote node at a
@@ -335,7 +335,7 @@ type ChannelCommitment struct {
 	// with the channel in order to allow the fee amount to be removed and
 	// recalculated with each channel state update, including updates that
 	// happen after a system restart.
-	CommitFee btcutil.Amount
+	CommitFee ltcutil.Amount
 
 	// FeePerKw is the min satoshis/kilo-weight that should be paid within
 	// the commitment transaction for the entire duration of the channel's
@@ -345,7 +345,7 @@ type ChannelCommitment struct {
 	// TODO(halseth): make this SatPerKWeight. Cannot be done atm because
 	// this will cause the import cycle lnwallet<->channeldb. Fee
 	// estimation stuff should be in its own package.
-	FeePerKw btcutil.Amount
+	FeePerKw ltcutil.Amount
 
 	// CommitTx is the latest version of the commitment state, broadcast
 	// able by us.
@@ -514,7 +514,7 @@ type OpenChannel struct {
 	IdentityPub *btcec.PublicKey
 
 	// Capacity is the total capacity of this channel.
-	Capacity btcutil.Amount
+	Capacity ltcutil.Amount
 
 	// TotalMSatSent is the total number of milli-satoshis we've sent
 	// within this channel.
@@ -2209,7 +2209,7 @@ type ChannelCloseSummary struct {
 	RemotePub *btcec.PublicKey
 
 	// Capacity was the total capacity of the channel.
-	Capacity btcutil.Amount
+	Capacity ltcutil.Amount
 
 	// CloseHeight is the height at which the funding transaction was
 	// spent.
@@ -2218,7 +2218,7 @@ type ChannelCloseSummary struct {
 	// SettledBalance is our total balance settled balance at the time of
 	// channel closure. This _does not_ include the sum of any outputs that
 	// have been time-locked as a result of the unilateral channel closure.
-	SettledBalance btcutil.Amount
+	SettledBalance ltcutil.Amount
 
 	// TimeLockedBalance is the sum of all the time-locked outputs at the
 	// time of channel closure. If we triggered the force closure of this
@@ -2226,7 +2226,7 @@ type ChannelCloseSummary struct {
 	// above the dust limit. If we were on the receiving side of a channel
 	// force closure, then this value will be non-zero if we had any
 	// outstanding outgoing HTLC's at the time of channel closure.
-	TimeLockedBalance btcutil.Amount
+	TimeLockedBalance ltcutil.Amount
 
 	// CloseType details exactly _how_ the channel was closed. Five closure
 	// types are possible: cooperative, local force, remote force, breach
@@ -2379,7 +2379,7 @@ type ChannelSnapshot struct {
 	ChainHash chainhash.Hash
 
 	// Capacity is the total capacity of the channel.
-	Capacity btcutil.Amount
+	Capacity ltcutil.Amount
 
 	// TotalMSatSent is the total number of milli-satoshis we've sent
 	// within this channel.

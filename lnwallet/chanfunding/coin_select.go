@@ -3,9 +3,9 @@ package chanfunding
 import (
 	"fmt"
 
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
@@ -14,8 +14,8 @@ import (
 // returned when coin selection for a new funding transaction fails to due
 // having an insufficient amount of confirmed funds.
 type ErrInsufficientFunds struct {
-	amountAvailable btcutil.Amount
-	amountSelected  btcutil.Amount
+	amountAvailable ltcutil.Amount
+	amountSelected  ltcutil.Amount
 }
 
 // Error returns a human readable string describing the error.
@@ -40,10 +40,10 @@ type Coin struct {
 // funds, a non-nil error is returned. Additionally, the total amount of the
 // selected coins are returned in order for the caller to properly handle
 // change+fees.
-func selectInputs(amt btcutil.Amount, coins []Coin) (btcutil.Amount, []Coin, error) {
-	satSelected := btcutil.Amount(0)
+func selectInputs(amt ltcutil.Amount, coins []Coin) (ltcutil.Amount, []Coin, error) {
+	satSelected := ltcutil.Amount(0)
 	for i, coin := range coins {
-		satSelected += btcutil.Amount(coin.Value)
+		satSelected += ltcutil.Amount(coin.Value)
 		if satSelected >= amt {
 			return satSelected, coins[:i+1], nil
 		}
@@ -56,8 +56,8 @@ func selectInputs(amt btcutil.Amount, coins []Coin) (btcutil.Amount, []Coin, err
 // change output to fund amt satoshis, adhering to the specified fee rate. The
 // specified fee rate should be expressed in sat/kw for coin selection to
 // function properly.
-func CoinSelect(feeRate chainfee.SatPerKWeight, amt btcutil.Amount,
-	coins []Coin) ([]Coin, btcutil.Amount, error) {
+func CoinSelect(feeRate chainfee.SatPerKWeight, amt ltcutil.Amount,
+	coins []Coin) ([]Coin, ltcutil.Amount, error) {
 
 	amtNeeded := amt
 	for {
@@ -124,8 +124,8 @@ func CoinSelect(feeRate chainfee.SatPerKWeight, amt btcutil.Amount,
 // amt in total after fees, adhering to the specified fee rate. The selected
 // coins, the final output and change values are returned.
 func CoinSelectSubtractFees(feeRate chainfee.SatPerKWeight, amt,
-	dustLimit btcutil.Amount, coins []Coin) ([]Coin, btcutil.Amount,
-	btcutil.Amount, error) {
+	dustLimit ltcutil.Amount, coins []Coin) ([]Coin, ltcutil.Amount,
+	ltcutil.Amount, error) {
 
 	// First perform an initial round of coin selection to estimate
 	// the required fee.
@@ -165,7 +165,7 @@ func CoinSelectSubtractFees(feeRate chainfee.SatPerKWeight, amt,
 	// For a transaction without a change output, we'll let everything go
 	// to our multi-sig output after subtracting fees.
 	outputAmt := totalSat - requiredFee
-	changeAmt := btcutil.Amount(0)
+	changeAmt := ltcutil.Amount(0)
 
 	// If the the output is too small after subtracting the fee, the coin
 	// selection cannot be performed with an amount this small.

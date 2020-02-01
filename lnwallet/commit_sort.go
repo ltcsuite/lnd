@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"sort"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // InPlaceCommitSort performs an in-place sort of a commitment transaction,
@@ -49,7 +49,7 @@ func (s sortableInputSlice) Swap(i, j int) {
 
 // Less is the BIP69 input comparison function. The sort is first applied on
 // input hash (reversed / rpc-style), then index. This logic is copied from
-// btcutil/txsort.
+// ltcutil/txsort.
 //
 // NOTE: Part of the sort.Interface interface.
 func (s sortableInputSlice) Less(i, j int) bool {

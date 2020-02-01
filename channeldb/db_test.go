@@ -10,10 +10,10 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -125,7 +125,7 @@ func TestFetchClosedChannelForID(t *testing.T) {
 		closeSummary := &ChannelCloseSummary{
 			ChanPoint:      state.FundingOutpoint,
 			RemotePub:      state.IdentityPub,
-			SettledBalance: btcutil.Amount(500 + i),
+			SettledBalance: ltcutil.Amount(500 + i),
 		}
 		if err := state.CloseChannel(closeSummary); err != nil {
 			t.Fatalf("unable to close channel: %v", err)
@@ -146,9 +146,9 @@ func TestFetchClosedChannelForID(t *testing.T) {
 
 		// Make sure we retrieved the correct one by checking the
 		// SettledBalance.
-		if fetchedSummary.SettledBalance != btcutil.Amount(500+i) {
+		if fetchedSummary.SettledBalance != ltcutil.Amount(500+i) {
 			t.Fatalf("summaries don't match: expected %v got %v",
-				btcutil.Amount(500+i),
+				ltcutil.Amount(500+i),
 				fetchedSummary.SettledBalance)
 		}
 	}

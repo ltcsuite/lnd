@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
-	bitcoinCfg "github.com/btcsuite/btcd/chaincfg"
+	"github.com/ltcsuite/ltcd/btcec"
+	bitcoinCfg "github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/coreos/bbolt"
 	"github.com/lightningnetwork/lnd/zpay32"
 	litecoinCfg "github.com/ltcsuite/ltcd/chaincfg"

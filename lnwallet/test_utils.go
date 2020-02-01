@@ -11,10 +11,10 @@ import (
 	"net"
 	"os"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -94,14 +94,14 @@ var (
 func CreateTestChannels(tweaklessCommits bool) (
 	*LightningChannel, *LightningChannel, func(), error) {
 
-	channelCapacity, err := btcutil.NewAmount(10)
+	channelCapacity, err := ltcutil.NewAmount(10)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
 	channelBal := channelCapacity / 2
-	aliceDustLimit := btcutil.Amount(200)
-	bobDustLimit := btcutil.Amount(1300)
+	aliceDustLimit := ltcutil.Amount(200)
+	bobDustLimit := ltcutil.Amount(1300)
 	csvTimeoutAlice := uint32(5)
 	csvTimeoutBob := uint32(4)
 
@@ -251,7 +251,7 @@ func CreateTestChannels(tweaklessCommits bool) (
 		LocalBalance:  lnwire.NewMSatFromSatoshis(channelBal - commitFee),
 		RemoteBalance: lnwire.NewMSatFromSatoshis(channelBal),
 		CommitFee:     commitFee,
-		FeePerKw:      btcutil.Amount(feePerKw),
+		FeePerKw:      ltcutil.Amount(feePerKw),
 		CommitTx:      aliceCommitTx,
 		CommitSig:     bytes.Repeat([]byte{1}, 71),
 	}
@@ -260,7 +260,7 @@ func CreateTestChannels(tweaklessCommits bool) (
 		LocalBalance:  lnwire.NewMSatFromSatoshis(channelBal),
 		RemoteBalance: lnwire.NewMSatFromSatoshis(channelBal - commitFee),
 		CommitFee:     commitFee,
-		FeePerKw:      btcutil.Amount(feePerKw),
+		FeePerKw:      ltcutil.Amount(feePerKw),
 		CommitTx:      bobCommitTx,
 		CommitSig:     bytes.Repeat([]byte{1}, 71),
 	}
@@ -427,21 +427,21 @@ func privkeyFromHex(keyHex string) (*btcec.PrivateKey, error) {
 }
 
 // blockFromHex parses a full Bitcoin block from a hex encoded string.
-func blockFromHex(blockHex string) (*btcutil.Block, error) {
+func blockFromHex(blockHex string) (*ltcutil.Block, error) {
 	bytes, err := hex.DecodeString(blockHex)
 	if err != nil {
 		return nil, err
 	}
-	return btcutil.NewBlockFromBytes(bytes)
+	return ltcutil.NewBlockFromBytes(bytes)
 }
 
 // txFromHex parses a full Bitcoin transaction from a hex encoded string.
-func txFromHex(txHex string) (*btcutil.Tx, error) {
+func txFromHex(txHex string) (*ltcutil.Tx, error) {
 	bytes, err := hex.DecodeString(txHex)
 	if err != nil {
 		return nil, err
 	}
-	return btcutil.NewTxFromBytes(bytes)
+	return ltcutil.NewTxFromBytes(bytes)
 }
 
 // calcStaticFee calculates appropriate fees for commitment transactions.  This
@@ -449,14 +449,14 @@ func txFromHex(txHex string) (*btcutil.Tx, error) {
 // calculations into account.
 //
 // TODO(bvu): Refactor when dynamic fee estimation is added.
-func calcStaticFee(numHTLCs int) btcutil.Amount {
+func calcStaticFee(numHTLCs int) ltcutil.Amount {
 	const (
-		commitWeight = btcutil.Amount(724)
+		commitWeight = ltcutil.Amount(724)
 		htlcWeight   = 172
-		feePerKw     = btcutil.Amount(24/4) * 1000
+		feePerKw     = ltcutil.Amount(24/4) * 1000
 	)
 	return feePerKw * (commitWeight +
-		btcutil.Amount(htlcWeight*numHTLCs)) / 1000
+		ltcutil.Amount(htlcWeight*numHTLCs)) / 1000
 }
 
 // ForceStateTransition executes the necessary interaction between the two

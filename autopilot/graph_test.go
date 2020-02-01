@@ -3,7 +3,7 @@ package autopilot_test
 import (
 	"testing"
 
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/lightningnetwork/lnd/autopilot"
 )
 
@@ -12,31 +12,31 @@ func TestMedian(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
-		values []btcutil.Amount
-		median btcutil.Amount
+		values []ltcutil.Amount
+		median ltcutil.Amount
 	}{
 		{
-			values: []btcutil.Amount{},
+			values: []ltcutil.Amount{},
 			median: 0,
 		},
 		{
-			values: []btcutil.Amount{10},
+			values: []ltcutil.Amount{10},
 			median: 10,
 		},
 		{
-			values: []btcutil.Amount{10, 20},
+			values: []ltcutil.Amount{10, 20},
 			median: 15,
 		},
 		{
-			values: []btcutil.Amount{10, 20, 30},
+			values: []ltcutil.Amount{10, 20, 30},
 			median: 20,
 		},
 		{
-			values: []btcutil.Amount{30, 10, 20},
+			values: []ltcutil.Amount{30, 10, 20},
 			median: 20,
 		},
 		{
-			values: []btcutil.Amount{10, 10, 10, 10, 5000000},
+			values: []ltcutil.Amount{10, 10, 10, 10, 5000000},
 			median: 10,
 		},
 	}

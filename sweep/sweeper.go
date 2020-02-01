@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/input"
@@ -133,7 +133,7 @@ type PendingInput struct {
 	WitnessType input.WitnessType
 
 	// Amount is the amount of the input being swept.
-	Amount btcutil.Amount
+	Amount ltcutil.Amount
 
 	// LastFeeRate is the most recent fee rate used for the input being
 	// swept within a transaction broadcast to the network.
@@ -392,7 +392,7 @@ func (s *UtxoSweeper) SweepInput(input input.Input,
 	log.Infof("Sweep request received: out_point=%v, witness_type=%v, "+
 		"time_lock=%v, amount=%v, fee_preference=%v", input.OutPoint(),
 		input.WitnessType(), input.BlocksToMaturity(),
-		btcutil.Amount(input.SignDesc().Output.Value),
+		ltcutil.Amount(input.SignDesc().Output.Value),
 		params.Fee)
 
 	sweeperInput := &sweepInputMessage{
@@ -1028,7 +1028,7 @@ func (s *UtxoSweeper) handlePendingSweepsReq(
 		pendingInputs[op] = &PendingInput{
 			OutPoint:    op,
 			WitnessType: pendingInput.WitnessType(),
-			Amount: btcutil.Amount(
+			Amount: ltcutil.Amount(
 				pendingInput.SignDesc().Output.Value,
 			),
 			LastFeeRate:         pendingInput.lastFeeRate,
@@ -1163,7 +1163,7 @@ func (s *UtxoSweeper) CreateSweepTx(inputs []input.Input, feePref FeePreference,
 // DefaultNextAttemptDeltaFunc is the default calculation for next sweep attempt
 // scheduling. It implements exponential back-off with some randomness. This is
 // to prevent a stuck tx (for example because fee is too low and can't be bumped
-// in btcd) from blocking all other retried inputs in the same tx.
+// in ltcd) from blocking all other retried inputs in the same tx.
 func DefaultNextAttemptDeltaFunc(attempts int) int32 {
 	return 1 + rand.Int31n(1<<uint(attempts-1))
 }

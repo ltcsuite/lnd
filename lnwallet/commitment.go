@@ -3,10 +3,10 @@ package lnwallet
 import (
 	"fmt"
 
-	"github.com/btcsuite/btcd/blockchain"
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/blockchain"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
@@ -246,7 +246,7 @@ type unsignedCommitmentTx struct {
 	txn *wire.MsgTx
 
 	// fee is the total fee of the commitment transaction.
-	fee btcutil.Amount
+	fee ltcutil.Amount
 
 	// ourBalance|theirBalance is the balances of this commitment. This can
 	// be different than the balances before creating the commitment
@@ -395,16 +395,16 @@ func (cb *CommitmentBuilder) createUnsignedCommitmentTx(ourBalance,
 
 	// Next, we'll ensure that we don't accidentally create a commitment
 	// transaction which would be invalid by consensus.
-	uTx := btcutil.NewTx(commitTx)
+	uTx := ltcutil.NewTx(commitTx)
 	if err := blockchain.CheckTransactionSanity(uTx); err != nil {
 		return nil, err
 	}
 
 	// Finally, we'll assert that were not attempting to draw more out of
 	// the channel that was originally placed within it.
-	var totalOut btcutil.Amount
+	var totalOut ltcutil.Amount
 	for _, txOut := range commitTx.TxOut {
-		totalOut += btcutil.Amount(txOut.Value)
+		totalOut += ltcutil.Amount(txOut.Value)
 	}
 	if totalOut > cb.chanState.Capacity {
 		return nil, fmt.Errorf("height=%v, for ChannelPoint(%v) "+
@@ -430,7 +430,7 @@ func (cb *CommitmentBuilder) createUnsignedCommitmentTx(ourBalance,
 func CreateCommitTx(chanType channeldb.ChannelType,
 	fundingOutput wire.TxIn, keyRing *CommitmentKeyRing,
 	localChanCfg, remoteChanCfg *channeldb.ChannelConfig,
-	amountToLocal, amountToRemote btcutil.Amount) (*wire.MsgTx, error) {
+	amountToLocal, amountToRemote ltcutil.Amount) (*wire.MsgTx, error) {
 
 	// First, we create the script for the delayed "pay-to-self" output.
 	// This output has 2 main redemption clauses: either we can redeem the

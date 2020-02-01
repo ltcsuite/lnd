@@ -7,8 +7,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/lntest"
@@ -19,7 +19,7 @@ import (
 // testCPFP ensures that the daemon can bump an unconfirmed  transaction's fee
 // rate by broadcasting a Child-Pays-For-Parent (CPFP) transaction.
 //
-// TODO(wilmer): Add RBF case once btcd supports it.
+// TODO(wilmer): Add RBF case once ltcd supports it.
 func testCPFP(net *lntest.NetworkHarness, t *harnessTest) {
 	// Skip this test for neutrino, as it's not aware of mempool
 	// transactions.
@@ -31,7 +31,7 @@ func testCPFP(net *lntest.NetworkHarness, t *harnessTest) {
 	// send to Bob.
 	ctxb := context.Background()
 	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	err := net.SendCoins(ctxt, btcutil.SatoshiPerBitcoin, net.Alice)
+	err := net.SendCoins(ctxt, ltcutil.SatoshiPerBitcoin, net.Alice)
 	if err != nil {
 		t.Fatalf("unable to send coins to alice: %v", err)
 	}
@@ -50,7 +50,7 @@ func testCPFP(net *lntest.NetworkHarness, t *harnessTest) {
 	// be broadcast and seen in the mempool.
 	sendReq := &lnrpc.SendCoinsRequest{
 		Addr:   resp.Address,
-		Amount: btcutil.SatoshiPerBitcoin,
+		Amount: ltcutil.SatoshiPerBitcoin,
 	}
 	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
 	if _, err = net.Alice.SendCoins(ctxt, sendReq); err != nil {

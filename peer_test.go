@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
@@ -288,7 +288,7 @@ func TestPeerChannelClosureFeeNegotiationsResponder(t *testing.T) {
 
 	// We don't agree with the fee, and will send back one that's 2.5x.
 	preferredRespFee := responderClosingSigned.FeeSatoshis
-	increasedFee := btcutil.Amount(float64(preferredRespFee) * 2.5)
+	increasedFee := ltcutil.Amount(float64(preferredRespFee) * 2.5)
 	initiatorSig, _, _, err := initiatorChan.CreateCloseProposal(
 		increasedFee, dummyDeliveryScript, respDeliveryScript,
 	)
@@ -332,7 +332,7 @@ func TestPeerChannelClosureFeeNegotiationsResponder(t *testing.T) {
 	lastFeeResponder := peerFee
 
 	// We try negotiating a 2.1x fee, which should also be rejected.
-	increasedFee = btcutil.Amount(float64(preferredRespFee) * 2.1)
+	increasedFee = ltcutil.Amount(float64(preferredRespFee) * 2.1)
 	initiatorSig, _, _, err = initiatorChan.CreateCloseProposal(
 		increasedFee, dummyDeliveryScript, respDeliveryScript,
 	)
@@ -470,7 +470,7 @@ func TestPeerChannelClosureFeeNegotiationsInitiator(t *testing.T) {
 		t.Fatalf("unable to query fee estimator: %v", err)
 	}
 	initiatorIdealFee := responderChan.CalcFee(initiatorIdealFeeRate)
-	increasedFee := btcutil.Amount(float64(initiatorIdealFee) * 2.5)
+	increasedFee := ltcutil.Amount(float64(initiatorIdealFee) * 2.5)
 	closeSig, _, _, err := responderChan.CreateCloseProposal(
 		increasedFee, dummyDeliveryScript, initiatorDeliveryScript,
 	)
@@ -535,7 +535,7 @@ func TestPeerChannelClosureFeeNegotiationsInitiator(t *testing.T) {
 	lastFeeSent = closingSignedMsg.FeeSatoshis
 
 	// We try negotiating a 2.1x fee, which should also be rejected.
-	increasedFee = btcutil.Amount(float64(initiatorIdealFee) * 2.1)
+	increasedFee = ltcutil.Amount(float64(initiatorIdealFee) * 2.1)
 	responderSig, _, _, err := responderChan.CreateCloseProposal(
 		increasedFee, dummyDeliveryScript, initiatorDeliveryScript,
 	)
@@ -817,7 +817,7 @@ func TestCustomShutdownScript(t *testing.T) {
 // be a valid address.
 func genScript(t *testing.T, address string) lnwire.DeliveryAddress {
 	// Generate an address which can be used for testing.
-	deliveryAddr, err := btcutil.DecodeAddress(
+	deliveryAddr, err := ltcutil.DecodeAddress(
 		address,
 		activeNetParams.Params,
 	)

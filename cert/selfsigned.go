@@ -37,8 +37,8 @@ var (
 // desired hostnames for the service. For production/public use, consider a
 // real PKI.
 //
-// This function is adapted from https://github.com/btcsuite/btcd and
-// https://github.com/btcsuite/btcutil
+// This function is adapted from https://github.com/ltcsuite/ltcd and
+// https://github.com/ltcsuite/ltcutil
 func GenCertPair(org, certFile, keyFile string, tlsExtraIPs,
 	tlsExtraDomains []string, certValidity time.Duration) error {
 

@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/record"
@@ -190,7 +190,7 @@ func testQueryRoutes(t *testing.T, useMissionControl bool, useMsat bool) {
 		FindRoute:      findRoute,
 		SelfNode:       route.Vertex{1, 2, 3},
 		FetchChannelCapacity: func(chanID uint64) (
-			btcutil.Amount, error) {
+			ltcutil.Amount, error) {
 
 			return 1, nil
 		},

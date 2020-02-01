@@ -4,8 +4,8 @@ import (
 	prand "math/rand"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcutil"
 )
 
 // minMedianChanSizeFraction determines the minimum size a channel must have to
@@ -79,13 +79,13 @@ func (p *PrefAttachment) Name() string {
 //
 // NOTE: This is a part of the AttachmentHeuristic interface.
 func (p *PrefAttachment) NodeScores(g ChannelGraph, chans []Channel,
-	chanSize btcutil.Amount, nodes map[NodeID]struct{}) (
+	chanSize ltcutil.Amount, nodes map[NodeID]struct{}) (
 	map[NodeID]*NodeScore, error) {
 
 	// We first run though the graph once in order to find the median
 	// channel size.
 	var (
-		allChans  []btcutil.Amount
+		allChans  []ltcutil.Amount
 		seenChans = make(map[uint64]struct{})
 	)
 	if err := g.ForEachNode(func(n Node) error {

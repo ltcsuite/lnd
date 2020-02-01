@@ -1,14 +1,14 @@
-package btcwallet
+package ltcwallet
 
 import (
 	"fmt"
 
-	"github.com/btcsuite/btcwallet/chain"
+	"github.com/ltcsuite/ltcwallet/chain"
 	"github.com/lightningnetwork/lnd/lnwallet"
 )
 
 const (
-	walletType = "btcwallet"
+	walletType = "ltcwallet"
 )
 
 // createNewWallet creates a new instance of BtcWallet given the proper list of
@@ -23,7 +23,7 @@ func createNewWallet(args ...interface{}) (lnwallet.WalletController, error) {
 
 	config, ok := args[0].(*Config)
 	if !ok {
-		return nil, fmt.Errorf("first argument to btcdnotifier.New is " +
+		return nil, fmt.Errorf("first argument to ltcdnotifier.New is " +
 			"incorrect, expected a *rpcclient.ConnConfig")
 	}
 

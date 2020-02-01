@@ -6,7 +6,7 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 

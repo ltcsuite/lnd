@@ -1,4 +1,4 @@
-package btcwallet
+package ltcwallet
 
 import (
 	"bytes"
@@ -8,17 +8,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcwallet/chain"
-	"github.com/btcsuite/btcwallet/waddrmgr"
-	base "github.com/btcsuite/btcwallet/wallet"
-	"github.com/btcsuite/btcwallet/wallet/txauthor"
-	"github.com/btcsuite/btcwallet/wallet/txrules"
-	"github.com/btcsuite/btcwallet/walletdb"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcwallet/chain"
+	"github.com/ltcsuite/ltcwallet/waddrmgr"
+	base "github.com/ltcsuite/ltcwallet/wallet"
+	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
+	"github.com/ltcsuite/ltcwallet/wallet/txrules"
+	"github.com/ltcsuite/ltcwallet/walletdb"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
@@ -30,7 +30,7 @@ const (
 
 var (
 	// waddrmgrNamespaceKey is the namespace key that the waddrmgr state is
-	// stored within the top-level waleltdb buckets of btcwallet.
+	// stored within the top-level waleltdb buckets of ltcwallet.
 	waddrmgrNamespaceKey = []byte("waddrmgr")
 
 	// lightningAddrSchema is the scope addr schema for all keys that we
@@ -43,11 +43,11 @@ var (
 )
 
 // BtcWallet is an implementation of the lnwallet.WalletController interface
-// backed by an active instance of btcwallet. At the time of the writing of
-// this documentation, this implementation requires a full btcd node to
+// backed by an active instance of ltcwallet. At the time of the writing of
+// this documentation, this implementation requires a full ltcd node to
 // operate.
 type BtcWallet struct {
-	// wallet is an active instance of btcwallet.
+	// wallet is an active instance of ltcwallet.
 	wallet *base.Wallet
 
 	chain chain.Interface
@@ -142,7 +142,7 @@ func (b *BtcWallet) BackEnd() string {
 }
 
 // InternalWallet returns a pointer to the internal base wallet which is the
-// core of btcwallet.
+// core of ltcwallet.
 func (b *BtcWallet) InternalWallet() *base.Wallet {
 	return b.wallet
 }
@@ -183,7 +183,7 @@ func (b *BtcWallet) Start() error {
 		return err
 	}
 
-	// Start the underlying btcwallet core.
+	// Start the underlying ltcwallet core.
 	b.wallet.Start()
 
 	// Pass the rpc client into the wallet so it can sync up to the
@@ -213,8 +213,8 @@ func (b *BtcWallet) Stop() error {
 // final sum.
 //
 // This is a part of the WalletController interface.
-func (b *BtcWallet) ConfirmedBalance(confs int32) (btcutil.Amount, error) {
-	var balance btcutil.Amount
+func (b *BtcWallet) ConfirmedBalance(confs int32) (ltcutil.Amount, error) {
+	var balance ltcutil.Amount
 
 	witnessOutputs, err := b.ListUnspentWitness(confs, math.MaxInt32)
 	if err != nil {
@@ -234,7 +234,7 @@ func (b *BtcWallet) ConfirmedBalance(confs int32) (btcutil.Amount, error) {
 // returned.
 //
 // This is a part of the WalletController interface.
-func (b *BtcWallet) NewAddress(t lnwallet.AddressType, change bool) (btcutil.Address, error) {
+func (b *BtcWallet) NewAddress(t lnwallet.AddressType, change bool) (ltcutil.Address, error) {
 	var keyScope waddrmgr.KeyScope
 
 	switch t {
@@ -260,7 +260,7 @@ func (b *BtcWallet) NewAddress(t lnwallet.AddressType, change bool) (btcutil.Add
 // NewAddress it can derive a specified address type, and also optionally a
 // change address.
 func (b *BtcWallet) LastUnusedAddress(addrType lnwallet.AddressType) (
-	btcutil.Address, error) {
+	ltcutil.Address, error) {
 
 	var keyScope waddrmgr.KeyScope
 
@@ -279,7 +279,7 @@ func (b *BtcWallet) LastUnusedAddress(addrType lnwallet.AddressType) (
 // IsOurAddress checks if the passed address belongs to this wallet
 //
 // This is a part of the WalletController interface.
-func (b *BtcWallet) IsOurAddress(a btcutil.Address) bool {
+func (b *BtcWallet) IsOurAddress(a ltcutil.Address) bool {
 	result, err := b.wallet.HaveAddress(a)
 	return result && (err == nil)
 }
@@ -294,7 +294,7 @@ func (b *BtcWallet) SendOutputs(outputs []*wire.TxOut,
 
 	// Convert our fee rate from sat/kw to sat/kb since it's required by
 	// SendOutputs.
-	feeSatPerKB := btcutil.Amount(feeRate.FeePerKVByte())
+	feeSatPerKB := ltcutil.Amount(feeRate.FeePerKVByte())
 
 	// Sanity check outputs.
 	if len(outputs) < 1 {
@@ -319,7 +319,7 @@ func (b *BtcWallet) CreateSimpleTx(outputs []*wire.TxOut,
 
 	// The fee rate is passed in using units of sat/kw, so we'll convert
 	// this to sat/KB as the CreateSimpleTx method requires this unit.
-	feeSatPerKB := btcutil.Amount(feeRate.FeePerKVByte())
+	feeSatPerKB := ltcutil.Amount(feeRate.FeePerKVByte())
 
 	// Sanity check outputs.
 	if len(outputs) < 1 {
@@ -387,7 +387,7 @@ func (b *BtcWallet) ListUnspentWitness(minConfs, maxConfs int32) (
 		} else if txscript.IsPayToScriptHash(pkScript) {
 			// TODO(roasbeef): This assumes all p2sh outputs returned by the
 			// wallet are nested p2pkh. We can't check the redeem script because
-			// the btcwallet service does not include it.
+			// the ltcwallet service does not include it.
 			addressType = lnwallet.NestedWitnessPubKey
 		}
 
@@ -401,7 +401,7 @@ func (b *BtcWallet) ListUnspentWitness(minConfs, maxConfs int32) (
 
 			// We'll ensure we properly convert the amount given in
 			// BTC to satoshis.
-			amt, err := btcutil.NewAmount(output.Amount)
+			amt, err := ltcutil.NewAmount(output.Amount)
 			if err != nil {
 				return nil, err
 			}
@@ -459,16 +459,16 @@ func (b *BtcWallet) PublishTransaction(tx *wire.MsgTx) error {
 func extractBalanceDelta(
 	txSummary base.TransactionSummary,
 	tx *wire.MsgTx,
-) (btcutil.Amount, error) {
+) (ltcutil.Amount, error) {
 	// For each input we debit the wallet's outflow for this transaction,
 	// and for each output we credit the wallet's inflow for this
 	// transaction.
-	var balanceDelta btcutil.Amount
+	var balanceDelta ltcutil.Amount
 	for _, input := range txSummary.MyInputs {
 		balanceDelta -= input.PreviousAmount
 	}
 	for _, output := range txSummary.MyOutputs {
-		balanceDelta += btcutil.Amount(tx.TxOut[output.Index].Value)
+		balanceDelta += ltcutil.Amount(tx.TxOut[output.Index].Value)
 	}
 
 	return balanceDelta, nil
@@ -491,7 +491,7 @@ func minedTransactionsToDetails(
 			return nil, err
 		}
 
-		var destAddresses []btcutil.Address
+		var destAddresses []ltcutil.Address
 		for _, txOut := range wireTx.TxOut {
 			_, outAddresses, _, err := txscript.ExtractPkScriptAddrs(
 				txOut.PkScript, chainParams,
@@ -540,7 +540,7 @@ func unminedTransactionsToDetail(
 		return nil, err
 	}
 
-	var destAddresses []btcutil.Address
+	var destAddresses []ltcutil.Address
 	for _, txOut := range wireTx.TxOut {
 		_, outAddresses, _, err :=
 			txscript.ExtractPkScriptAddrs(txOut.PkScript, chainParams)

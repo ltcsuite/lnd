@@ -18,10 +18,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/feature"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -298,7 +298,7 @@ func parseTestGraph(path string) (*testGraphInstance, error) {
 			ChannelID:    edge.ChannelID,
 			AuthProof:    &testAuthProof,
 			ChannelPoint: fundingPoint,
-			Capacity:     btcutil.Amount(edge.Capacity),
+			Capacity:     ltcutil.Amount(edge.Capacity),
 		}
 
 		copy(edgeInfo.NodeKey1Bytes[:], node1Bytes)
@@ -351,7 +351,7 @@ type testChannelEnd struct {
 	*testChannelPolicy
 }
 
-func symmetricTestChannel(alias1, alias2 string, capacity btcutil.Amount,
+func symmetricTestChannel(alias1, alias2 string, capacity ltcutil.Amount,
 	policy *testChannelPolicy, chanID ...uint64) *testChannel {
 
 	// Leaving id zero will result in auto-generation of a channel id during
@@ -368,7 +368,7 @@ func symmetricTestChannel(alias1, alias2 string, capacity btcutil.Amount,
 	)
 }
 
-func asymmetricTestChannel(alias1, alias2 string, capacity btcutil.Amount,
+func asymmetricTestChannel(alias1, alias2 string, capacity ltcutil.Amount,
 	policy1, policy2 *testChannelPolicy, id uint64) *testChannel {
 
 	return &testChannel{
@@ -388,7 +388,7 @@ func asymmetricTestChannel(alias1, alias2 string, capacity btcutil.Amount,
 type testChannel struct {
 	Node1     *testChannelEnd
 	Node2     *testChannelEnd
-	Capacity  btcutil.Amount
+	Capacity  ltcutil.Amount
 	ChannelID uint64
 }
 
@@ -719,7 +719,7 @@ type expectedHop struct {
 
 type basicGraphPathFindingTestCase struct {
 	target                string
-	paymentAmt            btcutil.Amount
+	paymentAmt            ltcutil.Amount
 	feeLimit              lnwire.MilliSatoshi
 	expectedTotalAmt      lnwire.MilliSatoshi
 	expectedTotalTimeLock uint32
@@ -1764,7 +1764,7 @@ func TestPathInsufficientCapacity(t *testing.T) {
 	// though we have a 2-hop link.
 	target := graph.aliasMap["sophon"]
 
-	payAmt := lnwire.NewMSatFromSatoshis(btcutil.SatoshiPerBitcoin)
+	payAmt := lnwire.NewMSatFromSatoshis(ltcutil.SatoshiPerBitcoin)
 	_, err = findPath(
 		&graphParams{
 			graph: graph.graph,

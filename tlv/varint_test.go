@@ -164,7 +164,7 @@ var readVarIntTests = []varIntTest{
 	},
 	// The following cases are the reason for needing to make a custom
 	// version of the varint for the tlv package. For the varint encodings
-	// in btcd's wire package these would return io.EOF, since it is
+	// in ltcd's wire package these would return io.EOF, since it is
 	// actually a composite of two calls to io.ReadFull. In TLV, we need to
 	// be able to distinguish whether no bytes were read at all from no
 	// Bytes being read on the second read as the latter is not a proper TLV

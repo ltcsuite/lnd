@@ -7,16 +7,16 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/btcsuite/btcd/btcjson"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/rpcclient"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/btcjson"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/rpcclient"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
 )
 
 // BtcdFilteredChainView is an implementation of the FilteredChainView
-// interface which is backed by an active websockets connection to btcd.
+// interface which is backed by an active websockets connection to ltcd.
 type BtcdFilteredChainView struct {
 	started int32 // To be used atomically.
 	stopped int32 // To be used atomically.
@@ -28,7 +28,7 @@ type BtcdFilteredChainView struct {
 	bestHeightMtx sync.Mutex
 	bestHeight    uint32
 
-	btcdConn *rpcclient.Client
+	ltcdConn *rpcclient.Client
 
 	// blockEventQueue is the ordered queue used to keep the order
 	// of connected and disconnected blocks sent to the reader of the
@@ -57,7 +57,7 @@ type BtcdFilteredChainView struct {
 var _ FilteredChainView = (*BtcdFilteredChainView)(nil)
 
 // NewBtcdFilteredChainView creates a new instance of a FilteredChainView from
-// RPC credentials for an active btcd instance.
+// RPC credentials for an active ltcd instance.
 func NewBtcdFilteredChainView(config rpcclient.ConnConfig) (*BtcdFilteredChainView, error) {
 	chainView := &BtcdFilteredChainView{
 		chainFilter:     make(map[wire.OutPoint]struct{}),
@@ -71,7 +71,7 @@ func NewBtcdFilteredChainView(config rpcclient.ConnConfig) (*BtcdFilteredChainVi
 		OnFilteredBlockDisconnected: chainView.onFilteredBlockDisconnected,
 	}
 
-	// Disable connecting to btcd within the rpcclient.New method. We
+	// Disable connecting to ltcd within the rpcclient.New method. We
 	// defer establishing the connection to our .Start() method.
 	config.DisableConnectOnNew = true
 	config.DisableAutoReconnect = false
@@ -79,7 +79,7 @@ func NewBtcdFilteredChainView(config rpcclient.ConnConfig) (*BtcdFilteredChainVi
 	if err != nil {
 		return nil, err
 	}
-	chainView.btcdConn = chainConn
+	chainView.ltcdConn = chainConn
 
 	chainView.blockQueue = newBlockEventQueue()
 
@@ -97,16 +97,16 @@ func (b *BtcdFilteredChainView) Start() error {
 
 	log.Infof("FilteredChainView starting")
 
-	// Connect to btcd, and register for notifications on connected, and
+	// Connect to ltcd, and register for notifications on connected, and
 	// disconnected blocks.
-	if err := b.btcdConn.Connect(20); err != nil {
+	if err := b.ltcdConn.Connect(20); err != nil {
 		return err
 	}
-	if err := b.btcdConn.NotifyBlocks(); err != nil {
+	if err := b.ltcdConn.NotifyBlocks(); err != nil {
 		return err
 	}
 
-	_, bestHeight, err := b.btcdConn.GetBestBlock()
+	_, bestHeight, err := b.ltcdConn.GetBestBlock()
 	if err != nil {
 		return err
 	}
@@ -133,9 +133,9 @@ func (b *BtcdFilteredChainView) Stop() error {
 		return nil
 	}
 
-	// Shutdown the rpc client, this gracefully disconnects from btcd, and
+	// Shutdown the rpc client, this gracefully disconnects from ltcd, and
 	// cleans up all related resources.
-	b.btcdConn.Shutdown()
+	b.ltcdConn.Shutdown()
 
 	b.blockQueue.Stop()
 
@@ -151,7 +151,7 @@ func (b *BtcdFilteredChainView) Stop() error {
 // end of the main chain. Based on our current chain filter, the block may or
 // may not include any relevant transactions.
 func (b *BtcdFilteredChainView) onFilteredBlockConnected(height int32,
-	header *wire.BlockHeader, txns []*btcutil.Tx) {
+	header *wire.BlockHeader, txns []*ltcutil.Tx) {
 
 	mtxs := make([]*wire.MsgTx, len(txns))
 	b.filterMtx.Lock()
@@ -331,10 +331,10 @@ func (b *BtcdFilteredChainView) chainFilterer() {
 			}
 			b.filterMtx.Unlock()
 
-			// Apply the new TX filter to btcd, which will cause
+			// Apply the new TX filter to ltcd, which will cause
 			// all following notifications from and calls to it
 			// return blocks filtered with the new filter.
-			b.btcdConn.LoadTxFilter(false, []btcutil.Address{},
+			b.ltcdConn.LoadTxFilter(false, []ltcutil.Address{},
 				update.newUtxos)
 
 			// All blocks gotten after we loaded the filter will
@@ -355,10 +355,10 @@ func (b *BtcdFilteredChainView) chainFilterer() {
 			// caller doesn't miss any relevant notifications.
 			// Starting from the height _after_ the update height,
 			// we'll walk forwards, rescanning one block at a time
-			// with btcd applying the newly loaded filter to each
+			// with ltcd applying the newly loaded filter to each
 			// block.
 			for i := update.updateHeight + 1; i < bestHeight+1; i++ {
-				blockHash, err := b.btcdConn.GetBlockHash(int64(i))
+				blockHash, err := b.ltcdConn.GetBlockHash(int64(i))
 				if err != nil {
 					log.Warnf("Unable to get block hash "+
 						"for block at height %d: %v",
@@ -370,7 +370,7 @@ func (b *BtcdFilteredChainView) chainFilterer() {
 				// is happening while we rescan, we scan one
 				// block at a time, skipping blocks that might
 				// have gone missing.
-				rescanned, err := b.btcdConn.RescanBlocks(
+				rescanned, err := b.ltcdConn.RescanBlocks(
 					[]chainhash.Hash{*blockHash})
 				if err != nil {
 					log.Warnf("Unable to rescan block "+
@@ -404,13 +404,13 @@ func (b *BtcdFilteredChainView) chainFilterer() {
 		case req := <-b.filterBlockReqs:
 			// First we'll fetch the block itself as well as some
 			// additional information including its height.
-			block, err := b.btcdConn.GetBlock(req.blockHash)
+			block, err := b.ltcdConn.GetBlock(req.blockHash)
 			if err != nil {
 				req.err <- err
 				req.resp <- nil
 				continue
 			}
-			header, err := b.btcdConn.GetBlockHeaderVerbose(req.blockHash)
+			header, err := b.ltcdConn.GetBlockHeaderVerbose(req.blockHash)
 			if err != nil {
 				req.err <- err
 				req.resp <- nil

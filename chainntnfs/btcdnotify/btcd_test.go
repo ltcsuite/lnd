@@ -1,14 +1,14 @@
 // +build dev
 
-package btcdnotify
+package ltcdnotify
 
 import (
 	"bytes"
 	"io/ioutil"
 	"testing"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/integration/rpctest"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/integration/rpctest"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 )
@@ -46,7 +46,7 @@ func initHintCache(t *testing.T) *chainntnfs.HeightHintCache {
 	return hintCache
 }
 
-// setUpNotifier is a helper function to start a new notifier backed by a btcd
+// setUpNotifier is a helper function to start a new notifier backed by a ltcd
 // driver.
 func setUpNotifier(t *testing.T, h *rpctest.Harness) *BtcdNotifier {
 	hintCache := initHintCache(t)

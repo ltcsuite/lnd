@@ -5,10 +5,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/btcsuite/btcd/blockchain"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/blockchain"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
@@ -135,9 +135,9 @@ func createSweepTx(inputs []input.Input, outputPkScript []byte,
 		inputTypeSummary(inputs), int64(feePerKw), txFee)
 
 	// Sum up the total value contained in the inputs.
-	var totalSum btcutil.Amount
+	var totalSum ltcutil.Amount
 	for _, o := range inputs {
-		totalSum += btcutil.Amount(o.SignDesc().Output.Value)
+		totalSum += ltcutil.Amount(o.SignDesc().Output.Value)
 	}
 
 	// Sweep as much possible, after subtracting txn fees.
@@ -169,7 +169,7 @@ func createSweepTx(inputs []input.Input, outputPkScript []byte,
 	// TODO(conner): add more control to sanity checks, allowing us to
 	// delay spending "problem" outputs, e.g. possibly batching with other
 	// classes if fees are too low.
-	btx := btcutil.NewTx(sweepTx)
+	btx := ltcutil.NewTx(sweepTx)
 	if err := blockchain.CheckTransactionSanity(btx); err != nil {
 		return nil, err
 	}

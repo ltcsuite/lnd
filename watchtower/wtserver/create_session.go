@@ -1,7 +1,7 @@
 package wtserver
 
 import (
-	"github.com/btcsuite/btcd/txscript"
+	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/lightningnetwork/lnd/watchtower/blob"
 	"github.com/lightningnetwork/lnd/watchtower/wtdb"
 	"github.com/lightningnetwork/lnd/watchtower/wtpolicy"

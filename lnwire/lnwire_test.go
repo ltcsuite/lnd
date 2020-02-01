@@ -14,10 +14,10 @@ import (
 	"testing/quick"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/tor"
 )
@@ -311,11 +311,11 @@ func TestLightningWireProtocol(t *testing.T) {
 		},
 		MsgOpenChannel: func(v []reflect.Value, r *rand.Rand) {
 			req := OpenChannel{
-				FundingAmount:    btcutil.Amount(r.Int63()),
+				FundingAmount:    ltcutil.Amount(r.Int63()),
 				PushAmount:       MilliSatoshi(r.Int63()),
-				DustLimit:        btcutil.Amount(r.Int63()),
+				DustLimit:        ltcutil.Amount(r.Int63()),
 				MaxValueInFlight: MilliSatoshi(r.Int63()),
-				ChannelReserve:   btcutil.Amount(r.Int63()),
+				ChannelReserve:   ltcutil.Amount(r.Int63()),
 				HtlcMinimum:      MilliSatoshi(r.Int31()),
 				FeePerKiloWeight: uint32(r.Int63()),
 				CsvDelay:         uint16(r.Int31()),
@@ -380,9 +380,9 @@ func TestLightningWireProtocol(t *testing.T) {
 		},
 		MsgAcceptChannel: func(v []reflect.Value, r *rand.Rand) {
 			req := AcceptChannel{
-				DustLimit:        btcutil.Amount(r.Int63()),
+				DustLimit:        ltcutil.Amount(r.Int63()),
 				MaxValueInFlight: MilliSatoshi(r.Int63()),
-				ChannelReserve:   btcutil.Amount(r.Int63()),
+				ChannelReserve:   ltcutil.Amount(r.Int63()),
 				MinAcceptDepth:   uint32(r.Int31()),
 				HtlcMinimum:      MilliSatoshi(r.Int31()),
 				CsvDelay:         uint16(r.Int31()),
@@ -501,7 +501,7 @@ func TestLightningWireProtocol(t *testing.T) {
 		},
 		MsgClosingSigned: func(v []reflect.Value, r *rand.Rand) {
 			req := ClosingSigned{
-				FeeSatoshis: btcutil.Amount(r.Int63()),
+				FeeSatoshis: ltcutil.Amount(r.Int63()),
 			}
 			var err error
 			req.Signature, err = NewSigFromSignature(testSig)

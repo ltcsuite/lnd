@@ -6,13 +6,13 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcwallet/wallet/txauthor"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
 
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/input"
@@ -249,30 +249,30 @@ func (*mockWalletController) FetchInputInfo(
 	prevOut *wire.OutPoint) (*lnwallet.Utxo, error) {
 	utxo := &lnwallet.Utxo{
 		AddressType:   lnwallet.WitnessPubKey,
-		Value:         10 * btcutil.SatoshiPerBitcoin,
+		Value:         10 * ltcutil.SatoshiPerBitcoin,
 		PkScript:      []byte("dummy"),
 		Confirmations: 1,
 		OutPoint:      *prevOut,
 	}
 	return utxo, nil
 }
-func (*mockWalletController) ConfirmedBalance(confs int32) (btcutil.Amount, error) {
+func (*mockWalletController) ConfirmedBalance(confs int32) (ltcutil.Amount, error) {
 	return 0, nil
 }
 
 // NewAddress is called to get new addresses for delivery, change etc.
 func (m *mockWalletController) NewAddress(addrType lnwallet.AddressType,
-	change bool) (btcutil.Address, error) {
-	addr, _ := btcutil.NewAddressPubKey(
+	change bool) (ltcutil.Address, error) {
+	addr, _ := ltcutil.NewAddressPubKey(
 		m.rootKey.PubKey().SerializeCompressed(), &chaincfg.MainNetParams)
 	return addr, nil
 }
 func (*mockWalletController) LastUnusedAddress(addrType lnwallet.AddressType) (
-	btcutil.Address, error) {
+	ltcutil.Address, error) {
 	return nil, nil
 }
 
-func (*mockWalletController) IsOurAddress(a btcutil.Address) bool {
+func (*mockWalletController) IsOurAddress(a ltcutil.Address) bool {
 	return false
 }
 
@@ -301,7 +301,7 @@ func (m *mockWalletController) ListUnspentWitness(minconfirms,
 	// Otherwise create one to return.
 	utxo := &lnwallet.Utxo{
 		AddressType: lnwallet.WitnessPubKey,
-		Value:       btcutil.Amount(10 * btcutil.SatoshiPerBitcoin),
+		Value:       ltcutil.Amount(10 * ltcutil.SatoshiPerBitcoin),
 		PkScript:    coinPkScript,
 		OutPoint: wire.OutPoint{
 			Hash:  chainhash.Hash{},

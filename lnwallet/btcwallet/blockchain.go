@@ -1,17 +1,17 @@
-package btcwallet
+package ltcwallet
 
 import (
 	"encoding/hex"
 	"errors"
 	"fmt"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 
-	"github.com/btcsuite/btcwallet/chain"
-	"github.com/lightninglabs/neutrino"
-	"github.com/lightninglabs/neutrino/headerfs"
+	"github.com/ltcsuite/ltcwallet/chain"
+	"github.com/ltcsuite/neutrino"
+	"github.com/ltcsuite/neutrino/headerfs"
 	"github.com/lightningnetwork/lnd/lnwallet"
 )
 
@@ -87,7 +87,7 @@ func (b *BtcWallet) GetUtxo(op *wire.OutPoint, pkScript []byte,
 
 		// We'll ensure we properly convert the amount given in BTC to
 		// satoshis.
-		amt, err := btcutil.NewAmount(txout.Value)
+		amt, err := ltcutil.NewAmount(txout.Value)
 		if err != nil {
 			return nil, err
 		}
@@ -112,7 +112,7 @@ func (b *BtcWallet) GetUtxo(op *wire.OutPoint, pkScript []byte,
 
 		// Sadly, gettxout returns the output value in BTC instead of
 		// satoshis.
-		amt, err := btcutil.NewAmount(txout.Value)
+		amt, err := ltcutil.NewAmount(txout.Value)
 		if err != nil {
 			return nil, err
 		}

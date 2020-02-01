@@ -1,20 +1,20 @@
-package btcwallet
+package ltcwallet
 
 import (
 	"path/filepath"
 	"time"
 
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/wire"
 
-	"github.com/btcsuite/btcwallet/chain"
-	"github.com/btcsuite/btcwallet/wallet"
+	"github.com/ltcsuite/ltcwallet/chain"
+	"github.com/ltcsuite/ltcwallet/wallet"
 
 	// This is required to register bdb as a valid walletdb driver. In the
 	// init function of the package, it registers itself. The import is used
 	// to activate the side effects w/o actually binding the package name to
 	// a file-level variable.
-	_ "github.com/btcsuite/btcwallet/walletdb/bdb"
+	_ "github.com/ltcsuite/ltcwallet/walletdb/bdb"
 )
 
 var (
@@ -36,11 +36,11 @@ type Config struct {
 	// generated log files.
 	LogDir string
 
-	// PrivatePass is the private password to the underlying btcwallet
+	// PrivatePass is the private password to the underlying ltcwallet
 	// instance. Without this, the wallet cannot be decrypted and operated.
 	PrivatePass []byte
 
-	// PublicPass is the optional public password to btcwallet. This is
+	// PublicPass is the optional public password to ltcwallet. This is
 	// optionally used to encrypt public material such as public keys and
 	// scripts.
 	PublicPass []byte

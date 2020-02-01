@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/route"
@@ -45,7 +45,7 @@ func queryProb(ctx *cli.Context) error {
 	}
 
 	amtMsat := lnwire.NewMSatFromSatoshis(
-		btcutil.Amount(amtSat),
+		ltcutil.Amount(amtSat),
 	)
 
 	conn := getClientConn(ctx, false)

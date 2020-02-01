@@ -1,12 +1,12 @@
 // +build dev
 
-package btcdnotify
+package ltcdnotify
 
 import (
 	"fmt"
 	"time"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 )
 
@@ -19,7 +19,7 @@ import (
 func (b *BtcdNotifier) UnsafeStart(bestHeight int32, bestHash *chainhash.Hash,
 	syncHeight int32, generateBlocks func() error) error {
 
-	// Connect to btcd, and register for notifications on connected, and
+	// Connect to ltcd, and register for notifications on connected, and
 	// disconnected blocks.
 	if err := b.chainConn.Connect(20); err != nil {
 		return err

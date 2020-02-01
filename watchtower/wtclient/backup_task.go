@@ -1,12 +1,12 @@
 package wtclient
 
 import (
-	"github.com/btcsuite/btcd/blockchain"
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcutil/txsort"
+	"github.com/ltcsuite/ltcd/blockchain"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcutil/txsort"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -41,7 +41,7 @@ type backupTask struct {
 
 	toLocalInput  input.Input
 	toRemoteInput input.Input
-	totalAmt      btcutil.Amount
+	totalAmt      ltcutil.Amount
 	sweepPkScript []byte
 
 	// session-dependent variables
@@ -108,7 +108,7 @@ func newBackupTask(chanID *lnwire.ChannelID,
 		breachInfo:    breachInfo,
 		toLocalInput:  toLocalInput,
 		toRemoteInput: toRemoteInput,
-		totalAmt:      btcutil.Amount(totalAmt),
+		totalAmt:      ltcutil.Amount(totalAmt),
 		sweepPkScript: sweepPkScript,
 	}
 }
@@ -226,7 +226,7 @@ func (t *backupTask) craftSessionPayload(
 
 	// Check that the justice transaction meets basic validity requirements
 	// before attempting to attach the witnesses.
-	btx := btcutil.NewTx(justiceTxn)
+	btx := ltcutil.NewTx(justiceTxn)
 	if err := blockchain.CheckTransactionSanity(btx); err != nil {
 		return hint, nil, err
 	}

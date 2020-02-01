@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/fastsha256"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/fastsha256"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -1933,8 +1933,8 @@ func TestLocalPaymentNoForwardingEvents(t *testing.T) {
 	// interacting with and asserting the state of the first end point for
 	// this test.
 	channels, cleanUp, _, err := createClusterChannels(
-		btcutil.SatoshiPerBitcoin*3,
-		btcutil.SatoshiPerBitcoin*5)
+		ltcutil.SatoshiPerBitcoin*3,
+		ltcutil.SatoshiPerBitcoin*5)
 	if err != nil {
 		t.Fatalf("unable to create channel: %v", err)
 	}
@@ -1947,7 +1947,7 @@ func TestLocalPaymentNoForwardingEvents(t *testing.T) {
 	}
 
 	// We'll now craft and send a payment from Alice to Bob.
-	amount := lnwire.NewMSatFromSatoshis(btcutil.SatoshiPerBitcoin)
+	amount := lnwire.NewMSatFromSatoshis(ltcutil.SatoshiPerBitcoin)
 	htlcAmt, totalTimelock, hops := generateHops(
 		amount, testStartingHeight, n.firstBobChannelLink,
 	)
@@ -1995,8 +1995,8 @@ func TestMultiHopPaymentForwardingEvents(t *testing.T) {
 
 	// First, we'll create our traditional three hop network.
 	channels, cleanUp, _, err := createClusterChannels(
-		btcutil.SatoshiPerBitcoin*3,
-		btcutil.SatoshiPerBitcoin*5)
+		ltcutil.SatoshiPerBitcoin*3,
+		ltcutil.SatoshiPerBitcoin*5)
 	if err != nil {
 		t.Fatalf("unable to create channel: %v", err)
 	}
@@ -2152,7 +2152,7 @@ func TestUpdateFailMalformedHTLCErrorConversion(t *testing.T) {
 
 	// First, we'll create our traditional three hop network.
 	channels, cleanUp, _, err := createClusterChannels(
-		btcutil.SatoshiPerBitcoin*3, btcutil.SatoshiPerBitcoin*5,
+		ltcutil.SatoshiPerBitcoin*3, ltcutil.SatoshiPerBitcoin*5,
 	)
 	if err != nil {
 		t.Fatalf("unable to create channel: %v", err)

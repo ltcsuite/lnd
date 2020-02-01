@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnwallet"
@@ -173,8 +173,8 @@ func TestCommitSweepResolverDelay(t *testing.T) {
 	if !reflect.DeepEqual(report, &ContractReport{
 		Outpoint:     outpoint,
 		Type:         ReportOutputUnencumbered,
-		Amount:       btcutil.Amount(amt),
-		LimboBalance: btcutil.Amount(amt),
+		Amount:       ltcutil.Amount(amt),
+		LimboBalance: ltcutil.Amount(amt),
 	}) {
 		t.Fatal("unexpected resolver report")
 	}
@@ -216,8 +216,8 @@ func TestCommitSweepResolverDelay(t *testing.T) {
 	if !reflect.DeepEqual(report, &ContractReport{
 		Outpoint:         outpoint,
 		Type:             ReportOutputUnencumbered,
-		Amount:           btcutil.Amount(amt),
-		RecoveredBalance: btcutil.Amount(amt),
+		Amount:           ltcutil.Amount(amt),
+		RecoveredBalance: ltcutil.Amount(amt),
 		MaturityHeight:   testInitialBlockHeight + 2,
 	}) {
 		t.Fatal("unexpected resolver report")

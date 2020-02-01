@@ -3,7 +3,7 @@ package routerrpc
 import (
 	"time"
 
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcutil"
 )
 
 // RoutingConfig contains the configurable parameters that control routing.
@@ -32,7 +32,7 @@ type RoutingConfig struct {
 	// AttemptCost is the virtual cost in path finding weight units of
 	// executing a payment attempt that fails. It is used to trade off
 	// potentially better routes against their probability of succeeding.
-	AttemptCost btcutil.Amount `long:"attemptcost" description:"The (virtual) cost in sats of a failed payment attempt"`
+	AttemptCost ltcutil.Amount `long:"attemptcost" description:"The (virtual) cost in sats of a failed payment attempt"`
 
 	// MaxMcHistory defines the maximum number of payment results that
 	// are held on disk by mission control.

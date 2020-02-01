@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcutil"
 )
 
 // ExternalScoreAttachment is an implementation of the AttachmentHeuristic
@@ -81,7 +81,7 @@ func (s *ExternalScoreAttachment) SetNodeScores(targetHeuristic string,
 //
 // NOTE: This is a part of the AttachmentHeuristic interface.
 func (s *ExternalScoreAttachment) NodeScores(g ChannelGraph, chans []Channel,
-	chanSize btcutil.Amount, nodes map[NodeID]struct{}) (
+	chanSize ltcutil.Amount, nodes map[NodeID]struct{}) (
 	map[NodeID]*NodeScore, error) {
 
 	existingPeers := make(map[NodeID]struct{})

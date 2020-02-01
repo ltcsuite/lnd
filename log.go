@@ -3,9 +3,9 @@ package lnd
 import (
 	"context"
 
-	"github.com/btcsuite/btcd/connmgr"
+	"github.com/ltcsuite/ltcd/connmgr"
 	"github.com/btcsuite/btclog"
-	"github.com/lightninglabs/neutrino"
+	"github.com/ltcsuite/neutrino"
 	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/build"
@@ -80,7 +80,7 @@ func init() {
 	addSubLogger("CHDB", channeldb.UseLogger)
 	addSubLogger("HSWC", htlcswitch.UseLogger)
 	addSubLogger("CMGR", connmgr.UseLogger)
-	addSubLogger("BTCN", neutrino.UseLogger)
+	addSubLogger("LTCN", neutrino.UseLogger)
 	addSubLogger("CNCT", contractcourt.UseLogger)
 	addSubLogger("SPHX", sphinx.UseLogger)
 	addSubLogger("SWPR", sweep.UseLogger)

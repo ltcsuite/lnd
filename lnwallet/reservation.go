@@ -4,10 +4,10 @@ import (
 	"net"
 	"sync"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
@@ -24,7 +24,7 @@ import (
 type ChannelContribution struct {
 	// FundingOutpoint is the amount of funds contributed to the funding
 	// transaction.
-	FundingAmount btcutil.Amount
+	FundingAmount ltcutil.Amount
 
 	// Inputs to the funding transaction.
 	Inputs []*wire.TxIn
@@ -133,7 +133,7 @@ type ChannelReservation struct {
 // used only internally by lnwallet. In order to concurrent safety, the
 // creation of all channel reservations should be carried out via the
 // lnwallet.InitChannelReservation interface.
-func NewChannelReservation(capacity, localFundingAmt btcutil.Amount,
+func NewChannelReservation(capacity, localFundingAmt ltcutil.Amount,
 	commitFeePerKw chainfee.SatPerKWeight, wallet *LightningWallet,
 	id uint64, pushMSat lnwire.MilliSatoshi, chainHash *chainhash.Hash,
 	flags lnwire.FundingFlag, tweaklessCommit bool,
@@ -260,13 +260,13 @@ func NewChannelReservation(capacity, localFundingAmt btcutil.Amount,
 			LocalCommitment: channeldb.ChannelCommitment{
 				LocalBalance:  ourBalance,
 				RemoteBalance: theirBalance,
-				FeePerKw:      btcutil.Amount(commitFeePerKw),
+				FeePerKw:      ltcutil.Amount(commitFeePerKw),
 				CommitFee:     commitFee,
 			},
 			RemoteCommitment: channeldb.ChannelCommitment{
 				LocalBalance:  ourBalance,
 				RemoteBalance: theirBalance,
-				FeePerKw:      btcutil.Amount(commitFeePerKw),
+				FeePerKw:      ltcutil.Amount(commitFeePerKw),
 				CommitFee:     commitFee,
 			},
 			Db: wallet.Cfg.Database,
@@ -544,7 +544,7 @@ func (r *ChannelReservation) SetOurUpfrontShutdown(shutdown lnwire.DeliveryAddre
 }
 
 // Capacity returns the channel capacity for this reservation.
-func (r *ChannelReservation) Capacity() btcutil.Amount {
+func (r *ChannelReservation) Capacity() ltcutil.Amount {
 	r.RLock()
 	defer r.RUnlock()
 	return r.partialState.Capacity

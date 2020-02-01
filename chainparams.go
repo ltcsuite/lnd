@@ -1,10 +1,10 @@
 package lnd
 
 import (
-	"github.com/btcsuite/btcd/chaincfg"
-	bitcoinCfg "github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	bitcoinWire "github.com/btcsuite/btcd/wire"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	bitcoinCfg "github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	bitcoinWire "github.com/ltcsuite/ltcd/wire"
 	"github.com/lightningnetwork/lnd/keychain"
 	litecoinCfg "github.com/ltcsuite/ltcd/chaincfg"
 	litecoinWire "github.com/ltcsuite/ltcd/wire"
@@ -12,7 +12,7 @@ import (
 
 // activeNetParams is a pointer to the parameters specific to the currently
 // active bitcoin network.
-var activeNetParams = bitcoinTestNetParams
+var activeNetParams = litecoinTestNetParams
 
 // bitcoinNetParams couples the p2p parameters of a network with the
 // corresponding RPC port of a daemon running on the particular network.
@@ -33,8 +33,8 @@ type litecoinNetParams struct {
 // bitcoinTestNetParams contains parameters specific to the 3rd version of the
 // test network.
 var bitcoinTestNetParams = bitcoinNetParams{
-	Params:   &bitcoinCfg.TestNet3Params,
-	rpcPort:  "18334",
+	Params:   &bitcoinCfg.TestNet4Params,
+	rpcPort:  "19334",
 	CoinType: keychain.CoinTypeTestnet,
 }
 
@@ -95,7 +95,7 @@ var bitcoinRegTestNetParams = bitcoinNetParams{
 }
 
 // applyLitecoinParams applies the relevant chain configuration parameters that
-// differ for litecoin to the chain parameters typed for btcsuite derivation.
+// differ for litecoin to the chain parameters typed for ltcsuite derivation.
 // This function is used in place of using something like interface{} to
 // abstract over _which_ chain (or fork) the parameters are for.
 func applyLitecoinParams(params *bitcoinNetParams, litecoinParams *litecoinNetParams) {
@@ -105,6 +105,43 @@ func applyLitecoinParams(params *bitcoinNetParams, litecoinParams *litecoinNetPa
 	params.CoinbaseMaturity = litecoinParams.CoinbaseMaturity
 
 	copy(params.GenesisHash[:], litecoinParams.GenesisHash[:])
+	copy(params.GenesisBlock.Header.MerkleRoot[:],
+		litecoinParams.GenesisBlock.Header.MerkleRoot[:])
+	params.GenesisBlock.Header.Version =
+		litecoinParams.GenesisBlock.Header.Version
+	params.GenesisBlock.Header.Timestamp =
+		litecoinParams.GenesisBlock.Header.Timestamp
+	params.GenesisBlock.Header.Bits =
+		litecoinParams.GenesisBlock.Header.Bits
+	params.GenesisBlock.Header.Nonce =
+		litecoinParams.GenesisBlock.Header.Nonce
+	params.GenesisBlock.Transactions[0].Version =
+		litecoinParams.GenesisBlock.Transactions[0].Version
+	params.GenesisBlock.Transactions[0].LockTime =
+		litecoinParams.GenesisBlock.Transactions[0].LockTime
+	params.GenesisBlock.Transactions[0].TxIn[0].Sequence =
+		litecoinParams.GenesisBlock.Transactions[0].TxIn[0].Sequence
+	params.GenesisBlock.Transactions[0].TxIn[0].PreviousOutPoint.Index =
+		litecoinParams.GenesisBlock.Transactions[0].TxIn[0].PreviousOutPoint.Index
+	copy(params.GenesisBlock.Transactions[0].TxIn[0].SignatureScript[:],
+		litecoinParams.GenesisBlock.Transactions[0].TxIn[0].SignatureScript[:])
+	copy(params.GenesisBlock.Transactions[0].TxOut[0].PkScript[:],
+		litecoinParams.GenesisBlock.Transactions[0].TxOut[0].PkScript[:])
+	params.GenesisBlock.Transactions[0].TxOut[0].Value =
+		litecoinParams.GenesisBlock.Transactions[0].TxOut[0].Value
+	params.GenesisBlock.Transactions[0].TxIn[0].PreviousOutPoint.Hash =
+		chainhash.Hash{}
+	params.PowLimitBits = litecoinParams.PowLimitBits
+	params.PowLimit = litecoinParams.PowLimit
+
+	dnsSeeds := make([]chaincfg.DNSSeed, len(litecoinParams.DNSSeeds))
+	for i := 0; i < len(litecoinParams.DNSSeeds); i++ {
+		dnsSeeds[i] = chaincfg.DNSSeed{
+			Host:         litecoinParams.DNSSeeds[i].Host,
+			HasFiltering: litecoinParams.DNSSeeds[i].HasFiltering,
+		}
+	}
+	params.DNSSeeds = dnsSeeds
 
 	// Address encoding magics
 	params.PubKeyHashAddrID = litecoinParams.PubKeyHashAddrID
@@ -133,13 +170,14 @@ func applyLitecoinParams(params *bitcoinNetParams, litecoinParams *litecoinNetPa
 
 	params.rpcPort = litecoinParams.rpcPort
 	params.CoinType = litecoinParams.CoinType
+	chaincfg.Register(params.Params); // JMC
 }
 
 // isTestnet tests if the given params correspond to a testnet
 // parameter configuration.
-func isTestnet(params *bitcoinNetParams) bool {
+func isTestnet(params *litecoinNetParams) bool {
 	switch params.Params.Net {
-	case bitcoinWire.TestNet3, bitcoinWire.BitcoinNet(litecoinWire.TestNet4):
+	case litecoinWire.TestNet4:
 		return true
 	default:
 		return false

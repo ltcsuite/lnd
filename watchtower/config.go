@@ -9,8 +9,8 @@ import (
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
-	"github.com/lightningnetwork/lnd/tor"
-	"github.com/lightningnetwork/lnd/watchtower/lookout"
+	"github.com/ltcsuite/lnd/tor"
+	"github.com/ltcsuite/lnd/watchtower/lookout"
 )
 
 const (

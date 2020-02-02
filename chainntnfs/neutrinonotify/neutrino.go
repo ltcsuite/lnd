@@ -17,8 +17,8 @@ import (
 	"github.com/ltcsuite/ltcutil/gcs/builder"
 	"github.com/ltcsuite/neutrino"
 	"github.com/ltcsuite/neutrino/headerfs"
-	"github.com/lightningnetwork/lnd/chainntnfs"
-	"github.com/lightningnetwork/lnd/queue"
+	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/queue"
 )
 
 const (

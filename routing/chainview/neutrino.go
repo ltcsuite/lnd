@@ -11,7 +11,7 @@ import (
 	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/ltcutil/gcs/builder"
 	"github.com/ltcsuite/neutrino"
-	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb"
 )
 
 // CfFilteredChainView is an implementation of the FilteredChainView interface

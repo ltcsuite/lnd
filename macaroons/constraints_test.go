@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lightningnetwork/lnd/macaroons"
+	"github.com/ltcsuite/lnd/macaroons"
 	macaroon "gopkg.in/macaroon.v2"
 )
 

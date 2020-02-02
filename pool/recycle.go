@@ -3,7 +3,7 @@ package pool
 import (
 	"time"
 
-	"github.com/lightningnetwork/lnd/queue"
+	"github.com/ltcsuite/lnd/queue"
 )
 
 // Recycler is an interface that allows an object to be reclaimed without

@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/lightningnetwork/lnd/input"
+	"github.com/ltcsuite/lnd/input"
 )
 
 var (

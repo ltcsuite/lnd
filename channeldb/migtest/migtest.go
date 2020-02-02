@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/coreos/bbolt"
-	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb"
 )
 
 // MakeDB creates a new instance of the ChannelDB for testing purposes. A

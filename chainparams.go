@@ -5,7 +5,7 @@ import (
 	bitcoinCfg "github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	bitcoinWire "github.com/ltcsuite/ltcd/wire"
-	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/ltcsuite/lnd/keychain"
 	litecoinCfg "github.com/ltcsuite/ltcd/chaincfg"
 	litecoinWire "github.com/ltcsuite/ltcd/wire"
 )

@@ -9,11 +9,11 @@ import (
 
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcutil"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
-	"github.com/lightningnetwork/lnd/lntest"
-	"github.com/lightningnetwork/lnd/lntest/wait"
-	"github.com/lightningnetwork/lnd/sweep"
+	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/lnrpc/walletrpc"
+	"github.com/ltcsuite/lnd/lntest"
+	"github.com/ltcsuite/lnd/lntest/wait"
+	"github.com/ltcsuite/lnd/sweep"
 )
 
 // testCPFP ensures that the daemon can bump an unconfirmed  transaction's fee

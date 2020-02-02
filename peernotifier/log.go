@@ -2,7 +2,7 @@ package peernotifier
 
 import (
 	"github.com/btcsuite/btclog"
-	"github.com/lightningnetwork/lnd/build"
+	"github.com/ltcsuite/lnd/build"
 )
 
 // log is a logger that is initialized with no output filters.  This

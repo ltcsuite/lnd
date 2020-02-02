@@ -3,15 +3,15 @@ package wtwire_test
 import (
 	"testing"
 
+	"github.com/ltcsuite/lnd/feature"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/watchtower/wtwire"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/lightningnetwork/lnd/feature"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/watchtower/wtwire"
 )
 
 var (
-	testnetChainHash = *chaincfg.TestNet3Params.GenesisHash
+	testnetChainHash = *chaincfg.TestNet4Params.GenesisHash
 	mainnetChainHash = *chaincfg.MainNetParams.GenesisHash
 )
 

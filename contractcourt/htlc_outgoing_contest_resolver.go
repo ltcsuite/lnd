@@ -5,8 +5,8 @@ import (
 	"io"
 
 	"github.com/ltcsuite/ltcutil"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/lnwallet"
 )
 
 // htlcOutgoingContestResolver is a ContractResolver that's able to resolve an

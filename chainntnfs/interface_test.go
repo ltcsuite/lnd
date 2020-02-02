@@ -11,6 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/chainntnfs/bitcoindnotify"
+	ltcdnotify "github.com/ltcsuite/lnd/chainntnfs/btcdnotify"
+	"github.com/ltcsuite/lnd/chainntnfs/neutrinonotify"
+	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/integration/rpctest"
 	"github.com/ltcsuite/ltcd/rpcclient"
@@ -19,11 +24,6 @@ import (
 	"github.com/ltcsuite/ltcwallet/chain"
 	_ "github.com/ltcsuite/ltcwallet/walletdb/bdb" // Required to auto-register the boltdb walletdb implementation.
 	"github.com/ltcsuite/neutrino"
-	"github.com/lightningnetwork/lnd/chainntnfs"
-	"github.com/lightningnetwork/lnd/chainntnfs/bitcoindnotify"
-	"github.com/lightningnetwork/lnd/chainntnfs/ltcdnotify"
-	"github.com/lightningnetwork/lnd/chainntnfs/neutrinonotify"
-	"github.com/lightningnetwork/lnd/channeldb"
 )
 
 func testSingleConfirmationNotification(miner *rpctest.Harness,

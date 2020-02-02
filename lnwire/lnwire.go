@@ -15,7 +15,7 @@ import (
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
 	"github.com/go-errors/errors"
-	"github.com/lightningnetwork/lnd/tor"
+	"github.com/ltcsuite/lnd/tor"
 )
 
 // MaxSliceLength is the maximum allowed length for any opaque byte slices in

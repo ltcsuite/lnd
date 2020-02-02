@@ -9,7 +9,7 @@ import (
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/rpcclient"
 	"github.com/ltcsuite/neutrino"
-	"github.com/lightningnetwork/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/chainntnfs"
 )
 
 // UnsafeStart starts the notifier with a specified best height and optional

@@ -1,31 +1,33 @@
 ## Lightning Network Daemon
 
 [![Build Status](https://img.shields.io/travis/lightningnetwork/lnd.svg)](https://travis-ci.org/lightningnetwork/lnd)
-[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/lightningnetwork/lnd/blob/master/LICENSE)
+[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ltcsuite/lnd/blob/master/LICENSE)
 [![Irc](https://img.shields.io/badge/chat-on%20freenode-brightgreen.svg)](https://webchat.freenode.net/?channels=lnd)
-[![Godoc](https://godoc.org/github.com/lightningnetwork/lnd?status.svg)](https://godoc.org/github.com/lightningnetwork/lnd)
+[![Godoc](https://godoc.org/github.com/ltcsuite/lnd?status.svg)](https://godoc.org/github.com/ltcsuite/lnd)
 
 <img src="logo.png">
 
 The Lightning Network Daemon (`lnd`) - is a complete implementation of a
-[Lightning Network](https://lightning.network) node.  `lnd` has several pluggable back-end
+[Lightning Network](https://lightning.network) node. `lnd` has several pluggable back-end
 chain services including [`btcd`](https://github.com/btcsuite/btcd) (a
 full-node), [`bitcoind`](https://github.com/bitcoin/bitcoin), and
 [`neutrino`](https://github.com/lightninglabs/neutrino) (a new experimental light client). The project's codebase uses the
 [btcsuite](https://github.com/btcsuite/) set of Bitcoin libraries, and also
 exports a large set of isolated re-usable Lightning Network related libraries
-within it.  In the current state `lnd` is capable of:
-* Creating channels.
-* Closing channels.
-* Completely managing all channel states (including the exceptional ones!).
-* Maintaining a fully authenticated+validated channel graph.
-* Performing path finding within the network, passively forwarding incoming payments.
-* Sending outgoing [onion-encrypted payments](https://github.com/lightningnetwork/lightning-onion)
-through the network.
-* Updating advertised fee schedules.
-* Automatic channel management ([`autopilot`](https://github.com/lightningnetwork/lnd/tree/master/autopilot)).
+within it. In the current state `lnd` is capable of:
+
+- Creating channels.
+- Closing channels.
+- Completely managing all channel states (including the exceptional ones!).
+- Maintaining a fully authenticated+validated channel graph.
+- Performing path finding within the network, passively forwarding incoming payments.
+- Sending outgoing [onion-encrypted payments](https://github.com/ltcsuite/lightning-onion)
+  through the network.
+- Updating advertised fee schedules.
+- Automatic channel management ([`autopilot`](https://github.com/ltcsuite/lnd/tree/master/autopilot)).
 
 ## Lightning Network Specification Compliance
+
 `lnd` _fully_ conforms to the [Lightning Network specification
 (BOLTs)](https://github.com/lightningnetwork/lightning-rfc). BOLT stands for:
 Basis of Lightning Technology. The specifications are currently being drafted
@@ -34,16 +36,16 @@ developers of `lnd`. The set of specification documents as well as our
 implementation of the specification are still a work-in-progress. With that
 said, the current status of `lnd`'s BOLT compliance is:
 
-  - [X] BOLT 1: Base Protocol
-  - [X] BOLT 2: Peer Protocol for Channel Management
-  - [X] BOLT 3: Bitcoin Transaction and Script Formats
-  - [X] BOLT 4: Onion Routing Protocol
-  - [X] BOLT 5: Recommendations for On-chain Transaction Handling
-  - [X] BOLT 7: P2P Node and Channel Discovery
-  - [X] BOLT 8: Encrypted and Authenticated Transport
-  - [X] BOLT 9: Assigned Feature Flags
-  - [X] BOLT 10: DNS Bootstrap and Assisted Node Location
-  - [X] BOLT 11: Invoice Protocol for Lightning Payments
+- [x] BOLT 1: Base Protocol
+- [x] BOLT 2: Peer Protocol for Channel Management
+- [x] BOLT 3: Bitcoin Transaction and Script Formats
+- [x] BOLT 4: Onion Routing Protocol
+- [x] BOLT 5: Recommendations for On-chain Transaction Handling
+- [x] BOLT 7: P2P Node and Channel Discovery
+- [x] BOLT 8: Encrypted and Authenticated Transport
+- [x] BOLT 9: Assigned Feature Flags
+- [x] BOLT 10: DNS Bootstrap and Assisted Node Location
+- [x] BOLT 11: Invoice Protocol for Lightning Payments
 
 ## Developer Resources
 
@@ -63,22 +65,25 @@ Finally, we also have an active
 discuss various aspects of `lnd` and also Lightning in general.
 
 ## Installation
-  In order to build from source, please see [the installation
-  instructions](docs/INSTALL.md).
+
+In order to build from source, please see [the installation
+instructions](docs/INSTALL.md).
 
 ## Docker
-  To run lnd from Docker, please see the main [Docker instructions](docs/DOCKER.md)
-  
+
+To run lnd from Docker, please see the main [Docker instructions](docs/DOCKER.md)
+
 ## IRC
-  * irc.freenode.net
-  * channel #lnd
-  * [webchat](https://webchat.freenode.net/?channels=lnd)
+
+- irc.freenode.net
+- channel #lnd
+- [webchat](https://webchat.freenode.net/?channels=lnd)
 
 ## Security
 
 The developers of `lnd` take security _very_ seriously. The disclosure of
 security vulnerabilities helps us secure the health of `lnd`, privacy of our
-users, and also the health of the Lightning Network as a whole.  If you find
+users, and also the health of the Lightning Network as a whole. If you find
 any issues regarding security or privacy, please disclose the information
 responsibly by sending an email to security at lightning dot engineering,
 preferably [encrypted using our designated PGP key
@@ -86,5 +91,6 @@ preferably [encrypted using our designated PGP key
 [here](https://gist.githubusercontent.com/Roasbeef/6fb5b52886183239e4aa558f83d085d3/raw/5ef96c426e3cf20a2443dc9d3c7d6877576da9ca/security@lightning.engineering).
 
 ## Further reading
-* [Step-by-step send payment guide with docker](https://github.com/lightningnetwork/lnd/tree/master/docker)
-* [Contribution guide](https://github.com/lightningnetwork/lnd/blob/master/docs/code_contribution_guidelines.md)
+
+- [Step-by-step send payment guide with docker](https://github.com/ltcsuite/lnd/tree/master/docker)
+- [Contribution guide](https://github.com/ltcsuite/lnd/blob/master/docs/code_contribution_guidelines.md)

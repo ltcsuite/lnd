@@ -9,7 +9,7 @@ import (
 
 	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/coreos/bbolt"
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 const (

@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
-	"github.com/lightningnetwork/lnd/lnwallet"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
 // TestDetermineFeePerKw tests that given a fee preference, the
@@ -170,7 +170,7 @@ var sweepScript = []byte{
 
 var deliveryAddr = func() ltcutil.Address {
 	_, addrs, _, err := txscript.ExtractPkScriptAddrs(
-		sweepScript, &chaincfg.TestNet3Params,
+		sweepScript, &chaincfg.TestNet4Params,
 	)
 	if err != nil {
 		panic(err)

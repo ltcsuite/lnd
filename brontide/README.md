@@ -2,8 +2,8 @@ brontide
 ==========
 
 [![Build Status](http://img.shields.io/travis/lightningnetwork/lnd.svg)](https://travis-ci.org/lightningnetwork/lnd) 
-[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/lightningnetwork/lnd/blob/master/LICENSE)
-[![GoDoc](https://img.shields.io/badge/godoc-reference-blue.svg)](http://godoc.org/github.com/lightningnetwork/lnd/brontide)
+[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ltcsuite/lnd/blob/master/LICENSE)
+[![GoDoc](https://img.shields.io/badge/godoc-reference-blue.svg)](http://godoc.org/github.com/ltcsuite/lnd/brontide)
 
 The brontide package implements a secure crypto messaging protocol based off of
 the [Noise Protocol Framework](http://noiseprotocol.org/noise.html). The
@@ -24,5 +24,5 @@ between network enabled programs.
 ## Installation and Updating
 
 ```bash
-$ go get -u github.com/lightningnetwork/lnd/brontide
+$ go get -u github.com/ltcsuite/lnd/brontide
 ```

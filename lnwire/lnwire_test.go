@@ -19,7 +19,7 @@ import (
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/lightningnetwork/lnd/tor"
+	"github.com/ltcsuite/lnd/tor"
 )
 
 var (

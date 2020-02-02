@@ -1,7 +1,7 @@
 package buffer
 
 import (
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 // ReadSize represents the size of the maximum message that can be read off the

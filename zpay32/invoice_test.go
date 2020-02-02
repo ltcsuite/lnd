@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
-	"github.com/lightningnetwork/lnd/lnwire"
 
 	litecoinCfg "github.com/ltcsuite/ltcd/chaincfg"
 )
@@ -63,7 +63,7 @@ var (
 	testExpiry0  = time.Duration(0) * time.Second
 	testExpiry60 = time.Duration(60) * time.Second
 
-	testAddrTestnet, _       = ltcutil.DecodeAddress("mk2QpYatsKicvFVuTAQLBryyccRXMUaGHP", &chaincfg.TestNet3Params)
+	testAddrTestnet, _       = ltcutil.DecodeAddress("mk2QpYatsKicvFVuTAQLBryyccRXMUaGHP", &chaincfg.TestNet4Params)
 	testRustyAddr, _         = ltcutil.DecodeAddress("1RustyRX2oai4EYYDpQGWvEL62BBGqN9T", &chaincfg.MainNetParams)
 	testAddrMainnetP2SH, _   = ltcutil.DecodeAddress("3EktnHQD7RiAE6uzMj2ZifT9YgRrkSgzQX", &chaincfg.MainNetParams)
 	testAddrMainnetP2WPKH, _ = ltcutil.DecodeAddress("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4", &chaincfg.MainNetParams)
@@ -127,7 +127,7 @@ func init() {
 	// Initialize litecoin testnet and mainnet params by applying key fields
 	// to copies of bitcoin params.
 	// TODO(sangaman): create an interface for chaincfg.params
-	ltcTestNetParams = chaincfg.TestNet3Params
+	ltcTestNetParams = chaincfg.TestNet4Params
 	ltcTestNetParams.Net = wire.BitcoinNet(litecoinCfg.TestNet4Params.Net)
 	ltcTestNetParams.Bech32HRPSegwit = litecoinCfg.TestNet4Params.Bech32HRPSegwit
 	ltcMainNetParams = chaincfg.MainNetParams
@@ -416,7 +416,7 @@ func TestDecodeEncode(t *testing.T) {
 			valid:          true,
 			decodedInvoice: func() *Invoice {
 				return &Invoice{
-					Net:             &chaincfg.TestNet3Params,
+					Net:             &chaincfg.TestNet4Params,
 					MilliSat:        &testMillisat20mBTC,
 					Timestamp:       time.Unix(1496314658, 0),
 					PaymentHash:     &testPaymentHash,
@@ -648,7 +648,7 @@ func TestDecodeEncode(t *testing.T) {
 			valid:          false,
 			decodedInvoice: func() *Invoice {
 				return &Invoice{
-					Net:         &chaincfg.TestNet3Params,
+					Net:         &chaincfg.TestNet4Params,
 					MilliSat:    &testMillisat24BTC,
 					Timestamp:   time.Unix(1503429093, 0),
 					PaymentHash: &testPaymentHash,

@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"github.com/ltcsuite/ltcutil"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/lnwallet"
 )
 
 // TestTxInputSet tests adding various sized inputs to the set.

@@ -5,7 +5,7 @@ import "signrpc/signer.proto";
 
 package walletrpc;
 
-option go_package = "github.com/lightningnetwork/lnd/lnrpc/walletrpc";
+option go_package = "github.com/ltcsuite/lnd/lnrpc/walletrpc";
 
 message KeyReq {
     /**

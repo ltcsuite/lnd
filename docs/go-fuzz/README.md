@@ -50,7 +50,7 @@ $ mv docs/go-fuzz/wirefuzz.go lnwire/<folder name here>
 * Change the package name in `wirefuzz.go` from `wirefuzz` to `<folder name here>`.
 * Build the test program - this produces a `<folder name here>-fuzz.zip` (archive) file.
 ```
-$ go-fuzz-build github.com/lightningnetwork/lnd/lnwire/<folder name here>
+$ go-fuzz-build github.com/ltcsuite/lnd/lnwire/<folder name here>
 ```
 * Now, run `go-fuzz`!!!
 ```
@@ -67,7 +67,7 @@ resulting in a crash. The inputs, and their outputs are logged in:
 `<folder name here>/crashers`. `go-fuzz` also creates a `suppressions` directory
 of stacktraces to ignore so that it doesn't create duplicate stacktraces.
 Cover is a number representing coverage of the program being fuzzed. When I ran
-this earlier, `go-fuzz` found two bugs ([#310](https://github.com/lightningnetwork/lnd/pull/310) and [#312](https://github.com/lightningnetwork/lnd/pull/312)) within minutes!
+this earlier, `go-fuzz` found two bugs ([#310](https://github.com/ltcsuite/lnd/pull/310) and [#312](https://github.com/ltcsuite/lnd/pull/312)) within minutes!
 
 ### Corpus Notes ###
 You may wonder how I made the corpus that you unzipped in the previous step.

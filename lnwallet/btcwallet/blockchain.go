@@ -12,7 +12,7 @@ import (
 	"github.com/ltcsuite/ltcwallet/chain"
 	"github.com/ltcsuite/neutrino"
 	"github.com/ltcsuite/neutrino/headerfs"
-	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwallet"
 )
 
 var (

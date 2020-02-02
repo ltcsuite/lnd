@@ -3,7 +3,7 @@ package wtdb
 import (
 	"io"
 
-	"github.com/lightningnetwork/lnd/watchtower/blob"
+	"github.com/ltcsuite/lnd/watchtower/blob"
 )
 
 // SessionStateUpdate holds a state update sent by a client along with its

@@ -7,7 +7,7 @@ import (
 	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
-	"github.com/lightningnetwork/lnd/input"
+	"github.com/ltcsuite/lnd/input"
 )
 
 const (

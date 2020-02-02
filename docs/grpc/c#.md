@@ -26,7 +26,7 @@ dotnet new console
 dotnet add package Grpc.Tools --version 1.17.0
 ```
 
-* Create the necessary folder structure, and then fetch the lnd [rpc.proto](https://github.com/lightningnetwork/lnd/blob/master/lnrpc/rpc.proto) file:
+* Create the necessary folder structure, and then fetch the lnd [rpc.proto](https://github.com/ltcsuite/lnd/blob/master/lnrpc/rpc.proto) file:
 ```bash
 mkdir Grpc
 curl -o Grpc/rpc.proto -s https://raw.githubusercontent.com/lightningnetwork/lnd/master/lnrpc/rpc.proto

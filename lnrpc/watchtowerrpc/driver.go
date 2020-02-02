@@ -5,7 +5,7 @@ package watchtowerrpc
 import (
 	"fmt"
 
-	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/lnrpc"
 )
 
 // createNewSubServer is a helper method that will create the new sub server

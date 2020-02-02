@@ -24,7 +24,7 @@ else
     fi
 
     # Build lnd to extract version.
-    go build github.com/lightningnetwork/lnd/cmd/lnd
+    go build github.com/ltcsuite/lnd/cmd/lnd
 
     # Extract version command output.
     LND_VERSION_OUTPUT=`./lnd --version`
@@ -109,7 +109,7 @@ SYS=${LNDBUILDSYS:-"
 
 # Use the first element of $GOPATH in the case where GOPATH is a list
 # (something that is totally allowed).
-PKG="github.com/lightningnetwork/lnd"
+PKG="github.com/ltcsuite/lnd"
 COMMIT=$(git describe --abbrev=40 --dirty)
 COMMITFLAGS="-X $PKG/build.Commit=$COMMIT"
 
@@ -130,8 +130,8 @@ for i in $SYS; do
     cd $PACKAGE-$i-$TAG
 
     echo "Building:" $OS $ARCH $ARM
-    env CGO_ENABLED=0 GOOS=$OS GOARCH=$ARCH GOARM=$ARM go build -v -trimpath -ldflags="-s -w -buildid= $COMMITFLAGS" -tags="autopilotrpc signrpc walletrpc chainrpc invoicesrpc routerrpc watchtowerrpc" github.com/lightningnetwork/lnd/cmd/lnd
-    env CGO_ENABLED=0 GOOS=$OS GOARCH=$ARCH GOARM=$ARM go build -v -trimpath -ldflags="-s -w -buildid= $COMMITFLAGS" -tags="autopilotrpc invoicesrpc walletrpc routerrpc watchtowerrpc" github.com/lightningnetwork/lnd/cmd/lncli
+    env CGO_ENABLED=0 GOOS=$OS GOARCH=$ARCH GOARM=$ARM go build -v -trimpath -ldflags="-s -w -buildid= $COMMITFLAGS" -tags="autopilotrpc signrpc walletrpc chainrpc invoicesrpc routerrpc watchtowerrpc" github.com/ltcsuite/lnd/cmd/lnd
+    env CGO_ENABLED=0 GOOS=$OS GOARCH=$ARCH GOARM=$ARM go build -v -trimpath -ldflags="-s -w -buildid= $COMMITFLAGS" -tags="autopilotrpc invoicesrpc walletrpc routerrpc watchtowerrpc" github.com/ltcsuite/lnd/cmd/lncli
     cd ..
 
     if [[ $OS = "windows" ]]; then

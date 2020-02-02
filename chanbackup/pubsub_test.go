@@ -8,7 +8,7 @@ import (
 
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/ltcsuite/lnd/keychain"
 )
 
 type mockSwapper struct {

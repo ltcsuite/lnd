@@ -1,7 +1,7 @@
 package invoices
 
 import (
-	"github.com/lightningnetwork/lnd/record"
+	"github.com/ltcsuite/lnd/record"
 )
 
 // Payload abstracts access to any additional fields provided in the final hop's

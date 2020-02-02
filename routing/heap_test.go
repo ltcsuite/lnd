@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/ltcsuite/lnd/routing/route"
 )
 
 // TestHeapOrdering ensures that the items inserted into the heap are properly

@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ltcsuite/fastsha256"
+	"github.com/btcsuite/fastsha256"
 	"github.com/coreos/bbolt"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/ltcsuite/lnd/lntypes"
 )
 
 func initDB() (*DB, error) {

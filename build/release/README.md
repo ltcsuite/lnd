@@ -17,7 +17,7 @@ release binaries. However, on Windows, the only way to build the release
 binaries at the moment is by using the Windows Subsystem Linux. One can build
 the release binaries following these steps:
 
-1. `git clone https://github.com/lightningnetwork/lnd.git`
+1. `git clone https://github.com/ltcsuite/lnd.git`
 2. `cd lnd`
 3. `./build/release/release.sh <TAG> # <TAG> is the name of the next
    release/tag`
@@ -60,7 +60,7 @@ and `go` (matching the same version used in the release):
 5. Ensure `go` is installed, matching the same version as noted in the release
    notes. 
 6. Obtain a copy of `lnd`'s source code with `git clone
-   https://github.com/lightningnetwork/lnd` and checkout the source code of the
+   https://github.com/ltcsuite/lnd` and checkout the source code of the
    release with `git checkout <TAG>`.
 7. Proceed to verify the tag with `git verify-tag <TAG>` and compile the
    binaries from source for the intended operating system and architecture with

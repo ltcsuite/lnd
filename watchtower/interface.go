@@ -3,8 +3,8 @@ package watchtower
 import (
 	"net"
 
-	"github.com/lightningnetwork/lnd/watchtower/lookout"
-	"github.com/lightningnetwork/lnd/watchtower/wtserver"
+	"github.com/ltcsuite/lnd/watchtower/lookout"
+	"github.com/ltcsuite/lnd/watchtower/wtserver"
 )
 
 // DB abstracts the persistent functionality required to run the watchtower

@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ltcsuite/lnd/aezeed"
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lnrpc"
+	ltcwallet "github.com/ltcsuite/lnd/lnwallet/btcwallet"
+	"github.com/ltcsuite/lnd/walletunlocker"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcwallet/wallet"
-	"github.com/lightningnetwork/lnd/aezeed"
-	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lnwallet/ltcwallet"
-	"github.com/lightningnetwork/lnd/walletunlocker"
 )
 
 var (

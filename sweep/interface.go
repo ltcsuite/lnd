@@ -2,7 +2,7 @@ package sweep
 
 import (
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwallet"
 )
 
 // Wallet contains all wallet related functionality required by sweeper.

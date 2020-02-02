@@ -3,7 +3,7 @@ package lnwallet
 import (
 	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/ltcwallet/wallet/txrules"
-	"github.com/lightningnetwork/lnd/input"
+	"github.com/ltcsuite/lnd/input"
 )
 
 // DefaultDustLimit is used to calculate the dust HTLC amount which will be

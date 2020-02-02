@@ -7,7 +7,7 @@ import (
 
 	"google.golang.org/grpc"
 
-	"github.com/lightningnetwork/lnd/lncfg"
+	"github.com/ltcsuite/lnd/lncfg"
 )
 
 // GetPromInterceptors returns the set of interceptors for Prometheus

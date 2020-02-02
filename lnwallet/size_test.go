@@ -9,7 +9,7 @@ import (
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
 
-	"github.com/lightningnetwork/lnd/input"
+	"github.com/ltcsuite/lnd/input"
 )
 
 // TestTxWeightEstimator tests that transaction weight estimates are calculated

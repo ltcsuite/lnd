@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/tlv"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/tlv"
 )
 
 // MPPOnionType is the type used in the onion to reference the MPP fields:

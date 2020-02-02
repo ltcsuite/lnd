@@ -5,9 +5,9 @@ import (
 	"sync"
 
 	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/lightningnetwork/lnd/lnwallet"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/routing"
+	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/routing"
 )
 
 // ManagerCfg houses a set of values and methods that is passed to the Manager

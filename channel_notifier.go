@@ -6,8 +6,8 @@ import (
 
 	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/lightningnetwork/lnd/chanbackup"
-	"github.com/lightningnetwork/lnd/channelnotifier"
+	"github.com/ltcsuite/lnd/chanbackup"
+	"github.com/ltcsuite/lnd/channelnotifier"
 )
 
 // addrSource is an interface that allow us to get the addresses for a target

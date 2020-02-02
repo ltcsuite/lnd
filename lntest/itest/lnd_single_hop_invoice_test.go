@@ -9,11 +9,11 @@ import (
 
 	"github.com/ltcsuite/ltcutil"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lntest"
-	"github.com/lightningnetwork/lnd/lntest/wait"
-	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/record"
+	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/lntest"
+	"github.com/ltcsuite/lnd/lntest/wait"
+	"github.com/ltcsuite/lnd/lntypes"
+	"github.com/ltcsuite/lnd/record"
 )
 
 func testSingleHopInvoice(net *lntest.NetworkHarness, t *harnessTest) {

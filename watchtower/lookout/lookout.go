@@ -5,8 +5,8 @@ import (
 	"sync/atomic"
 
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/lightningnetwork/lnd/chainntnfs"
-	"github.com/lightningnetwork/lnd/watchtower/blob"
+	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/watchtower/blob"
 )
 
 // Config houses the Lookout's required resources to properly fulfill it's duty,

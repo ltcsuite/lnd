@@ -5,7 +5,7 @@ import (
 
 	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/ltcutil"
-	"github.com/lightningnetwork/lnd/autopilot"
+	"github.com/ltcsuite/lnd/autopilot"
 )
 
 // randKey returns a random public key.

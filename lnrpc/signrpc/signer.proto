@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package signrpc;
 
-option go_package = "github.com/lightningnetwork/lnd/lnrpc/signrpc";
+option go_package = "github.com/ltcsuite/lnd/lnrpc/signrpc";
 
 message KeyLocator {
     /// The family of key being identified.

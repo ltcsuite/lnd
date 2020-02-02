@@ -3,7 +3,7 @@ package chainview
 import (
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb"
 )
 
 // FilteredChainView represents a subscription to a certain subset of the

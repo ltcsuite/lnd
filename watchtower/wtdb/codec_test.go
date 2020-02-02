@@ -11,8 +11,8 @@ import (
 	"testing/quick"
 
 	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/lightningnetwork/lnd/tor"
-	"github.com/lightningnetwork/lnd/watchtower/wtdb"
+	"github.com/ltcsuite/lnd/tor"
+	"github.com/ltcsuite/lnd/watchtower/wtdb"
 )
 
 func randPubKey() (*btcec.PublicKey, error) {

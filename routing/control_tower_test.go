@@ -12,10 +12,10 @@ import (
 
 	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/routing/route"
 
-	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/ltcsuite/lnd/lntypes"
 )
 
 var (

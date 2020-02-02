@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/ltcsuite/ltcwallet/chain"
-	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwallet"
 )
 
 const (

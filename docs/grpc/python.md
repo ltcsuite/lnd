@@ -28,7 +28,7 @@ $ source lnd/bin/activate
 (lnd)$ git clone https://github.com/googleapis/googleapis.git
 ```
 * Copy the lnd rpc.proto file (you'll find this at
-  [lnrpc/rpc.proto](https://github.com/lightningnetwork/lnd/blob/master/lnrpc/rpc.proto))
+  [lnrpc/rpc.proto](https://github.com/ltcsuite/lnd/blob/master/lnrpc/rpc.proto))
   or just download it
 ```
 (lnd)$ curl -o rpc.proto -s https://raw.githubusercontent.com/lightningnetwork/lnd/master/lnrpc/rpc.proto

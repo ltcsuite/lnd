@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/ltcsuite/lnd/routing/route"
 )
 
 type eventType int

@@ -7,7 +7,7 @@ import (
 
 	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb"
 )
 
 type mockChannelSource struct {

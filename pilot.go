@@ -8,9 +8,9 @@ import (
 	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
-	"github.com/lightningnetwork/lnd/autopilot"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/tor"
+	"github.com/ltcsuite/lnd/autopilot"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/tor"
 )
 
 // validateAtplConfig is a helper method that makes sure the passed

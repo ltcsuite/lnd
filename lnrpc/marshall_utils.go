@@ -4,7 +4,7 @@ import (
 	"errors"
 
 	"github.com/ltcsuite/ltcutil"
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 var (

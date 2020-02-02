@@ -2,7 +2,7 @@ package wtdb
 
 import (
 	"github.com/coreos/bbolt"
-	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb"
 )
 
 // migration is a function which takes a prior outdated version of the database

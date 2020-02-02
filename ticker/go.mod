@@ -1,3 +1,3 @@
-module github.com/lightningnetwork/lnd/ticker
+module github.com/ltcsuite/lnd/ticker
 
 go 1.12

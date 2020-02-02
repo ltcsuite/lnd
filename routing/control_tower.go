@@ -4,8 +4,8 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/lntypes"
 )
 
 // ControlTower tracks all outgoing payments made, whose primary purpose is to

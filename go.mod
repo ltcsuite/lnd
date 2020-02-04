@@ -26,13 +26,12 @@ require (
 	github.com/juju/utils v0.0.0-20180820210520-bf9cc5bdd62d // indirect
 	github.com/juju/version v0.0.0-20180108022336-b64dbd566305 // indirect
 	github.com/kkdai/bstream v1.0.0
-	github.com/lightninglabs/falafel v0.0.0-20200121195531-41fd7b05eb59 // indirect
 	github.com/lightninglabs/protobuf-hex-display v1.3.3-0.20191212020323-b444784ce75d
 	github.com/lightningnetwork/lnd/queue v1.0.2 // indirect
-	github.com/ltcsuite/lightning-onion v0.0.0-00010101000000-000000000000
+	github.com/ltcsuite/lightning-onion v1.0.2
 	github.com/ltcsuite/lnd/cert v0.0.0-00010101000000-000000000000
-	github.com/ltcsuite/lnd/queue v1.0.1
-	github.com/ltcsuite/lnd/ticker v1.0.0
+	github.com/ltcsuite/lnd/queue v1.0.3
+	github.com/ltcsuite/lnd/ticker v1.0.1
 	github.com/ltcsuite/ltcd v0.20.1-beta
 	github.com/ltcsuite/ltcutil v0.0.0-20191227053721-6bec450ea6ad
 	github.com/ltcsuite/ltcwallet v0.11.1-beta
@@ -54,32 +53,11 @@ require (
 	gopkg.in/macaroon-bakery.v2 v2.0.1
 	gopkg.in/macaroon.v2 v2.0.0
 	gopkg.in/mgo.v2 v2.0.0-20190816093944-a6b53ec6cb22 // indirect
-	gopkg.in/resty.v1 v1.12.0 // indirect
 	gopkg.in/yaml.v2 v2.2.8 // indirect
 )
 
-replace github.com/ltcsuite/lnd/ticker => ./ticker
-
-replace github.com/ltcsuite/lnd/queue => ./queue
-
 replace github.com/ltcsuite/lnd/cert => ./cert
 
-replace github.com/ltcsuite/lightning-onion => ../lightning-onion
-
 replace git.schwanenlied.me/yawning/bsaes.git => github.com/Yawning/bsaes v0.0.0-20180720073208-c0276d75487e
-
-replace github.com/ltcsuite/ltcwallet => ../../ltcsuite/ltcwallet
-
-replace github.com/ltcsuite/ltcwallet/walletdb => ../../ltcsuite/ltcwallet/walletdb
-
-replace github.com/ltcsuite/ltcwallet/wtxmgr => ../../ltcsuite/ltcwallet/wtxmgr
-
-replace github.com/ltcsuite/ltcwallet/wallet/txauthor => ../../ltcsuite/ltcwallet/wallet/txauthor
-
-replace github.com/ltcsuite/ltcwallet/wallet/txrules => ../../ltcsuite/ltcwallet/wallet/txrules
-
-replace github.com/ltcsuite/ltcwallet/wallet/txsizes => ../../ltcsuite/ltcwallet/wallet/txsizes
-
-replace github.com/ltcsuite/neutrino => ../../ltcsuite/neutrino
 
 go 1.12

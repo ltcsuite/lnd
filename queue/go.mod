@@ -1,7 +1,5 @@
 module github.com/ltcsuite/lnd/queue
 
-require github.com/ltcsuite/lnd/ticker v1.0.0
-
-replace github.com/ltcsuite/lnd/ticker v1.0.0 => ../ticker
+require github.com/ltcsuite/lnd/ticker v1.0.1
 
 go 1.12

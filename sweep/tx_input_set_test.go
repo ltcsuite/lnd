@@ -3,9 +3,9 @@ package sweep
 import (
 	"testing"
 
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/lnwallet"
 )
 
 // TestTxInputSet tests adding various sized inputs to the set.
@@ -98,7 +98,7 @@ func TestTxInputSetFromWallet(t *testing.T) {
 }
 
 // createP2WKHInput returns a P2WKH test input with the specified amount.
-func createP2WKHInput(amt btcutil.Amount) input.Input {
+func createP2WKHInput(amt ltcutil.Amount) input.Input {
 	input := createTestInput(int64(amt), input.WitnessKeyHash)
 	return &input
 }

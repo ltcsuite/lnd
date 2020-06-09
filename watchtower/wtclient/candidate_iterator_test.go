@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/lightningnetwork/lnd/watchtower/wtdb"
+	"github.com/ltcsuite/lnd/watchtower/wtdb"
 )
 
 func init() {

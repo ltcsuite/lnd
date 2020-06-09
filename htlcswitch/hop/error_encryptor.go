@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/btcsuite/btcd/btcec"
-	sphinx "github.com/lightningnetwork/lightning-onion"
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/btcec"
+	sphinx "github.com/ltcsuite/lightning-onion"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 // EncrypterType establishes an enum used in serialization to indicate how to

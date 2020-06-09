@@ -1,6 +1,6 @@
-// Copyright (c) 2013-2017 The btcsuite developers
+// Copyright (c) 2013-2017 The ltcsuite developers
 // Copyright (c) 2015-2016 The Decred developers
-// Heavily inspired by https://github.com/btcsuite/btcd/blob/master/version.go
+// Heavily inspired by https://github.com/ltcsuite/ltcd/blob/master/version.go
 // Copyright (C) 2015-2017 The Lightning Network Developers
 
 package build

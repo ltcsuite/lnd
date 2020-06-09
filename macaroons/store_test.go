@@ -8,10 +8,10 @@ import (
 	"path"
 	"testing"
 
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
-	"github.com/lightningnetwork/lnd/macaroons"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/macaroons"
 
-	"github.com/btcsuite/btcwallet/snacl"
+	"github.com/ltcsuite/ltcwallet/snacl"
 )
 
 func TestStore(t *testing.T) {

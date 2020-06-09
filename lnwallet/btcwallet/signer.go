@@ -1,20 +1,20 @@
-package btcwallet
+package ltcwallet
 
 import (
 	"fmt"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcwallet/waddrmgr"
-	base "github.com/btcsuite/btcwallet/wallet"
-	"github.com/btcsuite/btcwallet/walletdb"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcwallet/waddrmgr"
+	base "github.com/ltcsuite/ltcwallet/wallet"
+	"github.com/ltcsuite/ltcwallet/walletdb"
 	"github.com/go-errors/errors"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lnwallet"
 )
 
 // FetchInputInfo queries for the WalletController's knowledge of the passed
@@ -69,7 +69,7 @@ func (b *BtcWallet) FetchInputInfo(prevOut *wire.OutPoint) (*lnwallet.Utxo, erro
 
 	return &lnwallet.Utxo{
 		AddressType: addressType,
-		Value: btcutil.Amount(
+		Value: ltcutil.Amount(
 			txDetail.TxRecord.MsgTx.TxOut[prevOut.Index].Value,
 		),
 		PkScript:      pkScript,
@@ -175,8 +175,8 @@ func (b *BtcWallet) fetchPrivKey(keyDesc *keychain.KeyDescriptor) (*btcec.Privat
 		return b.deriveKeyByLocator(keyDesc.KeyLocator)
 	}
 
-	hash160 := btcutil.Hash160(keyDesc.PubKey.SerializeCompressed())
-	addr, err := btcutil.NewAddressWitnessPubKeyHash(hash160, b.netParams)
+	hash160 := ltcutil.Hash160(keyDesc.PubKey.SerializeCompressed())
+	addr, err := ltcutil.NewAddressWitnessPubKeyHash(hash160, b.netParams)
 	if err != nil {
 		return nil, err
 	}
@@ -294,13 +294,13 @@ func (b *BtcWallet) ComputeInputScript(tx *wire.MsgTx,
 	// we'll need to attach a sigScript in addition to witness data.
 	case pka.AddrType() == waddrmgr.NestedWitnessPubKey:
 		pubKey := privKey.PubKey()
-		pubKeyHash := btcutil.Hash160(pubKey.SerializeCompressed())
+		pubKeyHash := ltcutil.Hash160(pubKey.SerializeCompressed())
 
 		// Next, we'll generate a valid sigScript that will allow us to
 		// spend the p2sh output. The sigScript will contain only a
 		// single push of the p2wkh witness program corresponding to
 		// the matching public key of this address.
-		p2wkhAddr, err := btcutil.NewAddressWitnessPubKeyHash(
+		p2wkhAddr, err := ltcutil.NewAddressWitnessPubKeyHash(
 			pubKeyHash, b.netParams,
 		)
 		if err != nil {

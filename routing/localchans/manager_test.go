@@ -3,16 +3,16 @@ package localchans
 import (
 	"testing"
 
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/lnd/lnwire"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcutil"
 
-	"github.com/btcsuite/btcd/wire"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/discovery"
-	"github.com/lightningnetwork/lnd/htlcswitch"
-	"github.com/lightningnetwork/lnd/routing"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/discovery"
+	"github.com/ltcsuite/lnd/htlcswitch"
+	"github.com/ltcsuite/lnd/routing"
 )
 
 // TestManager tests that the local channel manager properly propagates fee
@@ -20,7 +20,7 @@ import (
 func TestManager(t *testing.T) {
 	var (
 		chanPoint        = wire.OutPoint{Hash: chainhash.Hash{1}, Index: 2}
-		chanCap          = btcutil.Amount(1000)
+		chanCap          = ltcutil.Amount(1000)
 		maxPendingAmount = lnwire.MilliSatoshi(999000)
 		minHTLC          = lnwire.MilliSatoshi(2000)
 	)

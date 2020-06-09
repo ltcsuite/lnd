@@ -1,4 +1,4 @@
-package btcdnotify
+package ltcdnotify
 
 import (
 	"errors"
@@ -7,21 +7,21 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/btcsuite/btcd/btcjson"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/rpcclient"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/chainntnfs"
-	"github.com/lightningnetwork/lnd/queue"
+	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/queue"
+	"github.com/ltcsuite/ltcd/btcjson"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/rpcclient"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 )
 
 const (
 	// notifierType uniquely identifies this concrete implementation of the
 	// ChainNotifier interface.
-	notifierType = "btcd"
+	notifierType = "ltcd"
 )
 
 // chainUpdate encapsulates an update to the current main chain. This struct is
@@ -36,18 +36,18 @@ type chainUpdate struct {
 	connect bool
 }
 
-// txUpdate encapsulates a transaction related notification sent from btcd to
+// txUpdate encapsulates a transaction related notification sent from ltcd to
 // the registered RPC client. This struct is used as an element within an
 // unbounded queue in order to avoid blocking the main rpc dispatch rule.
 type txUpdate struct {
-	tx      *btcutil.Tx
+	tx      *ltcutil.Tx
 	details *btcjson.BlockDetails
 }
 
 // TODO(roasbeef): generalize struct below:
 //  * move chans to config, allow outside callers to handle send conditions
 
-// BtcdNotifier implements the ChainNotifier interface using btcd's websockets
+// BtcdNotifier implements the ChainNotifier interface using ltcd's websockets
 // notifications. Multiple concurrent clients are supported. All notifications
 // are achieved via non-blocking sends on client channels.
 type BtcdNotifier struct {
@@ -89,7 +89,7 @@ type BtcdNotifier struct {
 // Ensure BtcdNotifier implements the ChainNotifier interface at compile time.
 var _ chainntnfs.ChainNotifier = (*BtcdNotifier)(nil)
 
-// New returns a new BtcdNotifier instance. This function assumes the btcd node
+// New returns a new BtcdNotifier instance. This function assumes the ltcd node
 // detailed in the passed configuration is already running, and willing to
 // accept new websockets clients.
 func New(config *rpcclient.ConnConfig, chainParams *chaincfg.Params,
@@ -119,7 +119,7 @@ func New(config *rpcclient.ConnConfig, chainParams *chaincfg.Params,
 		OnRedeemingTx:       notifier.onRedeemingTx,
 	}
 
-	// Disable connecting to btcd within the rpcclient.New method. We
+	// Disable connecting to ltcd within the rpcclient.New method. We
 	// defer establishing the connection to our .Start() method.
 	config.DisableConnectOnNew = true
 	config.DisableAutoReconnect = false
@@ -132,7 +132,7 @@ func New(config *rpcclient.ConnConfig, chainParams *chaincfg.Params,
 	return notifier, nil
 }
 
-// Start connects to the running btcd node over websockets, registers for block
+// Start connects to the running ltcd node over websockets, registers for block
 // notifications, and finally launches all related helper goroutines.
 func (b *BtcdNotifier) Start() error {
 	var startErr error
@@ -184,7 +184,7 @@ func (b *BtcdNotifier) startNotifier() error {
 	b.chainUpdates.Start()
 	b.txUpdates.Start()
 
-	// Connect to btcd, and register for notifications on connected, and
+	// Connect to ltcd, and register for notifications on connected, and
 	// disconnected blocks.
 	if err := b.chainConn.Connect(20); err != nil {
 		b.txUpdates.Stop()
@@ -252,7 +252,7 @@ func (b *BtcdNotifier) onBlockConnected(hash *chainhash.Hash, height int32, t ti
 type filteredBlock struct {
 	hash   chainhash.Hash
 	height uint32
-	txns   []*btcutil.Tx
+	txns   []*ltcutil.Tx
 
 	// connected is true if this update is a new block and false if it is a
 	// disconnected block.
@@ -275,7 +275,7 @@ func (b *BtcdNotifier) onBlockDisconnected(hash *chainhash.Hash, height int32, t
 }
 
 // onRedeemingTx implements on OnRedeemingTx callback for rpcclient.
-func (b *BtcdNotifier) onRedeemingTx(tx *btcutil.Tx, details *btcjson.BlockDetails) {
+func (b *BtcdNotifier) onRedeemingTx(tx *ltcutil.Tx, details *btcjson.BlockDetails) {
 	// Append this new transaction update to the end of the queue of new
 	// chain updates.
 	select {
@@ -622,7 +622,7 @@ func (b *BtcdNotifier) handleBlockConnected(epoch chainntnfs.BlockEpoch) error {
 	newBlock := &filteredBlock{
 		hash:    *epoch.Hash,
 		height:  uint32(epoch.Height),
-		txns:    btcutil.NewBlock(rawBlock).Transactions(),
+		txns:    ltcutil.NewBlock(rawBlock).Transactions(),
 		connect: true,
 	}
 

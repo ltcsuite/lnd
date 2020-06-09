@@ -3,7 +3,7 @@ package lnwire
 import (
 	"testing"
 
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcutil"
 )
 
 func TestMilliSatoshiConversion(t *testing.T) {
@@ -12,7 +12,7 @@ func TestMilliSatoshiConversion(t *testing.T) {
 	testCases := []struct {
 		mSatAmount MilliSatoshi
 
-		satAmount btcutil.Amount
+		satAmount ltcutil.Amount
 		btcAmount float64
 	}{
 		{

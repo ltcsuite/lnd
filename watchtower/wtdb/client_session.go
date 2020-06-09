@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/watchtower/blob"
-	"github.com/lightningnetwork/lnd/watchtower/wtpolicy"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/watchtower/blob"
+	"github.com/ltcsuite/lnd/watchtower/wtpolicy"
 )
 
 // CSessionStatus is a bit-field representing the possible statuses of

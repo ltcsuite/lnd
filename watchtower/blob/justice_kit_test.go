@@ -8,11 +8,11 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/watchtower/blob"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/watchtower/blob"
 )
 
 func makePubKey(i uint64) blob.PubKey {

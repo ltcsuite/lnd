@@ -5,9 +5,10 @@ package lnclipb
 
 import (
 	fmt "fmt"
-	proto "github.com/golang/protobuf/proto"
-	verrpc "github.com/lightningnetwork/lnd/lnrpc/verrpc"
 	math "math"
+
+	proto "github.com/golang/protobuf/proto"
+	verrpc "github.com/ltcsuite/lnd/lnrpc/verrpc"
 )
 
 // Reference imports to suppress errors if they are not otherwise used.

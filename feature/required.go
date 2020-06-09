@@ -3,7 +3,7 @@ package feature
 import (
 	"fmt"
 
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 // ErrUnknownRequired signals that a feature vector requires certain features

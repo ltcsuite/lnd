@@ -3,7 +3,7 @@ package feature
 import (
 	"fmt"
 
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 // Config houses any runtime modifications to the default set descriptors. For

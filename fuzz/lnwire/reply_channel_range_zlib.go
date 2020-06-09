@@ -7,7 +7,7 @@ import (
 	"compress/zlib"
 	"encoding/binary"
 
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 // Fuzz_reply_channel_range_zlib is used by go-fuzz.

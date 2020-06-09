@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
-	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/record"
+	"github.com/ltcsuite/lnd/lntypes"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/record"
 	"github.com/stretchr/testify/assert"
 )
 

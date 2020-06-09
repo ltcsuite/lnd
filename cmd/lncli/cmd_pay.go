@@ -17,11 +17,11 @@ import (
 	"github.com/jedib0t/go-pretty/table"
 	"github.com/jedib0t/go-pretty/text"
 	"github.com/lightninglabs/protobuf-hex-display/jsonpb"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
-	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/record"
-	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/lnrpc/routerrpc"
+	"github.com/ltcsuite/lnd/lntypes"
+	"github.com/ltcsuite/lnd/record"
+	"github.com/ltcsuite/lnd/routing/route"
 	"github.com/urfave/cli"
 )
 

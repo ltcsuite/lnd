@@ -10,16 +10,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/chainntnfs"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
-	"github.com/lightningnetwork/lnd/clock"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/lnwallet"
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/clock"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 )
 
 const (
@@ -1964,8 +1964,8 @@ func TestRemoteCloseInitiator(t *testing.T) {
 				ChannelCloseSummary: channeldb.ChannelCloseSummary{
 					ChanPoint:         channel.FundingOutpoint,
 					RemotePub:         channel.IdentityPub,
-					SettledBalance:    btcutil.Amount(500),
-					TimeLockedBalance: btcutil.Amount(10000),
+					SettledBalance:    ltcutil.Amount(500),
+					TimeLockedBalance: ltcutil.Amount(10000),
 					IsPending:         false,
 				},
 				HtlcResolutions: &lnwallet.HtlcResolutions{},

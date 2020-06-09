@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcwallet/wallet/txrules"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/lnwallet"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcwallet/wallet/txrules"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 )
 
 // addConstraints defines the constraints to apply when adding an input.
@@ -38,10 +38,10 @@ type txInputSet struct {
 	weightEstimate input.TxWeightEstimator
 
 	// inputTotal is the total value of all inputs.
-	inputTotal btcutil.Amount
+	inputTotal ltcutil.Amount
 
 	// outputValue is the value of the tx output.
-	outputValue btcutil.Amount
+	outputValue ltcutil.Amount
 
 	// feePerKW is the fee rate used to calculate the tx fee.
 	feePerKW chainfee.SatPerKWeight
@@ -50,14 +50,14 @@ type txInputSet struct {
 	inputs []input.Input
 
 	// dustLimit is the minimum output value of the tx.
-	dustLimit btcutil.Amount
+	dustLimit ltcutil.Amount
 
 	// maxInputs is the maximum number of inputs that will be accepted in
 	// the set.
 	maxInputs int
 
 	// walletInputTotal is the total value of inputs coming from the wallet.
-	walletInputTotal btcutil.Amount
+	walletInputTotal ltcutil.Amount
 
 	// wallet contains wallet functionality required by the input set to
 	// retrieve utxos.
@@ -74,7 +74,7 @@ func newTxInputSet(wallet Wallet, feePerKW,
 
 	dustLimit := txrules.GetDustThreshold(
 		input.P2WPKHSize,
-		btcutil.Amount(relayFee.FeePerKVByte()),
+		ltcutil.Amount(relayFee.FeePerKVByte()),
 	)
 
 	b := txInputSet{
@@ -121,7 +121,7 @@ func (t *txInputSet) add(input input.Input, constraints addConstraints) bool {
 		newWeightEstimate.AddWitnessInput(size)
 	}
 
-	value := btcutil.Amount(input.SignDesc().Output.Value)
+	value := ltcutil.Amount(input.SignDesc().Output.Value)
 	newInputTotal := t.inputTotal + value
 
 	weight := newWeightEstimate.Weight()

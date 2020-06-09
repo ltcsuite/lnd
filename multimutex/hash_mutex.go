@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/ltcsuite/lnd/lntypes"
 )
 
 // HashMutex is a struct that keeps track of a set of mutexes with a given hash.

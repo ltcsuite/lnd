@@ -5,7 +5,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec"
 )
 
 func TestNetAddressDisplay(t *testing.T) {

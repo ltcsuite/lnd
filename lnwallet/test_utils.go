@@ -10,16 +10,16 @@ import (
 	"net"
 	"os"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/shachain"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/shachain"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 )
 
 var (
@@ -106,14 +106,14 @@ var (
 func CreateTestChannels(chanType channeldb.ChannelType) (
 	*LightningChannel, *LightningChannel, func(), error) {
 
-	channelCapacity, err := btcutil.NewAmount(10)
+	channelCapacity, err := ltcutil.NewAmount(10)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
 	channelBal := channelCapacity / 2
-	aliceDustLimit := btcutil.Amount(200)
-	bobDustLimit := btcutil.Amount(1300)
+	aliceDustLimit := ltcutil.Amount(200)
+	bobDustLimit := ltcutil.Amount(1300)
 	csvTimeoutAlice := uint32(5)
 	csvTimeoutBob := uint32(4)
 
@@ -252,7 +252,7 @@ func CreateTestChannels(chanType channeldb.ChannelType) (
 		return nil, nil, nil, err
 	}
 	commitFee := calcStaticFee(chanType, 0)
-	var anchorAmt btcutil.Amount
+	var anchorAmt ltcutil.Amount
 	if chanType.HasAnchors() {
 		anchorAmt += 2 * anchorSize
 	}
@@ -267,7 +267,7 @@ func CreateTestChannels(chanType channeldb.ChannelType) (
 		LocalBalance:  aliceBalance,
 		RemoteBalance: bobBalance,
 		CommitFee:     commitFee,
-		FeePerKw:      btcutil.Amount(feePerKw),
+		FeePerKw:      ltcutil.Amount(feePerKw),
 		CommitTx:      aliceCommitTx,
 		CommitSig:     testSigBytes,
 	}
@@ -276,7 +276,7 @@ func CreateTestChannels(chanType channeldb.ChannelType) (
 		LocalBalance:  bobBalance,
 		RemoteBalance: aliceBalance,
 		CommitFee:     commitFee,
-		FeePerKw:      btcutil.Amount(feePerKw),
+		FeePerKw:      ltcutil.Amount(feePerKw),
 		CommitTx:      bobCommitTx,
 		CommitSig:     testSigBytes,
 	}
@@ -443,21 +443,21 @@ func privkeyFromHex(keyHex string) (*btcec.PrivateKey, error) {
 }
 
 // blockFromHex parses a full Bitcoin block from a hex encoded string.
-func blockFromHex(blockHex string) (*btcutil.Block, error) {
+func blockFromHex(blockHex string) (*ltcutil.Block, error) {
 	bytes, err := hex.DecodeString(blockHex)
 	if err != nil {
 		return nil, err
 	}
-	return btcutil.NewBlockFromBytes(bytes)
+	return ltcutil.NewBlockFromBytes(bytes)
 }
 
 // txFromHex parses a full Bitcoin transaction from a hex encoded string.
-func txFromHex(txHex string) (*btcutil.Tx, error) {
+func txFromHex(txHex string) (*ltcutil.Tx, error) {
 	bytes, err := hex.DecodeString(txHex)
 	if err != nil {
 		return nil, err
 	}
-	return btcutil.NewTxFromBytes(bytes)
+	return ltcutil.NewTxFromBytes(bytes)
 }
 
 // calcStaticFee calculates appropriate fees for commitment transactions.  This
@@ -465,13 +465,13 @@ func txFromHex(txHex string) (*btcutil.Tx, error) {
 // calculations into account.
 //
 // TODO(bvu): Refactor when dynamic fee estimation is added.
-func calcStaticFee(chanType channeldb.ChannelType, numHTLCs int) btcutil.Amount {
+func calcStaticFee(chanType channeldb.ChannelType, numHTLCs int) ltcutil.Amount {
 	const (
 		htlcWeight = 172
-		feePerKw   = btcutil.Amount(24/4) * 1000
+		feePerKw   = ltcutil.Amount(24/4) * 1000
 	)
 	return feePerKw *
-		(btcutil.Amount(CommitWeight(chanType) +
+		(ltcutil.Amount(CommitWeight(chanType) +
 			htlcWeight*int64(numHTLCs))) / 1000
 }
 

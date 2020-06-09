@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcutil"
 )
 
 func TestBetweennessCentralityMetricConstruction(t *testing.T) {
@@ -86,7 +86,7 @@ func buildTestGraph(t *testing.T,
 		nodes[i] = key
 	}
 
-	const chanCapacity = btcutil.SatoshiPerBitcoin
+	const chanCapacity = ltcutil.SatoshiPerBitcoin
 	for u, neighbors := range desc.edges {
 		for _, v := range neighbors {
 			_, _, err := graph.addRandChannel(nodes[u], nodes[v], chanCapacity)

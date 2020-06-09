@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/lnwallet"
 )
 
 // htlcOutgoingContestResolver is a ContractResolver that's able to resolve an
@@ -123,7 +123,7 @@ func (h *htlcOutgoingContestResolver) Resolve() (ContractResolver, error) {
 			// expiry again (in the proper way).
 			//
 			// Source:
-			// https://github.com/btcsuite/btcd/blob/991d32e72fe84d5fbf9c47cd604d793a0cd3a072/blockchain/validate.go#L154
+			// https://github.com/ltcsuite/ltcd/blob/991d32e72fe84d5fbf9c47cd604d793a0cd3a072/blockchain/validate.go#L154
 			newHeight := uint32(newBlock.Height)
 			if newHeight >= h.htlcResolution.Expiry-1 {
 				log.Infof("%T(%v): HTLC has expired "+
@@ -159,7 +159,7 @@ func (h *htlcOutgoingContestResolver) report() *ContractReport {
 
 	finalAmt := h.htlc.Amt.ToSatoshis()
 	if h.htlcResolution.SignedTimeoutTx != nil {
-		finalAmt = btcutil.Amount(
+		finalAmt = ltcutil.Amount(
 			h.htlcResolution.SignedTimeoutTx.TxOut[0].Value,
 		)
 	}

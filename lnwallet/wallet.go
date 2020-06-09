@@ -9,23 +9,23 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/btcsuite/btcd/blockchain"
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcutil/psbt"
-	"github.com/btcsuite/btcutil/txsort"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
-	"github.com/lightningnetwork/lnd/lnwallet/chanfunding"
-	"github.com/lightningnetwork/lnd/lnwallet/chanvalidate"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/shachain"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
+	"github.com/ltcsuite/lnd/lnwallet/chanfunding"
+	"github.com/ltcsuite/lnd/lnwallet/chanvalidate"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/shachain"
+	"github.com/ltcsuite/ltcd/blockchain"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcutil/psbt"
+	"github.com/ltcsuite/ltcutil/txsort"
 )
 
 const (
@@ -93,11 +93,11 @@ type InitFundingReserveMsg struct {
 
 	// LocalFundingAmt is the amount of funds requested from us for this
 	// channel.
-	LocalFundingAmt btcutil.Amount
+	LocalFundingAmt ltcutil.Amount
 
 	// RemoteFundingAmnt is the amount of funds the remote will contribute
 	// to this channel.
-	RemoteFundingAmt btcutil.Amount
+	RemoteFundingAmt ltcutil.Amount
 
 	// CommitFeePerKw is the starting accepted satoshis/Kw fee for the set
 	// of initial commitment transactions. In order to ensure timely
@@ -262,12 +262,12 @@ type addSingleFunderSigsMsg struct {
 // communication protocol, allowing the wallet to be self-contained and
 // embeddable within future projects interacting with the Lightning Network.
 //
-// NOTE: At the moment the wallet requires a btcd full node, as it's dependent
-// on btcd's websockets notifications as event triggers during the lifetime of a
+// NOTE: At the moment the wallet requires a ltcd full node, as it's dependent
+// on ltcd's websockets notifications as event triggers during the lifetime of a
 // channel. However, once the chainntnfs package is complete, the wallet will
 // be compatible with multiple RPC/notification services such as Electrum,
 // Bitcoin Core + ZeroMQ, etc. Eventually, the wallet won't require a full-node
-// at all, as SPV support is integrated into btcwallet.
+// at all, as SPV support is integrated into ltcwallet.
 type LightningWallet struct {
 	started  int32 // To be used atomically.
 	shutdown int32 // To be used atomically.
@@ -635,7 +635,7 @@ func (l *LightningWallet) handleFundingReserveRequest(req *InitFundingReserveMsg
 			MinConfs:     req.MinConfs,
 			SubtractFees: req.SubtractFees,
 			FeeRate:      req.FundingFeePerKw,
-			ChangeAddr: func() (btcutil.Address, error) {
+			ChangeAddr: func() (ltcutil.Address, error) {
 				return l.NewAddress(WitnessPubKey, true)
 			},
 		}
@@ -883,7 +883,7 @@ func (l *LightningWallet) handleFundingCancelRequest(req *fundingReserveCancelMs
 // initial funding workflow as both sides must generate a signature for the
 // remote party's commitment transaction, and verify the signature for their
 // version of the commitment transaction.
-func CreateCommitmentTxns(localBalance, remoteBalance btcutil.Amount,
+func CreateCommitmentTxns(localBalance, remoteBalance ltcutil.Amount,
 	ourChanCfg, theirChanCfg *channeldb.ChannelConfig,
 	localCommitPoint, remoteCommitPoint *btcec.PublicKey,
 	fundingTxIn wire.TxIn, chanType channeldb.ChannelType) (
@@ -904,7 +904,7 @@ func CreateCommitmentTxns(localBalance, remoteBalance btcutil.Amount,
 		return nil, nil, err
 	}
 
-	otxn := btcutil.NewTx(ourCommitTx)
+	otxn := ltcutil.NewTx(ourCommitTx)
 	if err := blockchain.CheckTransactionSanity(otxn); err != nil {
 		return nil, nil, err
 	}
@@ -917,7 +917,7 @@ func CreateCommitmentTxns(localBalance, remoteBalance btcutil.Amount,
 		return nil, nil, err
 	}
 
-	ttxn := btcutil.NewTx(theirCommitTx)
+	ttxn := ltcutil.NewTx(theirCommitTx)
 	if err := blockchain.CheckTransactionSanity(ttxn); err != nil {
 		return nil, nil, err
 	}

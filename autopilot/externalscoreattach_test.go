@@ -3,9 +3,9 @@ package autopilot_test
 import (
 	"testing"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/autopilot"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/lnd/autopilot"
 )
 
 // randKey returns a random public key.
@@ -62,7 +62,7 @@ func TestSetNodeScores(t *testing.T) {
 		q[nID] = struct{}{}
 	}
 	resp, err := h.NodeScores(
-		nil, nil, btcutil.Amount(btcutil.SatoshiPerBitcoin), q,
+		nil, nil, ltcutil.Amount(ltcutil.SatoshiPerBitcoin), q,
 	)
 	if err != nil {
 		t.Fatal(err)

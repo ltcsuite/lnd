@@ -3,7 +3,7 @@
 package lnwirefuzz
 
 import (
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 // Fuzz_query_short_chan_ids is used by go-fuzz.

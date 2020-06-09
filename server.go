@@ -17,53 +17,53 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/connmgr"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/go-errors/errors"
-	sphinx "github.com/lightningnetwork/lightning-onion"
-	"github.com/lightningnetwork/lnd/autopilot"
-	"github.com/lightningnetwork/lnd/brontide"
-	"github.com/lightningnetwork/lnd/chanacceptor"
-	"github.com/lightningnetwork/lnd/chanbackup"
-	"github.com/lightningnetwork/lnd/chanfitness"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
-	"github.com/lightningnetwork/lnd/channelnotifier"
-	"github.com/lightningnetwork/lnd/clock"
-	"github.com/lightningnetwork/lnd/contractcourt"
-	"github.com/lightningnetwork/lnd/discovery"
-	"github.com/lightningnetwork/lnd/feature"
-	"github.com/lightningnetwork/lnd/htlcswitch"
-	"github.com/lightningnetwork/lnd/htlcswitch/hop"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/invoices"
-	"github.com/lightningnetwork/lnd/lncfg"
-	"github.com/lightningnetwork/lnd/lnpeer"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
-	"github.com/lightningnetwork/lnd/lnwallet"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
-	"github.com/lightningnetwork/lnd/lnwallet/chanfunding"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/nat"
-	"github.com/lightningnetwork/lnd/netann"
-	"github.com/lightningnetwork/lnd/peernotifier"
-	"github.com/lightningnetwork/lnd/pool"
-	"github.com/lightningnetwork/lnd/queue"
-	"github.com/lightningnetwork/lnd/routing"
-	"github.com/lightningnetwork/lnd/routing/localchans"
-	"github.com/lightningnetwork/lnd/routing/route"
-	"github.com/lightningnetwork/lnd/sweep"
-	"github.com/lightningnetwork/lnd/ticker"
-	"github.com/lightningnetwork/lnd/tor"
-	"github.com/lightningnetwork/lnd/walletunlocker"
-	"github.com/lightningnetwork/lnd/watchtower/wtclient"
-	"github.com/lightningnetwork/lnd/watchtower/wtdb"
-	"github.com/lightningnetwork/lnd/watchtower/wtpolicy"
+	sphinx "github.com/ltcsuite/lightning-onion"
+	"github.com/ltcsuite/lnd/autopilot"
+	"github.com/ltcsuite/lnd/brontide"
+	"github.com/ltcsuite/lnd/chanacceptor"
+	"github.com/ltcsuite/lnd/chanbackup"
+	"github.com/ltcsuite/lnd/chanfitness"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/channelnotifier"
+	"github.com/ltcsuite/lnd/clock"
+	"github.com/ltcsuite/lnd/contractcourt"
+	"github.com/ltcsuite/lnd/discovery"
+	"github.com/ltcsuite/lnd/feature"
+	"github.com/ltcsuite/lnd/htlcswitch"
+	"github.com/ltcsuite/lnd/htlcswitch/hop"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/invoices"
+	"github.com/ltcsuite/lnd/lncfg"
+	"github.com/ltcsuite/lnd/lnpeer"
+	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/lnrpc/routerrpc"
+	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
+	"github.com/ltcsuite/lnd/lnwallet/chanfunding"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/nat"
+	"github.com/ltcsuite/lnd/netann"
+	"github.com/ltcsuite/lnd/peernotifier"
+	"github.com/ltcsuite/lnd/pool"
+	"github.com/ltcsuite/lnd/queue"
+	"github.com/ltcsuite/lnd/routing"
+	"github.com/ltcsuite/lnd/routing/localchans"
+	"github.com/ltcsuite/lnd/routing/route"
+	"github.com/ltcsuite/lnd/sweep"
+	"github.com/ltcsuite/lnd/ticker"
+	"github.com/ltcsuite/lnd/tor"
+	"github.com/ltcsuite/lnd/walletunlocker"
+	"github.com/ltcsuite/lnd/watchtower/wtclient"
+	"github.com/ltcsuite/lnd/watchtower/wtdb"
+	"github.com/ltcsuite/lnd/watchtower/wtpolicy"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/connmgr"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 )
 
 const (
@@ -1020,7 +1020,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 		},
 		DefaultRoutingPolicy: cc.routingPolicy,
 		DefaultMinHtlcIn:     cc.minHtlcIn,
-		NumRequiredConfs: func(chanAmt btcutil.Amount,
+		NumRequiredConfs: func(chanAmt ltcutil.Amount,
 			pushAmt lnwire.MilliSatoshi) uint16 {
 			// For large channels we increase the number
 			// of confirmations we require for the
@@ -1059,7 +1059,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 			}
 			return uint16(conf)
 		},
-		RequiredRemoteDelay: func(chanAmt btcutil.Amount) uint16 {
+		RequiredRemoteDelay: func(chanAmt ltcutil.Amount) uint16 {
 			// We scale the remote CSV delay (the time the
 			// remote have to claim funds in case of a unilateral
 			// close) linearly from minRemoteDelay blocks
@@ -1076,7 +1076,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 			}
 
 			// If not we scale according to channel size.
-			delay := uint16(btcutil.Amount(maxRemoteDelay) *
+			delay := uint16(ltcutil.Amount(maxRemoteDelay) *
 				chanAmt / MaxFundingAmount)
 			if delay < minRemoteDelay {
 				delay = minRemoteDelay
@@ -1111,7 +1111,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 			return s.htlcSwitch.UpdateShortChanID(cid)
 		},
 		RequiredRemoteChanReserve: func(chanAmt,
-			dustLimit btcutil.Amount) btcutil.Amount {
+			dustLimit ltcutil.Amount) ltcutil.Amount {
 
 			// By default, we'll require the remote peer to maintain
 			// at least 1% of the total channel capacity at all
@@ -1125,21 +1125,21 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 
 			return reserve
 		},
-		RequiredRemoteMaxValue: func(chanAmt btcutil.Amount) lnwire.MilliSatoshi {
+		RequiredRemoteMaxValue: func(chanAmt ltcutil.Amount) lnwire.MilliSatoshi {
 			// By default, we'll allow the remote peer to fully
 			// utilize the full bandwidth of the channel, minus our
 			// required reserve.
 			reserve := lnwire.NewMSatFromSatoshis(chanAmt / 100)
 			return lnwire.NewMSatFromSatoshis(chanAmt) - reserve
 		},
-		RequiredRemoteMaxHTLCs: func(chanAmt btcutil.Amount) uint16 {
+		RequiredRemoteMaxHTLCs: func(chanAmt ltcutil.Amount) uint16 {
 			// By default, we'll permit them to utilize the full
 			// channel bandwidth.
 			return uint16(input.MaxHTLCNumber / 2)
 		},
 		ZombieSweeperInterval:         1 * time.Minute,
 		ReservationTimeout:            10 * time.Minute,
-		MinChanSize:                   btcutil.Amount(cfg.MinChanSize),
+		MinChanSize:                   ltcutil.Amount(cfg.MinChanSize),
 		MaxPendingChannels:            cfg.MaxPendingChannels,
 		RejectPush:                    cfg.RejectPush,
 		NotifyOpenChannelEvent:        s.channelNotifier.NotifyOpenChannelEvent,
@@ -3117,7 +3117,7 @@ type openChanReq struct {
 	chainHash chainhash.Hash
 
 	subtractFees    bool
-	localFundingAmt btcutil.Amount
+	localFundingAmt ltcutil.Amount
 
 	pushAmt lnwire.MilliSatoshi
 

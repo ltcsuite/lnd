@@ -11,8 +11,8 @@ import (
 
 	"github.com/btcsuite/fastsha256"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/record"
+	"github.com/ltcsuite/lnd/lntypes"
+	"github.com/ltcsuite/lnd/record"
 )
 
 func initDB() (*DB, error) {

@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/go-errors/errors"
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
 )
 
 // applyMigration is a helper test function that encapsulates the general steps

@@ -7,9 +7,9 @@ import (
 	"io"
 	"sync"
 
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
 
-	"github.com/btcsuite/btcwallet/snacl"
+	"github.com/ltcsuite/ltcwallet/snacl"
 )
 
 const (

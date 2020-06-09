@@ -10,11 +10,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lnwallet/chanfunding"
-	"github.com/lightningnetwork/lnd/signal"
+	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/lnwallet/chanfunding"
+	"github.com/ltcsuite/lnd/signal"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/urfave/cli"
 )
 
@@ -461,7 +461,7 @@ func openChannelPsbt(ctx *cli.Context, client lnrpc.LightningClient,
 		case *lnrpc.OpenStatusUpdate_PsbtFund:
 			// First tell the user how to create the PSBT with the
 			// address and amount we now know.
-			amt := btcutil.Amount(update.PsbtFund.FundingAmount)
+			amt := ltcutil.Amount(update.PsbtFund.FundingAmount)
 			addr := update.PsbtFund.FundingAddress
 			fmt.Printf(
 				userMsgFund, req.NodePubkey, amt, amt, addr,

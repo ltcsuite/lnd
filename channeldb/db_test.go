@@ -10,14 +10,14 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/shachain"
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/shachain"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 )
 
 func TestOpenWithCreate(t *testing.T) {
@@ -130,7 +130,7 @@ func TestFetchClosedChannelForID(t *testing.T) {
 		closeSummary := &ChannelCloseSummary{
 			ChanPoint:      state.FundingOutpoint,
 			RemotePub:      state.IdentityPub,
-			SettledBalance: btcutil.Amount(500 + i),
+			SettledBalance: ltcutil.Amount(500 + i),
 		}
 		if err := state.CloseChannel(closeSummary); err != nil {
 			t.Fatalf("unable to close channel: %v", err)
@@ -151,9 +151,9 @@ func TestFetchClosedChannelForID(t *testing.T) {
 
 		// Make sure we retrieved the correct one by checking the
 		// SettledBalance.
-		if fetchedSummary.SettledBalance != btcutil.Amount(500+i) {
+		if fetchedSummary.SettledBalance != ltcutil.Amount(500+i) {
 			t.Fatalf("summaries don't match: expected %v got %v",
-				btcutil.Amount(500+i),
+				ltcutil.Amount(500+i),
 				fetchedSummary.SettledBalance)
 		}
 	}
@@ -728,7 +728,7 @@ func TestFetchHistoricalChannel(t *testing.T) {
 	if err := channel.CloseChannel(&ChannelCloseSummary{
 		ChanPoint:      channel.FundingOutpoint,
 		RemotePub:      channel.IdentityPub,
-		SettledBalance: btcutil.Amount(500),
+		SettledBalance: ltcutil.Amount(500),
 	}); err != nil {
 		t.Fatalf("unexpected error closing channel: %v", err)
 	}

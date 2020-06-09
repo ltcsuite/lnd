@@ -1,9 +1,9 @@
 #### Pull Request Checklist
 
 - [ ] If this is your first time contributing, we recommend you read the [Code
-  Contribution Guidelines](https://github.com/lightningnetwork/lnd/blob/master/docs/code_contribution_guidelines.md)
+  Contribution Guidelines](https://github.com/ltcsuite/lnd/blob/master/docs/code_contribution_guidelines.md)
 - [ ] All changes are Go version 1.12 compliant
-- [ ] The code being submitted is commented according to [Code Documentation and Commenting](https://github.com/lightningnetwork/lnd/blob/master/docs/code_contribution_guidelines.md#CodeDocumentation)
+- [ ] The code being submitted is commented according to [Code Documentation and Commenting](https://github.com/ltcsuite/lnd/blob/master/docs/code_contribution_guidelines.md#CodeDocumentation)
 - [ ] For new code: Code is accompanied by tests which exercise both
   the positive and negative (error paths) conditions (if applicable)
 - [ ] For bug fixes: Code is accompanied by new tests which trigger
@@ -23,4 +23,4 @@
 - [ ] All commits build properly and pass tests. Only in exceptional
   cases it can be justifiable to violate this condition. In that case, the
   reason should be stated in the commit message.
-- [ ] Commits have a logical structure according to [Ideal Git Commit Structure](https://github.com/lightningnetwork/lnd/blob/master/docs/code_contribution_guidelines.md#IdealGitCommitStructure)
+- [ ] Commits have a logical structure according to [Ideal Git Commit Structure](https://github.com/ltcsuite/lnd/blob/master/docs/code_contribution_guidelines.md#IdealGitCommitStructure)

@@ -1,12 +1,12 @@
-package btcdnotify
+package ltcdnotify
 
 import (
 	"errors"
 	"fmt"
 
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/rpcclient"
-	"github.com/lightningnetwork/lnd/chainntnfs"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/rpcclient"
+	"github.com/ltcsuite/lnd/chainntnfs"
 )
 
 // createNewNotifier creates a new instance of the ChainNotifier interface
@@ -19,25 +19,25 @@ func createNewNotifier(args ...interface{}) (chainntnfs.ChainNotifier, error) {
 
 	config, ok := args[0].(*rpcclient.ConnConfig)
 	if !ok {
-		return nil, errors.New("first argument to btcdnotify.New " +
+		return nil, errors.New("first argument to ltcdnotify.New " +
 			"is incorrect, expected a *rpcclient.ConnConfig")
 	}
 
 	chainParams, ok := args[1].(*chaincfg.Params)
 	if !ok {
-		return nil, errors.New("second argument to btcdnotify.New " +
+		return nil, errors.New("second argument to ltcdnotify.New " +
 			"is incorrect, expected a *chaincfg.Params")
 	}
 
 	spendHintCache, ok := args[2].(chainntnfs.SpendHintCache)
 	if !ok {
-		return nil, errors.New("third argument to btcdnotify.New " +
+		return nil, errors.New("third argument to ltcdnotify.New " +
 			"is incorrect, expected a chainntnfs.SpendHintCache")
 	}
 
 	confirmHintCache, ok := args[3].(chainntnfs.ConfirmHintCache)
 	if !ok {
-		return nil, errors.New("fourth argument to btcdnotify.New " +
+		return nil, errors.New("fourth argument to ltcdnotify.New " +
 			"is incorrect, expected a chainntnfs.ConfirmHintCache")
 	}
 

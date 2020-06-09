@@ -3,8 +3,8 @@ package lnwire
 import (
 	"io"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcutil"
 )
 
 // AcceptChannel is the message Bob sends to Alice after she initiates the
@@ -20,7 +20,7 @@ type AcceptChannel struct {
 	// would like enforced on their version of the commitment transaction.
 	// Any output below this value will be "trimmed" from the commitment
 	// transaction, with the amount of the HTLC going to dust.
-	DustLimit btcutil.Amount
+	DustLimit ltcutil.Amount
 
 	// MaxValueInFlight represents the maximum amount of coins that can be
 	// pending within the channel at any given time. If the amount of funds
@@ -31,7 +31,7 @@ type AcceptChannel struct {
 	// maintain a balance above at all times. This is a safety mechanism to
 	// ensure that both sides always have skin in the game during the
 	// channel's lifetime.
-	ChannelReserve btcutil.Amount
+	ChannelReserve ltcutil.Amount
 
 	// HtlcMinimum is the smallest HTLC that the sender of this message
 	// will accept.

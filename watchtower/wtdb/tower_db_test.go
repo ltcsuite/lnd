@@ -8,13 +8,13 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/lightningnetwork/lnd/chainntnfs"
-	"github.com/lightningnetwork/lnd/watchtower"
-	"github.com/lightningnetwork/lnd/watchtower/blob"
-	"github.com/lightningnetwork/lnd/watchtower/wtdb"
-	"github.com/lightningnetwork/lnd/watchtower/wtmock"
-	"github.com/lightningnetwork/lnd/watchtower/wtpolicy"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/watchtower"
+	"github.com/ltcsuite/lnd/watchtower/blob"
+	"github.com/ltcsuite/lnd/watchtower/wtdb"
+	"github.com/ltcsuite/lnd/watchtower/wtmock"
+	"github.com/ltcsuite/lnd/watchtower/wtpolicy"
 )
 
 var (

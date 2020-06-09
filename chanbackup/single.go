@@ -6,13 +6,13 @@ import (
 	"io"
 	"net"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 // SingleBackupVersion denotes the version of the single static channel backup.
@@ -86,7 +86,7 @@ type Single struct {
 	Addresses []net.Addr
 
 	// Capacity is the size of the original channel.
-	Capacity btcutil.Amount
+	Capacity ltcutil.Amount
 
 	// LocalChanCfg is our local channel configuration. It contains all the
 	// information we need to re-derive the keys we used within the

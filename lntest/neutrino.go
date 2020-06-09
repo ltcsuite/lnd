@@ -5,7 +5,7 @@ package lntest
 import (
 	"fmt"
 
-	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/ltcsuite/ltcd/chaincfg"
 )
 
 // NeutrinoBackendConfig is an implementation of the BackendConfig interface

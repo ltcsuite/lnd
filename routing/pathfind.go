@@ -7,12 +7,12 @@ import (
 	"math"
 	"time"
 
-	sphinx "github.com/lightningnetwork/lightning-onion"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/feature"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/record"
-	"github.com/lightningnetwork/lnd/routing/route"
+	sphinx "github.com/ltcsuite/lightning-onion"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/feature"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/record"
+	"github.com/ltcsuite/lnd/routing/route"
 )
 
 const (

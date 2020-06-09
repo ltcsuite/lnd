@@ -3,8 +3,8 @@ package chainfee
 import (
 	"fmt"
 
-	"github.com/btcsuite/btcd/blockchain"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/blockchain"
+	"github.com/ltcsuite/ltcutil"
 )
 
 const (
@@ -19,12 +19,12 @@ const (
 )
 
 // SatPerKVByte represents a fee rate in sat/kb.
-type SatPerKVByte btcutil.Amount
+type SatPerKVByte ltcutil.Amount
 
 // FeeForVSize calculates the fee resulting from this fee rate and the given
 // vsize in vbytes.
-func (s SatPerKVByte) FeeForVSize(vbytes int64) btcutil.Amount {
-	return btcutil.Amount(s) * btcutil.Amount(vbytes) / 1000
+func (s SatPerKVByte) FeeForVSize(vbytes int64) ltcutil.Amount {
+	return ltcutil.Amount(s) * ltcutil.Amount(vbytes) / 1000
 }
 
 // FeePerKWeight converts the current fee rate from sat/kb to sat/kw.
@@ -38,13 +38,13 @@ func (s SatPerKVByte) String() string {
 }
 
 // SatPerKWeight represents a fee rate in sat/kw.
-type SatPerKWeight btcutil.Amount
+type SatPerKWeight ltcutil.Amount
 
 // FeeForWeight calculates the fee resulting from this fee rate and the given
 // weight in weight units (wu).
-func (s SatPerKWeight) FeeForWeight(wu int64) btcutil.Amount {
+func (s SatPerKWeight) FeeForWeight(wu int64) ltcutil.Amount {
 	// The resulting fee is rounded down, as specified in BOLT#03.
-	return btcutil.Amount(s) * btcutil.Amount(wu) / 1000
+	return ltcutil.Amount(s) * ltcutil.Amount(wu) / 1000
 }
 
 // FeePerKVByte converts the current fee rate from sat/kw to sat/kb.

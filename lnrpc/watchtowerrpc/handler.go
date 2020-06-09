@@ -7,7 +7,7 @@ import (
 	"errors"
 	fmt "fmt"
 
-	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/lnrpc"
 	"google.golang.org/grpc"
 	"gopkg.in/macaroon-bakery.v2/bakery"
 )

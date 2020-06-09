@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lntest"
-	"github.com/lightningnetwork/lnd/lntest/wait"
+	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/lntest"
+	"github.com/ltcsuite/lnd/lntest/wait"
+	"github.com/ltcsuite/ltcutil"
 )
 
 // testMultiHopLocalForceCloseOnChainHtlcTimeout tests that in a multi-hop HTLC
@@ -39,7 +39,7 @@ func testMultiHopLocalForceCloseOnChainHtlcTimeout(net *lntest.NetworkHarness,
 	// opens up the base for out tests.
 	const (
 		finalCltvDelta = 40
-		htlcAmt        = btcutil.Amount(30000)
+		htlcAmt        = ltcutil.Amount(30000)
 	)
 	ctx, cancel := context.WithCancel(ctxb)
 	defer cancel()

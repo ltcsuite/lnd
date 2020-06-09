@@ -5,12 +5,12 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 )
 
 var (
@@ -61,7 +61,7 @@ func (m *MockSigner) SignOutputRaw(tx *wire.MsgTx,
 		pubkey = DeriveRevocationPubkey(pubkey, signDesc.DoubleTweak.PubKey())
 	}
 
-	hash160 := btcutil.Hash160(pubkey.SerializeCompressed())
+	hash160 := ltcutil.Hash160(pubkey.SerializeCompressed())
 	privKey := m.findKey(hash160, signDesc.SingleTweak, signDesc.DoubleTweak)
 	if privKey == nil {
 		return nil, fmt.Errorf("Mock signer does not have key")
@@ -138,7 +138,7 @@ func (m *MockSigner) findKey(needleHash160 []byte, singleTweak []byte,
 
 	for _, privkey := range m.Privkeys {
 		// First check whether public key is directly derived from private key.
-		hash160 := btcutil.Hash160(privkey.PubKey().SerializeCompressed())
+		hash160 := ltcutil.Hash160(privkey.PubKey().SerializeCompressed())
 		if bytes.Equal(hash160, needleHash160) {
 			return privkey
 		}
@@ -152,7 +152,7 @@ func (m *MockSigner) findKey(needleHash160 []byte, singleTweak []byte,
 		default:
 			continue
 		}
-		hash160 = btcutil.Hash160(privkey.PubKey().SerializeCompressed())
+		hash160 = ltcutil.Hash160(privkey.PubKey().SerializeCompressed())
 		if bytes.Equal(hash160, needleHash160) {
 			return privkey
 		}

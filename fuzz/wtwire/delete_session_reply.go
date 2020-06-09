@@ -3,7 +3,7 @@
 package wtwirefuzz
 
 import (
-	"github.com/lightningnetwork/lnd/watchtower/wtwire"
+	"github.com/ltcsuite/lnd/watchtower/wtwire"
 )
 
 // Fuzz_delete_session_reply is used by go-fuzz.

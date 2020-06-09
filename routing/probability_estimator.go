@@ -4,8 +4,8 @@ import (
 	"math"
 	"time"
 
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/routing/route"
 )
 
 // probabilityEstimator returns node and pair probabilities based on historical

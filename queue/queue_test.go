@@ -3,7 +3,7 @@ package queue_test
 import (
 	"testing"
 
-	"github.com/lightningnetwork/lnd/queue"
+	"github.com/ltcsuite/lnd/queue"
 )
 
 func testQueueAddDrain(t *testing.T, size, numStart, numStop, numAdd, numDrain int) {

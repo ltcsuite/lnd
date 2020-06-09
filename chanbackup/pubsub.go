@@ -6,9 +6,9 @@ import (
 	"net"
 	"sync"
 
-	"github.com/btcsuite/btcd/wire"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/keychain"
 )
 
 // Swapper is an interface that allows the chanbackup.SubSwapper to update the

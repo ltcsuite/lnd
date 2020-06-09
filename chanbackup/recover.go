@@ -3,10 +3,10 @@ package chanbackup
 import (
 	"net"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/keychain"
 )
 
 // ChannelRestorer is an interface that allows the Recover method to map the

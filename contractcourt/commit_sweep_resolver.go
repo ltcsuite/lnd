@@ -6,12 +6,12 @@ import (
 	"io"
 	"sync"
 
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/lnwallet"
-	"github.com/lightningnetwork/lnd/sweep"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/sweep"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 )
 
 const (
@@ -360,7 +360,7 @@ func (c *commitSweepResolver) report() *ContractReport {
 
 // initReport initializes the pending channels report for this resolver.
 func (c *commitSweepResolver) initReport() {
-	amt := btcutil.Amount(
+	amt := ltcutil.Amount(
 		c.commitResolution.SelfOutputSignDesc.Output.Value,
 	)
 

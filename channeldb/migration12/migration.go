@@ -3,8 +3,8 @@ package migration12
 import (
 	"bytes"
 
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 var emptyFeatures = lnwire.NewFeatureVector(nil, nil)

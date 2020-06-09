@@ -5,15 +5,15 @@ import (
 	"math"
 	"net"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/lightningnetwork/lnd/chanbackup"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/contractcourt"
-	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/shachain"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/lnd/chanbackup"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/contractcourt"
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/shachain"
 )
 
 const (
@@ -171,7 +171,7 @@ func (c *chanDBRestorer) RestoreChansFromSingles(backups ...chanbackup.Single) e
 		case chainHash.IsEqual(chaincfg.MainNetParams.GenesisHash):
 			firstChanHeight = mainnetSCBLaunchBlock
 
-		case chainHash.IsEqual(chaincfg.TestNet3Params.GenesisHash):
+		case chainHash.IsEqual(chaincfg.TestNet4Params.GenesisHash):
 			firstChanHeight = testnetSCBLaunchBlock
 
 		default:

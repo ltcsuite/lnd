@@ -3,19 +3,19 @@ package lnwallet
 import (
 	"fmt"
 
-	"github.com/btcsuite/btcd/blockchain"
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/blockchain"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 )
 
 // anchorSize is the constant anchor output size.
-const anchorSize = btcutil.Amount(330)
+const anchorSize = ltcutil.Amount(330)
 
 // CommitmentKeyRing holds all derived keys needed to construct commitment and
 // HTLC transactions. The keys are derived differently depending whether the
@@ -258,7 +258,7 @@ func CommitWeight(chanType channeldb.ChannelType) int64 {
 // HtlcTimeoutFee returns the fee in satoshis required for an HTLC timeout
 // transaction based on the current fee rate.
 func HtlcTimeoutFee(chanType channeldb.ChannelType,
-	feePerKw chainfee.SatPerKWeight) btcutil.Amount {
+	feePerKw chainfee.SatPerKWeight) ltcutil.Amount {
 
 	if chanType.HasAnchors() {
 		return feePerKw.FeeForWeight(input.HtlcTimeoutWeightConfirmed)
@@ -270,7 +270,7 @@ func HtlcTimeoutFee(chanType channeldb.ChannelType,
 // HtlcSuccessFee returns the fee in satoshis required for an HTLC success
 // transaction based on the current fee rate.
 func HtlcSuccessFee(chanType channeldb.ChannelType,
-	feePerKw chainfee.SatPerKWeight) btcutil.Amount {
+	feePerKw chainfee.SatPerKWeight) ltcutil.Amount {
 
 	if chanType.HasAnchors() {
 		return feePerKw.FeeForWeight(input.HtlcSuccessWeightConfirmed)
@@ -369,7 +369,7 @@ type unsignedCommitmentTx struct {
 	txn *wire.MsgTx
 
 	// fee is the total fee of the commitment transaction.
-	fee btcutil.Amount
+	fee ltcutil.Amount
 
 	// ourBalance is our balance on this commitment *after* subtracting
 	// commitment fees and anchor outputs. This can be different than the
@@ -543,16 +543,16 @@ func (cb *CommitmentBuilder) createUnsignedCommitmentTx(ourBalance,
 
 	// Next, we'll ensure that we don't accidentally create a commitment
 	// transaction which would be invalid by consensus.
-	uTx := btcutil.NewTx(commitTx)
+	uTx := ltcutil.NewTx(commitTx)
 	if err := blockchain.CheckTransactionSanity(uTx); err != nil {
 		return nil, err
 	}
 
 	// Finally, we'll assert that were not attempting to draw more out of
 	// the channel that was originally placed within it.
-	var totalOut btcutil.Amount
+	var totalOut ltcutil.Amount
 	for _, txOut := range commitTx.TxOut {
-		totalOut += btcutil.Amount(txOut.Value)
+		totalOut += ltcutil.Amount(txOut.Value)
 	}
 	if totalOut > cb.chanState.Capacity {
 		return nil, fmt.Errorf("height=%v, for ChannelPoint(%v) "+
@@ -579,7 +579,7 @@ func (cb *CommitmentBuilder) createUnsignedCommitmentTx(ourBalance,
 func CreateCommitTx(chanType channeldb.ChannelType,
 	fundingOutput wire.TxIn, keyRing *CommitmentKeyRing,
 	localChanCfg, remoteChanCfg *channeldb.ChannelConfig,
-	amountToLocal, amountToRemote btcutil.Amount,
+	amountToLocal, amountToRemote ltcutil.Amount,
 	numHTLCs int64) (*wire.MsgTx, error) {
 
 	// First, we create the script for the delayed "pay-to-self" output.

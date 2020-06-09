@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/autopilot"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/tor"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/lnd/autopilot"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/tor"
 )
 
 // validateAtplConfig is a helper method that makes sure the passed
@@ -81,7 +81,7 @@ type chanController struct {
 // specified amount. This function should un-block immediately after the
 // funding transaction that marks the channel open has been broadcast.
 func (c *chanController) OpenChannel(target *btcec.PublicKey,
-	amt btcutil.Amount) error {
+	amt ltcutil.Amount) error {
 
 	// With the connection established, we'll now establish our connection
 	// to the target peer, waiting for the first update before we exit.
@@ -122,11 +122,11 @@ func (c *chanController) CloseChannel(chanPoint *wire.OutPoint) error {
 	return nil
 }
 func (c *chanController) SpliceIn(chanPoint *wire.OutPoint,
-	amt btcutil.Amount) (*autopilot.Channel, error) {
+	amt ltcutil.Amount) (*autopilot.Channel, error) {
 	return nil, nil
 }
 func (c *chanController) SpliceOut(chanPoint *wire.OutPoint,
-	amt btcutil.Amount) (*autopilot.Channel, error) {
+	amt ltcutil.Amount) (*autopilot.Channel, error) {
 	return nil, nil
 }
 
@@ -149,8 +149,8 @@ func initAutoPilot(svr *server, cfg *autoPilotConfig, chainCfg *chainConfig) (
 
 	// Set up the constraints the autopilot heuristics must adhere to.
 	atplConstraints := autopilot.NewConstraints(
-		btcutil.Amount(cfg.MinChannelSize),
-		btcutil.Amount(cfg.MaxChannelSize),
+		ltcutil.Amount(cfg.MinChannelSize),
+		ltcutil.Amount(cfg.MaxChannelSize),
 		uint16(cfg.MaxChannels),
 		10,
 		cfg.Allocation,
@@ -180,7 +180,7 @@ func initAutoPilot(svr *server, cfg *autoPilotConfig, chainCfg *chainConfig) (
 			confTarget:    cfg.ConfTarget,
 			chanMinHtlcIn: chainCfg.MinHTLCIn,
 		},
-		WalletBalance: func() (btcutil.Amount, error) {
+		WalletBalance: func() (ltcutil.Amount, error) {
 			return svr.cc.wallet.ConfirmedBalance(cfg.MinConfs)
 		},
 		Graph:       autopilot.ChannelGraphFromDatabase(svr.chanDB.ChannelGraph()),

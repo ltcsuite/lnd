@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/go-errors/errors"
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 // ValidateChannelAnn validates the channel announcement message and checks
@@ -126,7 +126,7 @@ func ValidateNodeAnn(a *lnwire.NodeAnnouncement) error {
 // checking (1) that the included signature covers the announcement and has been
 // signed by the node's private key, and (2) that the announcement's message
 // flags and optional fields are sane.
-func ValidateChannelUpdateAnn(pubKey *btcec.PublicKey, capacity btcutil.Amount,
+func ValidateChannelUpdateAnn(pubKey *btcec.PublicKey, capacity ltcutil.Amount,
 	a *lnwire.ChannelUpdate) error {
 
 	if err := validateOptionalFields(capacity, a); err != nil {
@@ -162,7 +162,7 @@ func VerifyChannelUpdateSignature(msg *lnwire.ChannelUpdate,
 
 // validateOptionalFields validates a channel update's message flags and
 // corresponding update fields.
-func validateOptionalFields(capacity btcutil.Amount,
+func validateOptionalFields(capacity ltcutil.Amount,
 	msg *lnwire.ChannelUpdate) error {
 
 	if msg.MessageFlags.HasMaxHtlc() {

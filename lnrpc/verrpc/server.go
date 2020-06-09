@@ -3,7 +3,7 @@ package verrpc
 import (
 	"context"
 
-	"github.com/lightningnetwork/lnd/build"
+	"github.com/ltcsuite/lnd/build"
 	"google.golang.org/grpc"
 	"gopkg.in/macaroon-bakery.v2/bakery"
 )

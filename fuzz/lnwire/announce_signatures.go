@@ -3,7 +3,7 @@
 package lnwirefuzz
 
 import (
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 // Fuzz_announce_signatures is used by go-fuzz.

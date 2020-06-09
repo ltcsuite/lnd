@@ -4,10 +4,10 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btclog"
-	"github.com/lightningnetwork/lnd/build"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/ltcsuite/lnd/build"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/routing/route"
 )
 
 // BlockPadding is used to increment the finalCltvDelta value for the last hop

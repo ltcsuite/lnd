@@ -8,21 +8,21 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btclog"
-	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/lightningnetwork/lnd/chainntnfs"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
-	"github.com/lightningnetwork/lnd/clock"
-	"github.com/lightningnetwork/lnd/contractcourt"
-	"github.com/lightningnetwork/lnd/htlcswitch/hop"
-	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/lnwallet"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/ticker"
+	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/clock"
+	"github.com/ltcsuite/lnd/contractcourt"
+	"github.com/ltcsuite/lnd/htlcswitch/hop"
+	"github.com/ltcsuite/lnd/lntypes"
+	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/ticker"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 )
 
 const (
@@ -1614,8 +1614,8 @@ func (s *Switch) htlcForwarder() {
 	// TODO(roasbeef): cleared vs settled distinction
 	var (
 		totalNumUpdates uint64
-		totalSatSent    btcutil.Amount
-		totalSatRecv    btcutil.Amount
+		totalSatSent    ltcutil.Amount
+		totalSatRecv    ltcutil.Amount
 	)
 	s.cfg.LogEventTicker.Resume()
 	defer s.cfg.LogEventTicker.Stop()
@@ -1733,8 +1733,8 @@ out:
 
 			var (
 				newNumUpdates uint64
-				newSatSent    btcutil.Amount
-				newSatRecv    btcutil.Amount
+				newSatSent    ltcutil.Amount
+				newSatRecv    ltcutil.Amount
 			)
 
 			// Next, we'll run through all the registered links and
@@ -1752,8 +1752,8 @@ out:
 
 			var (
 				diffNumUpdates uint64
-				diffSatSent    btcutil.Amount
-				diffSatRecv    btcutil.Amount
+				diffSatSent    ltcutil.Amount
+				diffSatRecv    ltcutil.Amount
 			)
 
 			// If this is the first time we're computing these

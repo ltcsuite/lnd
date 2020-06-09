@@ -6,9 +6,9 @@ import (
 	"context"
 	"strings"
 
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lntest"
-	"github.com/lightningnetwork/lnd/macaroons"
+	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/lntest"
+	"github.com/ltcsuite/lnd/macaroons"
 	"gopkg.in/macaroon.v2"
 )
 

@@ -15,22 +15,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/go-errors/errors"
-	"github.com/lightningnetwork/lnd/chainntnfs"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/lnpeer"
-	"github.com/lightningnetwork/lnd/lntest/wait"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/netann"
-	"github.com/lightningnetwork/lnd/routing"
-	"github.com/lightningnetwork/lnd/routing/route"
-	"github.com/lightningnetwork/lnd/ticker"
+	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/lnpeer"
+	"github.com/ltcsuite/lnd/lntest/wait"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/netann"
+	"github.com/ltcsuite/lnd/routing"
+	"github.com/ltcsuite/lnd/routing/route"
+	"github.com/ltcsuite/lnd/ticker"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 )
 
 var (
@@ -3715,7 +3715,7 @@ func TestProcessChannelAnnouncementOptionalMsgFields(t *testing.T) {
 	// assertOptionalMsgFields is a helper closure that ensures the optional
 	// message fields were set as intended.
 	assertOptionalMsgFields := func(chanID lnwire.ShortChannelID,
-		capacity btcutil.Amount, channelPoint wire.OutPoint) {
+		capacity ltcutil.Amount, channelPoint wire.OutPoint) {
 
 		t.Helper()
 
@@ -3740,7 +3740,7 @@ func TestProcessChannelAnnouncementOptionalMsgFields(t *testing.T) {
 
 	// Providing the capacity and channel point as optional fields should
 	// propagate them all the way down to the router.
-	capacity := btcutil.Amount(1000)
+	capacity := ltcutil.Amount(1000)
 	channelPoint := wire.OutPoint{Index: 1}
 	sendLocalMsg(
 		t, ctx, chanAnn2, localKey, ChannelCapacity(capacity),

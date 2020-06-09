@@ -6,27 +6,27 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/watchtower/blob"
-	"github.com/lightningnetwork/lnd/watchtower/wtdb"
-	"github.com/lightningnetwork/lnd/watchtower/wtmock"
-	"github.com/lightningnetwork/lnd/watchtower/wtserver"
-	"github.com/lightningnetwork/lnd/watchtower/wtwire"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/watchtower/blob"
+	"github.com/ltcsuite/lnd/watchtower/wtdb"
+	"github.com/ltcsuite/lnd/watchtower/wtmock"
+	"github.com/ltcsuite/lnd/watchtower/wtserver"
+	"github.com/ltcsuite/lnd/watchtower/wtwire"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcutil"
 )
 
 var (
 	// addr is the server's reward address given to watchtower clients.
-	addr, _ = btcutil.DecodeAddress(
-		"mrX9vMRYLfVy1BnZbc5gZjuyaqH3ZW2ZHz", &chaincfg.TestNet3Params,
+	addr, _ = ltcutil.DecodeAddress(
+		"mrX9vMRYLfVy1BnZbc5gZjuyaqH3ZW2ZHz", &chaincfg.TestNet4Params,
 	)
 
 	addrScript, _ = txscript.PayToAddrScript(addr)
 
-	testnetChainHash = *chaincfg.TestNet3Params.GenesisHash
+	testnetChainHash = *chaincfg.TestNet4Params.GenesisHash
 
 	testBlob = make([]byte, blob.Size(blob.TypeAltruistCommit))
 )
@@ -58,7 +58,7 @@ func initServer(t *testing.T, db wtserver.DB,
 		DB:           db,
 		ReadTimeout:  timeout,
 		WriteTimeout: timeout,
-		NewAddress: func() (btcutil.Address, error) {
+		NewAddress: func() (ltcutil.Address, error) {
 			return addr, nil
 		},
 		ChainHash: testnetChainHash,

@@ -4,10 +4,10 @@ import (
 	"crypto/sha256"
 	"fmt"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcwallet/waddrmgr"
-	"github.com/btcsuite/btcwallet/wallet"
-	"github.com/btcsuite/btcwallet/walletdb"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcwallet/waddrmgr"
+	"github.com/ltcsuite/ltcwallet/wallet"
+	"github.com/ltcsuite/ltcwallet/walletdb"
 )
 
 const (
@@ -34,18 +34,18 @@ var (
 	}
 
 	// waddrmgrNamespaceKey is the namespace key that the waddrmgr state is
-	// stored within the top-level waleltdb buckets of btcwallet.
+	// stored within the top-level waleltdb buckets of ltcwallet.
 	waddrmgrNamespaceKey = []byte("waddrmgr")
 )
 
 // BtcWalletKeyRing is an implementation of both the KeyRing and SecretKeyRing
-// interfaces backed by btcwallet's internal root waddrmgr. Internally, we'll
+// interfaces backed by ltcwallet's internal root waddrmgr. Internally, we'll
 // be using a ScopedKeyManager to do all of our derivations, using the key
 // scope and scope addr scehma defined above. Re-using the existing key scope
 // construction means that all key derivation will be protected under the root
 // seed of the wallet, making each derived key fully deterministic.
 type BtcWalletKeyRing struct {
-	// wallet is a pointer to the active instance of the btcwallet core.
+	// wallet is a pointer to the active instance of the ltcwallet core.
 	// This is required as we'll need to manually open database
 	// transactions in order to derive addresses and lookup relevant keys
 	wallet *wallet.Wallet
@@ -60,7 +60,7 @@ type BtcWalletKeyRing struct {
 }
 
 // NewBtcWalletKeyRing creates a new implementation of the
-// keychain.SecretKeyRing interface backed by btcwallet.
+// keychain.SecretKeyRing interface backed by ltcwallet.
 //
 // NOTE: The passed waddrmgr.Manager MUST be unlocked in order for the keychain
 // to function.

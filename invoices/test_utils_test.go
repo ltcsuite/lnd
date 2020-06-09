@@ -10,14 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/clock"
-	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/record"
-	"github.com/lightningnetwork/lnd/zpay32"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/clock"
+	"github.com/ltcsuite/lnd/lntypes"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/record"
+	"github.com/ltcsuite/lnd/zpay32"
 )
 
 type mockPayload struct {

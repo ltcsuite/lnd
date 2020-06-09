@@ -12,27 +12,27 @@ import (
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/rpcclient"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcwallet/chain"
-	"github.com/btcsuite/btcwallet/wallet"
-	"github.com/btcsuite/btcwallet/walletdb"
-	"github.com/lightninglabs/neutrino"
-	"github.com/lightninglabs/neutrino/headerfs"
-	"github.com/lightningnetwork/lnd/chainntnfs"
-	"github.com/lightningnetwork/lnd/chainntnfs/bitcoindnotify"
-	"github.com/lightningnetwork/lnd/chainntnfs/btcdnotify"
-	"github.com/lightningnetwork/lnd/chainntnfs/neutrinonotify"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/htlcswitch"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnwallet"
-	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/routing/chainview"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/rpcclient"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcwallet/chain"
+	"github.com/ltcsuite/ltcwallet/wallet"
+	"github.com/ltcsuite/ltcwallet/walletdb"
+	"github.com/ltcsuite/neutrino"
+	"github.com/ltcsuite/neutrino/headerfs"
+	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/chainntnfs/bitcoindnotify"
+	"github.com/ltcsuite/lnd/chainntnfs/btcdnotify"
+	"github.com/ltcsuite/lnd/chainntnfs/neutrinonotify"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/htlcswitch"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwallet/btcwallet"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/routing/chainview"
 )
 
 const (
@@ -68,7 +68,7 @@ const (
 	defaultLitecoinBaseFeeMSat    = lnwire.MilliSatoshi(1000)
 	defaultLitecoinFeeRate        = lnwire.MilliSatoshi(1)
 	defaultLitecoinTimeLockDelta  = 576
-	defaultLitecoinDustLimit      = btcutil.Amount(54600)
+	defaultLitecoinDustLimit      = ltcutil.Amount(54600)
 
 	// defaultBitcoinStaticFeePerKW is the fee rate of 50 sat/vbyte
 	// expressed in sat/kw.
@@ -156,7 +156,7 @@ type chainControl struct {
 
 // newChainControlFromConfig attempts to create a chainControl instance
 // according to the parameters in the passed lnd configuration. Currently three
-// branches of chainControl instances exist: one backed by a running btcd
+// branches of chainControl instances exist: one backed by a running ltcd
 // full-node, another backed by a running bitcoind full-node, and the other
 // backed by a running neutrino light client instance. When running with a
 // neutrino light client instance, `neutrinoCS` must be non-nil.
@@ -205,7 +205,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			"unknown", registeredChains.PrimaryChain())
 	}
 
-	walletConfig := &btcwallet.Config{
+	walletConfig := &ltcwallet.Config{
 		PrivatePass:    privateWalletPw,
 		PublicPass:     publicWalletPw,
 		Birthday:       birthday,
@@ -271,7 +271,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			bitcoindMode = cfg.LitecoindMode
 		}
 		// Otherwise, we'll be speaking directly via RPC and ZMQ to a
-		// bitcoind node. If the specified host for the btcd/ltcd RPC
+		// bitcoind node. If the specified host for the ltcd/ltcd RPC
 		// server already has a port specified, then we use that
 		// directly. Otherwise, we assume the default port according to
 		// the selected chain parameters.
@@ -280,9 +280,9 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			bitcoindHost = bitcoindMode.RPCHost
 		} else {
 			// The RPC ports specified in chainparams.go assume
-			// btcd, which picks a different port so that btcwallet
+			// ltcd, which picks a different port so that ltcwallet
 			// can use the same RPC port as bitcoind. We convert
-			// this back to the btcwallet/bitcoind port.
+			// this back to the ltcwallet/bitcoind port.
 			rpcPort, err := strconv.Atoi(activeNetParams.rpcPort)
 			if err != nil {
 				return nil, err
@@ -384,7 +384,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 	case "btcd", "ltcd":
 		// Otherwise, we'll be speaking directly via RPC to a node.
 		//
-		// So first we'll load btcd/ltcd's TLS cert for the RPC
+		// So first we'll load ltcd/ltcd's TLS cert for the RPC
 		// connection. If a raw cert was specified in the config, then
 		// we'll set that directly. Otherwise, we attempt to read the
 		// cert from the path specified in the config.
@@ -415,7 +415,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			}
 		}
 
-		// If the specified host for the btcd/ltcd RPC server already
+		// If the specified host for the ltcd/ltcd RPC server already
 		// has a port specified, then we use that directly. Otherwise,
 		// we assume the default port according to the selected chain
 		// parameters.
@@ -439,7 +439,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			DisableConnectOnNew:  true,
 			DisableAutoReconnect: false,
 		}
-		cc.chainNotifier, err = btcdnotify.New(
+		cc.chainNotifier, err = ltcdnotify.New(
 			rpcConfig, activeNetParams.Params, hintCache, hintCache,
 		)
 		if err != nil {
@@ -454,7 +454,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			return nil, err
 		}
 
-		// Create a special websockets rpc client for btcd which will be used
+		// Create a special websockets rpc client for ltcd which will be used
 		// by the wallet for notifications, calls, etc.
 		chainRPC, err := chain.NewRPCClient(activeNetParams.Params, btcdHost,
 			btcdUser, btcdPass, rpcCert, false, 20)
@@ -469,10 +469,10 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 		if !cfg.Bitcoin.SimNet && !cfg.Litecoin.SimNet &&
 			!cfg.Bitcoin.RegTest && !cfg.Litecoin.RegTest {
 
-			ltndLog.Infof("Initializing btcd backed fee estimator")
+			ltndLog.Infof("Initializing ltcd backed fee estimator")
 
 			// Finally, we'll re-initialize the fee estimator, as
-			// if we're using btcd as a backend, then we can use
+			// if we're using ltcd as a backend, then we can use
 			// live fee estimates, rather than a statically coded
 			// value.
 			fallBackFeeRate := chainfee.SatPerKVByte(25 * 1000)
@@ -491,7 +491,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			homeChainConfig.Node)
 	}
 
-	wc, err := btcwallet.New(*walletConfig)
+	wc, err := ltcwallet.New(*walletConfig)
 	if err != nil {
 		fmt.Printf("unable to create wallet controller: %v\n", err)
 		return nil, err
@@ -721,7 +721,7 @@ func (c *chainRegistry) NumActiveChains() uint32 {
 func initNeutrinoBackend(chainDir string) (*neutrino.ChainService, func(), error) {
 	// First we'll open the database file for neutrino, creating the
 	// database if needed. We append the normalized network name here to
-	// match the behavior of btcwallet.
+	// match the behavior of ltcwallet.
 	dbPath := filepath.Join(
 		chainDir,
 		normalizeNetwork(activeNetParams.Name),

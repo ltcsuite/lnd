@@ -3,13 +3,13 @@ package chanfunding
 import (
 	"math"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcutil/txsort"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcutil/txsort"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/keychain"
 )
 
 // FullIntent is an intent that is fully backed by the internal wallet. This
@@ -187,7 +187,7 @@ type WalletConfig struct {
 
 	// DustLimit is the current dust limit. We'll use this to ensure that
 	// we don't make dust outputs on the funding transaction.
-	DustLimit btcutil.Amount
+	DustLimit ltcutil.Amount
 }
 
 // WalletAssembler is an instance of the Assembler interface that is backed by
@@ -237,8 +237,8 @@ func (w *WalletAssembler) ProvisionChannel(r *Request) (Intent, error) {
 
 		var (
 			selectedCoins        []Coin
-			localContributionAmt btcutil.Amount
-			changeAmt            btcutil.Amount
+			localContributionAmt ltcutil.Amount
+			changeAmt            ltcutil.Amount
 		)
 
 		// Perform coin selection over our available, unlocked unspent

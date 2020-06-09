@@ -8,20 +8,20 @@ import (
 	math "math"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec"
 
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/htlcswitch"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/record"
-	"github.com/lightningnetwork/lnd/routing"
-	"github.com/lightningnetwork/lnd/routing/route"
-	"github.com/lightningnetwork/lnd/subscribe"
-	"github.com/lightningnetwork/lnd/zpay32"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/htlcswitch"
+	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/lntypes"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/record"
+	"github.com/ltcsuite/lnd/routing"
+	"github.com/ltcsuite/lnd/routing/route"
+	"github.com/ltcsuite/lnd/subscribe"
+	"github.com/ltcsuite/lnd/zpay32"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcutil"
 )
 
 // RouterBackend contains the backend implementation of the router rpc sub
@@ -32,7 +32,7 @@ type RouterBackend struct {
 
 	// FetchChannelCapacity is a closure that we'll use the fetch the total
 	// capacity of a channel to populate in responses.
-	FetchChannelCapacity func(chanID uint64) (btcutil.Amount, error)
+	FetchChannelCapacity func(chanID uint64) (ltcutil.Amount, error)
 
 	// FetchChannelEndpoints returns the pubkeys of both endpoints of the
 	// given channel id.

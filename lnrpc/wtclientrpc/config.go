@@ -2,8 +2,8 @@ package wtclientrpc
 
 import (
 	"github.com/btcsuite/btclog"
-	"github.com/lightningnetwork/lnd/lncfg"
-	"github.com/lightningnetwork/lnd/watchtower/wtclient"
+	"github.com/ltcsuite/lnd/lncfg"
+	"github.com/ltcsuite/lnd/watchtower/wtclient"
 )
 
 // Config is the primary configuration struct for the watchtower RPC server. It

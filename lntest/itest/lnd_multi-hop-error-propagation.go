@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lightningnetwork/lnd"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
-	"github.com/lightningnetwork/lnd/lntest"
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/lnd"
+	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/lnrpc/routerrpc"
+	"github.com/ltcsuite/lnd/lntest"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 func testHtlcErrorPropagation(net *lntest.NetworkHarness, t *harnessTest) {

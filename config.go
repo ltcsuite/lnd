@@ -1,4 +1,4 @@
-// Copyright (c) 2013-2017 The btcsuite developers
+// Copyright (c) 2013-2017 The ltcsuite developers
 // Copyright (c) 2015-2016 The Decred developers
 // Copyright (C) 2015-2017 The Lightning Network Developers
 
@@ -18,21 +18,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/btcsuite/btcutil"
 	flags "github.com/jessevdk/go-flags"
-	"github.com/lightningnetwork/lnd/autopilot"
-	"github.com/lightningnetwork/lnd/build"
-	"github.com/lightningnetwork/lnd/chanbackup"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/discovery"
-	"github.com/lightningnetwork/lnd/htlcswitch"
-	"github.com/lightningnetwork/lnd/htlcswitch/hodl"
-	"github.com/lightningnetwork/lnd/lncfg"
-	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
-	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/routing"
-	"github.com/lightningnetwork/lnd/tor"
+	"github.com/ltcsuite/lnd/autopilot"
+	"github.com/ltcsuite/lnd/build"
+	"github.com/ltcsuite/lnd/chanbackup"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/discovery"
+	"github.com/ltcsuite/lnd/htlcswitch"
+	"github.com/ltcsuite/lnd/htlcswitch/hodl"
+	"github.com/ltcsuite/lnd/lncfg"
+	"github.com/ltcsuite/lnd/lnrpc/routerrpc"
+	"github.com/ltcsuite/lnd/lnrpc/signrpc"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/routing"
+	"github.com/ltcsuite/lnd/tor"
+	"github.com/ltcsuite/ltcutil"
 )
 
 const (
@@ -130,7 +130,7 @@ const (
 )
 
 var (
-	defaultLndDir     = btcutil.AppDataDir("lnd", false)
+	defaultLndDir     = ltcutil.AppDataDir("lnd", false)
 	defaultConfigFile = filepath.Join(defaultLndDir, defaultConfigFilename)
 	defaultDataDir    = filepath.Join(defaultLndDir, defaultDataDirname)
 	defaultLogDir     = filepath.Join(defaultLndDir, defaultLogDirname)
@@ -140,14 +140,14 @@ var (
 	defaultTLSCertPath = filepath.Join(defaultLndDir, defaultTLSCertFilename)
 	defaultTLSKeyPath  = filepath.Join(defaultLndDir, defaultTLSKeyFilename)
 
-	defaultBtcdDir         = btcutil.AppDataDir("btcd", false)
+	defaultBtcdDir         = ltcutil.AppDataDir("btcd", false)
 	defaultBtcdRPCCertFile = filepath.Join(defaultBtcdDir, "rpc.cert")
 
-	defaultLtcdDir         = btcutil.AppDataDir("ltcd", false)
+	defaultLtcdDir         = ltcutil.AppDataDir("ltcd", false)
 	defaultLtcdRPCCertFile = filepath.Join(defaultLtcdDir, "rpc.cert")
 
-	defaultBitcoindDir  = btcutil.AppDataDir("bitcoin", false)
-	defaultLitecoindDir = btcutil.AppDataDir("litecoin", false)
+	defaultBitcoindDir  = ltcutil.AppDataDir("bitcoin", false)
+	defaultLitecoindDir = ltcutil.AppDataDir("litecoin", false)
 
 	defaultTorSOCKS   = net.JoinHostPort("localhost", strconv.Itoa(defaultTorSOCKSPort))
 	defaultTorDNS     = net.JoinHostPort(defaultTorDNSHost, strconv.Itoa(defaultTorDNSPort))
@@ -163,7 +163,7 @@ type chainConfig struct {
 	Active   bool   `long:"active" description:"If the chain should be active or not."`
 	ChainDir string `long:"chaindir" description:"The directory to store the chain's data within."`
 
-	Node string `long:"node" description:"The blockchain interface to use." choice:"btcd" choice:"bitcoind" choice:"neutrino" choice:"ltcd" choice:"litecoind"`
+	Node string `long:"node" description:"The blockchain interface to use." choice:"ltcd" choice:"bitcoind" choice:"neutrino" choice:"ltcd" choice:"litecoind"`
 
 	MainNet  bool `long:"mainnet" description:"Use the main network"`
 	TestNet3 bool `long:"testnet" description:"Use the test network"`
@@ -732,6 +732,10 @@ func loadConfig() (*config, error) {
 		return nil, fmt.Errorf("%s: either bitcoin.active or "+
 			"litecoin.active must be set to 1 (true)", funcName)
 
+	case cfg.Bitcoin.Active:
+		str := "%s: bitcoin not supported in this version of LND"
+		return nil, fmt.Errorf(str, funcName)
+
 	case cfg.Litecoin.Active:
 		if cfg.Litecoin.TimeLockDelta < minTimeLockDelta {
 			return nil, fmt.Errorf("timelockdelta must be at least %v",
@@ -741,22 +745,21 @@ func loadConfig() (*config, error) {
 		// number of network flags passed; assign active network params
 		// while we're at it.
 		numNets := 0
-		var ltcParams litecoinNetParams
 		if cfg.Litecoin.MainNet {
 			numNets++
-			ltcParams = litecoinMainNetParams
+			activeNetParams = litecoinMainNetParams
 		}
 		if cfg.Litecoin.TestNet3 {
 			numNets++
-			ltcParams = litecoinTestNetParams
+			activeNetParams = litecoinTestNetParams
 		}
 		if cfg.Litecoin.RegTest {
 			numNets++
-			ltcParams = litecoinRegTestNetParams
+			activeNetParams = litecoinRegTestNetParams
 		}
 		if cfg.Litecoin.SimNet {
 			numNets++
-			ltcParams = litecoinSimNetParams
+			activeNetParams = litecoinSimNetParams
 		}
 
 		if numNets > 1 {
@@ -775,12 +778,6 @@ func loadConfig() (*config, error) {
 			err := fmt.Errorf(str, funcName)
 			return nil, err
 		}
-
-		// The litecoin chain is the current active chain. However
-		// throughout the codebase we required chaincfg.Params. So as a
-		// temporary hack, we'll mutate the default net params for
-		// bitcoin with the litecoin specific information.
-		applyLitecoinParams(&activeNetParams, &ltcParams)
 
 		switch cfg.Litecoin.Node {
 		case "ltcd":
@@ -803,9 +800,12 @@ func loadConfig() (*config, error) {
 					"credentials for litecoind: %v", err)
 				return nil, err
 			}
+		case "neutrino":
+			// No need to get RPC parameters.
+
 		default:
-			str := "%s: only ltcd and litecoind mode supported for " +
-				"litecoin at this time"
+			str := "%s: only ltcd, litecoind, and neutrino mode " +
+				"supported for litecoin at this time"
 			return nil, fmt.Errorf(str, funcName)
 		}
 
@@ -817,91 +817,7 @@ func loadConfig() (*config, error) {
 		// primary chain.
 		registeredChains.RegisterPrimaryChain(litecoinChain)
 		MaxFundingAmount = maxLtcFundingAmount
-
-	case cfg.Bitcoin.Active:
-		// Multiple networks can't be selected simultaneously.  Count
-		// number of network flags passed; assign active network params
-		// while we're at it.
-		numNets := 0
-		if cfg.Bitcoin.MainNet {
-			numNets++
-			activeNetParams = bitcoinMainNetParams
-		}
-		if cfg.Bitcoin.TestNet3 {
-			numNets++
-			activeNetParams = bitcoinTestNetParams
-		}
-		if cfg.Bitcoin.RegTest {
-			numNets++
-			activeNetParams = bitcoinRegTestNetParams
-		}
-		if cfg.Bitcoin.SimNet {
-			numNets++
-			activeNetParams = bitcoinSimNetParams
-		}
-		if numNets > 1 {
-			str := "%s: The mainnet, testnet, regtest, and " +
-				"simnet params can't be used together -- " +
-				"choose one of the four"
-			err := fmt.Errorf(str, funcName)
-			return nil, err
-		}
-
-		// The target network must be provided, otherwise, we won't
-		// know how to initialize the daemon.
-		if numNets == 0 {
-			str := "%s: either --bitcoin.mainnet, or " +
-				"bitcoin.testnet, bitcoin.simnet, or bitcoin.regtest " +
-				"must be specified"
-			err := fmt.Errorf(str, funcName)
-			return nil, err
-		}
-
-		if cfg.Bitcoin.TimeLockDelta < minTimeLockDelta {
-			return nil, fmt.Errorf("timelockdelta must be at least %v",
-				minTimeLockDelta)
-		}
-
-		switch cfg.Bitcoin.Node {
-		case "btcd":
-			err := parseRPCParams(
-				cfg.Bitcoin, cfg.BtcdMode, bitcoinChain, funcName,
-			)
-			if err != nil {
-				err := fmt.Errorf("unable to load RPC "+
-					"credentials for btcd: %v", err)
-				return nil, err
-			}
-		case "bitcoind":
-			if cfg.Bitcoin.SimNet {
-				return nil, fmt.Errorf("%s: bitcoind does not "+
-					"support simnet", funcName)
-			}
-
-			err := parseRPCParams(
-				cfg.Bitcoin, cfg.BitcoindMode, bitcoinChain, funcName,
-			)
-			if err != nil {
-				err := fmt.Errorf("unable to load RPC "+
-					"credentials for bitcoind: %v", err)
-				return nil, err
-			}
-		case "neutrino":
-			// No need to get RPC parameters.
-
-		default:
-			str := "%s: only btcd, bitcoind, and neutrino mode " +
-				"supported for bitcoin at this time"
-			return nil, fmt.Errorf(str, funcName)
-		}
-
-		cfg.Bitcoin.ChainDir = filepath.Join(cfg.DataDir,
-			defaultChainSubDirname,
-			bitcoinChain.String())
-
-		// Finally we'll register the bitcoin chain as our current
-		// primary chain.
-		registeredChains.RegisterPrimaryChain(bitcoinChain)
+		MaxPaymentMSat = maxLtcPaymentMSat
 	}
 
 	// Ensure that the user didn't attempt to specify negative values for
@@ -1166,7 +1082,7 @@ func loadConfig() (*config, error) {
 
 // cleanAndExpandPath expands environment variables and leading ~ in the
 // passed path, cleans the result, and returns it.
-// This function is taken from https://github.com/btcsuite/btcd
+// This function is taken from https://github.com/ltcsuite/ltcd
 func cleanAndExpandPath(path string) string {
 	if path == "" {
 		return ""
@@ -1276,11 +1192,11 @@ func parseRPCParams(cConfig *chainConfig, nodeConfig interface{}, net chainCode,
 		}
 	}
 
-	// If we're in simnet mode, then the running btcd instance won't read
+	// If we're in simnet mode, then the running ltcd instance won't read
 	// the RPC credentials from the configuration. So if lnd wasn't
 	// specified the parameters, then we won't be able to start.
 	if cConfig.SimNet {
-		str := "%v: rpcuser and rpcpass must be set to your btcd " +
+		str := "%v: rpcuser and rpcpass must be set to your ltcd " +
 			"node's RPC parameters for simnet mode"
 		return fmt.Errorf(str, funcName)
 	}
@@ -1316,10 +1232,10 @@ func parseRPCParams(cConfig *chainConfig, nodeConfig interface{}, net chainCode,
 }
 
 // extractBtcdRPCParams attempts to extract the RPC credentials for an existing
-// btcd instance. The passed path is expected to be the location of btcd's
+// ltcd instance. The passed path is expected to be the location of ltcd's
 // application data directory on the target system.
 func extractBtcdRPCParams(btcdConfigPath string) (string, string, error) {
-	// First, we'll open up the btcd configuration file found at the target
+	// First, we'll open up the ltcd configuration file found at the target
 	// destination.
 	btcdConfigFile, err := os.Open(btcdConfigPath)
 	if err != nil {

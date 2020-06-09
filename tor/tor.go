@@ -7,7 +7,7 @@ import (
 	"net"
 	"strconv"
 
-	"github.com/btcsuite/btcd/connmgr"
+	"github.com/ltcsuite/ltcd/connmgr"
 	"github.com/miekg/dns"
 	"golang.org/x/net/proxy"
 )

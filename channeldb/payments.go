@@ -9,13 +9,13 @@ import (
 	"sort"
 	"time"
 
-	"github.com/btcsuite/btcd/wire"
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
-	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/record"
-	"github.com/lightningnetwork/lnd/routing/route"
-	"github.com/lightningnetwork/lnd/tlv"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/lntypes"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/record"
+	"github.com/ltcsuite/lnd/routing/route"
+	"github.com/ltcsuite/lnd/tlv"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 var (

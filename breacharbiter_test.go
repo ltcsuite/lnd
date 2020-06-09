@@ -18,22 +18,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/go-errors/errors"
-	"github.com/lightningnetwork/lnd/chainntnfs"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/htlcswitch"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lntest/wait"
-	"github.com/lightningnetwork/lnd/lnwallet"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/shachain"
+	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/htlcswitch"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lntest/wait"
+	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/shachain"
 )
 
 var (
@@ -100,7 +100,7 @@ var (
 
 	breachedOutputs = []breachedOutput{
 		{
-			amt:         btcutil.Amount(1e7),
+			amt:         ltcutil.Amount(1e7),
 			outpoint:    breachOutPoints[0],
 			witnessType: input.CommitmentNoDelay,
 			signDesc: input.SignDescriptor{
@@ -144,7 +144,7 @@ var (
 			secondLevelWitnessScript: breachKeys[0],
 		},
 		{
-			amt:         btcutil.Amount(1e7),
+			amt:         ltcutil.Amount(1e7),
 			outpoint:    breachOutPoints[0],
 			witnessType: input.CommitSpendNoDelayTweakless,
 			signDesc: input.SignDescriptor{
@@ -180,7 +180,7 @@ var (
 			secondLevelWitnessScript: breachKeys[0],
 		},
 		{
-			amt:         btcutil.Amount(2e9),
+			amt:         ltcutil.Amount(2e9),
 			outpoint:    breachOutPoints[1],
 			witnessType: input.CommitmentRevoke,
 			signDesc: input.SignDescriptor{
@@ -224,7 +224,7 @@ var (
 			secondLevelWitnessScript: breachKeys[0],
 		},
 		{
-			amt:         btcutil.Amount(3e4),
+			amt:         ltcutil.Amount(3e4),
 			outpoint:    breachOutPoints[2],
 			witnessType: input.CommitmentDelayOutput,
 			signDesc: input.SignDescriptor{
@@ -1707,14 +1707,14 @@ func createInitChannels(revocationWindow int) (*lnwallet.LightningChannel, *lnwa
 	bobKeyPriv, bobKeyPub := btcec.PrivKeyFromBytes(btcec.S256(),
 		bobsPrivKey)
 
-	channelCapacity, err := btcutil.NewAmount(10)
+	channelCapacity, err := ltcutil.NewAmount(10)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
 	channelBal := channelCapacity / 2
-	aliceDustLimit := btcutil.Amount(200)
-	bobDustLimit := btcutil.Amount(1300)
+	aliceDustLimit := ltcutil.Amount(200)
+	bobDustLimit := ltcutil.Amount(1300)
 	csvTimeoutAlice := uint32(5)
 	csvTimeoutBob := uint32(4)
 
@@ -1836,7 +1836,7 @@ func createInitChannels(revocationWindow int) (*lnwallet.LightningChannel, *lnwa
 		CommitHeight:  0,
 		LocalBalance:  lnwire.NewMSatFromSatoshis(channelBal),
 		RemoteBalance: lnwire.NewMSatFromSatoshis(channelBal),
-		FeePerKw:      btcutil.Amount(feePerKw),
+		FeePerKw:      ltcutil.Amount(feePerKw),
 		CommitFee:     8688,
 		CommitTx:      aliceCommitTx,
 		CommitSig:     bytes.Repeat([]byte{1}, 71),
@@ -1845,7 +1845,7 @@ func createInitChannels(revocationWindow int) (*lnwallet.LightningChannel, *lnwa
 		CommitHeight:  0,
 		LocalBalance:  lnwire.NewMSatFromSatoshis(channelBal),
 		RemoteBalance: lnwire.NewMSatFromSatoshis(channelBal),
-		FeePerKw:      btcutil.Amount(feePerKw),
+		FeePerKw:      ltcutil.Amount(feePerKw),
 		CommitFee:     8688,
 		CommitTx:      bobCommitTx,
 		CommitSig:     bytes.Repeat([]byte{1}, 71),

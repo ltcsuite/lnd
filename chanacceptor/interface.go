@@ -1,8 +1,8 @@
 package chanacceptor
 
 import (
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 // ChannelAcceptRequest is a struct containing the requesting node's public key

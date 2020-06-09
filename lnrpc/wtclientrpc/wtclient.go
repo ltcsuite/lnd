@@ -7,12 +7,12 @@ import (
 	"net"
 	"strconv"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/lightningnetwork/lnd/lncfg"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/watchtower"
-	"github.com/lightningnetwork/lnd/watchtower/wtclient"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/lnd/lncfg"
+	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/watchtower"
+	"github.com/ltcsuite/lnd/watchtower/wtclient"
 	"google.golang.org/grpc"
 	"gopkg.in/macaroon-bakery.v2/bakery"
 )

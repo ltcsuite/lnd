@@ -1,4 +1,4 @@
-// Copyright (c) 2013-2017 The btcsuite developers
+// Copyright (c) 2013-2017 The ltcsuite developers
 // Copyright (c) 2015-2016 The Decred developers
 // Copyright (C) 2015-2017 The Lightning Network Developers
 
@@ -14,11 +14,11 @@ import (
 
 	macaroon "gopkg.in/macaroon.v2"
 
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/build"
-	"github.com/lightningnetwork/lnd/lncfg"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/macaroons"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/lnd/build"
+	"github.com/ltcsuite/lnd/lncfg"
+	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/macaroons"
 	"github.com/urfave/cli"
 
 	"google.golang.org/grpc"
@@ -35,7 +35,7 @@ const (
 )
 
 var (
-	defaultLndDir      = btcutil.AppDataDir("lnd", false)
+	defaultLndDir      = ltcutil.AppDataDir("lnd", false)
 	defaultTLSCertPath = filepath.Join(defaultLndDir, defaultTLSCertFilename)
 
 	// maxMsgRecvSize is the largest message our client will receive. We
@@ -319,7 +319,7 @@ func main() {
 
 // cleanAndExpandPath expands environment variables and leading ~ in the
 // passed path, cleans the result, and returns it.
-// This function is taken from https://github.com/btcsuite/btcd
+// This function is taken from https://github.com/ltcsuite/ltcd
 func cleanAndExpandPath(path string) string {
 	if path == "" {
 		return ""

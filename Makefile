@@ -1,8 +1,8 @@
-PKG := github.com/lightningnetwork/lnd
-ESCPKG := github.com\/lightningnetwork\/lnd
+PKG := github.com/ltcsuite/lnd
+ESCPKG := github.com\/ltcsuite\/lnd
 MOBILE_PKG := $(PKG)/mobile
 
-BTCD_PKG := github.com/btcsuite/btcd
+BTCD_PKG := github.com/ltcsuite/ltcd
 GOVERALLS_PKG := github.com/mattn/goveralls
 LINT_PKG := github.com/golangci/golangci-lint/cmd/golangci-lint
 GOACC_PKG := github.com/ory/go-acc

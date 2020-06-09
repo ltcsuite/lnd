@@ -8,8 +8,8 @@ import (
 	"net"
 	"strings"
 
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/macaroons"
+	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/macaroons"
 	"github.com/urfave/cli"
 	"gopkg.in/macaroon.v2"
 )

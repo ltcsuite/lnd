@@ -2,12 +2,12 @@ package lnwallet
 
 import (
 	"github.com/btcsuite/btclog"
-	"github.com/btcsuite/btcwallet/chain"
-	btcwallet "github.com/btcsuite/btcwallet/wallet"
-	"github.com/btcsuite/btcwallet/wtxmgr"
+	"github.com/ltcsuite/ltcwallet/chain"
+	ltcwallet "github.com/ltcsuite/ltcwallet/wallet"
+	"github.com/ltcsuite/ltcwallet/wtxmgr"
 
-	"github.com/lightningnetwork/lnd/build"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"github.com/ltcsuite/lnd/build"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 )
 
 // walletLog is a logger that is initialized with no output filters.  This
@@ -32,7 +32,7 @@ func DisableLog() {
 func UseLogger(logger btclog.Logger) {
 	walletLog = logger
 
-	btcwallet.UseLogger(logger)
+	ltcwallet.UseLogger(logger)
 	wtxmgr.UseLogger(logger)
 	chain.UseLogger(logger)
 	chainfee.UseLogger(logger)

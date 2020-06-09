@@ -7,15 +7,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/build"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnwallet"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/lnd/build"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 )
 
 var (
@@ -101,7 +101,7 @@ func createSweeperTestContext(t *testing.T) *sweeperTestContext {
 	backend := newMockBackend(t, notifier)
 	backend.walletUtxos = []*lnwallet.Utxo{
 		{
-			Value:       btcutil.Amount(10000),
+			Value:       ltcutil.Amount(10000),
 			AddressType: lnwallet.WitnessPubKey,
 		},
 	}
@@ -335,7 +335,7 @@ func assertTxFeeRate(t *testing.T, tx *wire.MsgTx,
 	}
 	outputAmt := tx.TxOut[0].Value
 
-	fee := btcutil.Amount(inputAmt - outputAmt)
+	fee := ltcutil.Amount(inputAmt - outputAmt)
 	_, txWeight := getWeightEstimate(inputs)
 
 	expectedFee := expectedFeeRate.FeeForWeight(txWeight)
@@ -1188,7 +1188,7 @@ func TestBumpFeeRBF(t *testing.T) {
 	// We'll then attempt to sweep an input, which we'll use to bump its fee
 	// later on.
 	input := createTestInput(
-		btcutil.SatoshiPerBitcoin, input.CommitmentTimeLock,
+		ltcutil.SatoshiPerBitcoin, input.CommitmentTimeLock,
 	)
 	sweepResult, err := ctx.sweeper.SweepInput(
 		&input, Params{Fee: lowFeePref},

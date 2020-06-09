@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/ltcsuite/lnd/routing/route"
 )
 
 // TestMissionControlStateFailureResult tests setting failure results on the

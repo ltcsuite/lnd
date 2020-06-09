@@ -7,14 +7,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/lightningnetwork/lnd"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lntest"
-	"github.com/lightningnetwork/lnd/lntest/wait"
+	"github.com/ltcsuite/lnd"
+	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/lntest"
+	"github.com/ltcsuite/lnd/lntest/wait"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 )
 
 // testMultiHopHtlcLocalTimeout tests that in a multi-hop HTLC scenario, if the
@@ -43,8 +43,8 @@ func testMultiHopHtlcLocalTimeout(net *lntest.NetworkHarness, t *harnessTest,
 	// to Carol. The first HTLC will be universally considered "dust",
 	// while the second will be a proper fully valued HTLC.
 	const (
-		dustHtlcAmt    = btcutil.Amount(100)
-		htlcAmt        = btcutil.Amount(30000)
+		dustHtlcAmt    = ltcutil.Amount(100)
+		htlcAmt        = ltcutil.Amount(30000)
 		finalCltvDelta = 40
 	)
 

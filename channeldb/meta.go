@@ -1,7 +1,7 @@
 package channeldb
 
 import (
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
 )
 
 var (

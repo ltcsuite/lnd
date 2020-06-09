@@ -9,13 +9,13 @@ import (
 	"path/filepath"
 	"sync/atomic"
 
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/routing"
-	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/lntypes"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/routing"
+	"github.com/ltcsuite/lnd/routing/route"
+	"github.com/ltcsuite/ltcutil"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -271,12 +271,12 @@ func (s *Server) EstimateRouteFee(ctx context.Context,
 
 	// Next, we'll convert the amount in satoshis to mSAT, which are the
 	// native unit of LN.
-	amtMsat := lnwire.NewMSatFromSatoshis(btcutil.Amount(req.AmtSat))
+	amtMsat := lnwire.NewMSatFromSatoshis(ltcutil.Amount(req.AmtSat))
 
 	// Pick a fee limit
 	//
 	// TODO: Change this into behaviour that makes more sense.
-	feeLimit := lnwire.NewMSatFromSatoshis(btcutil.SatoshiPerBitcoin)
+	feeLimit := lnwire.NewMSatFromSatoshis(ltcutil.SatoshiPerBitcoin)
 
 	// Finally, we'll query for a route to the destination that can carry
 	// that target amount, we'll only request a single route. Set a

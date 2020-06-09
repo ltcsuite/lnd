@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcutil"
 	"github.com/go-errors/errors"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/clock"
-	"github.com/lightningnetwork/lnd/htlcswitch"
-	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/clock"
+	"github.com/ltcsuite/lnd/htlcswitch"
+	"github.com/ltcsuite/lnd/lntypes"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/routing/route"
+	"github.com/ltcsuite/ltcutil"
 )
 
 const stepTimeout = 5 * time.Second
@@ -59,7 +59,7 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 
 	// Setup two simple channels such that we can mock sending along this
 	// route.
-	chanCapSat := btcutil.Amount(100000)
+	chanCapSat := ltcutil.Amount(100000)
 	testChannels := []*testChannel{
 		symmetricTestChannel("a", "b", chanCapSat, &testChannelPolicy{
 			Expiry:  144,

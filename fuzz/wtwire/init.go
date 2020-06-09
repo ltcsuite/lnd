@@ -3,7 +3,7 @@
 package wtwirefuzz
 
 import (
-	"github.com/lightningnetwork/lnd/watchtower/wtwire"
+	"github.com/ltcsuite/lnd/watchtower/wtwire"
 )
 
 // Fuzz_init is used by go-fuzz.

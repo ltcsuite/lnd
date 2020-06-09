@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
+	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/lnrpc/walletrpc"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/urfave/cli"
 )
 

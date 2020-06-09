@@ -12,7 +12,7 @@ $ go get -u github.com/dvyukov/go-fuzz/...
 * The following is a command to build all fuzzing harnesses for a specific package.
 ```
 $ cd fuzz/<package>
-$ find * -maxdepth 1 -regex '[A-Za-z0-9\-_.]'* -not -name fuzz_utils.go | sed 's/\.go$//1' | xargs -I % sh -c 'go-fuzz-build -func Fuzz_% -o <package>-%-fuzz.zip github.com/lightningnetwork/lnd/fuzz/<package>'
+$ find * -maxdepth 1 -regex '[A-Za-z0-9\-_.]'* -not -name fuzz_utils.go | sed 's/\.go$//1' | xargs -I % sh -c 'go-fuzz-build -func Fuzz_% -o <package>-%-fuzz.zip github.com/ltcsuite/lnd/fuzz/<package>'
 ```
 
 * This may take a while since this will create zip files associated with each fuzzing target.

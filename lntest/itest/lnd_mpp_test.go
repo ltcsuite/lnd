@@ -8,13 +8,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
-	"github.com/lightningnetwork/lnd/lntest"
-	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/ltcsuite/lnd"
+	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/lnrpc/routerrpc"
+	"github.com/ltcsuite/lnd/lntest"
+	"github.com/ltcsuite/lnd/routing/route"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 )
 
 // testSendToRouteMultiPath tests that we are able to successfully route a
@@ -29,7 +29,7 @@ func testSendToRouteMultiPath(net *lntest.NetworkHarness, t *harnessTest) {
 	// channel size that can only carry one shard at a time. We'll divide
 	// the payment into 3 shards.
 	const (
-		paymentAmt = btcutil.Amount(300000)
+		paymentAmt = ltcutil.Amount(300000)
 		shardAmt   = paymentAmt / 3
 		chanAmt    = shardAmt * 3 / 2
 	)
@@ -77,7 +77,7 @@ func testSendToRouteMultiPath(net *lntest.NetworkHarness, t *harnessTest) {
 	payAddr := decodeResp.PaymentAddr
 
 	// Helper function for Alice to build a route from pubkeys.
-	buildRoute := func(amt btcutil.Amount, hops []*lntest.HarnessNode) (
+	buildRoute := func(amt ltcutil.Amount, hops []*lntest.HarnessNode) (
 		*lnrpc.Route, error) {
 
 		rpcHops := make([][]byte, 0, len(hops))
@@ -332,11 +332,11 @@ func newMppTestContext(t *harnessTest,
 }
 
 // openChannel is a helper to open a channel from->to.
-func (c *mppTestContext) openChannel(from, to *lntest.HarnessNode, chanSize btcutil.Amount) {
+func (c *mppTestContext) openChannel(from, to *lntest.HarnessNode, chanSize ltcutil.Amount) {
 	ctxb := context.Background()
 
 	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	err := c.net.SendCoins(ctxt, btcutil.SatoshiPerBitcoin, from)
+	err := c.net.SendCoins(ctxt, ltcutil.SatoshiPerBitcoin, from)
 	if err != nil {
 		c.t.Fatalf("unable to send coins : %v", err)
 	}

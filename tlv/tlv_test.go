@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/lightningnetwork/lnd/tlv"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/lnd/tlv"
 )
 
 type nodeAmts struct {

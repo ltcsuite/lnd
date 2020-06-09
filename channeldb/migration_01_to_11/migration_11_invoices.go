@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"io"
 
-	bitcoinCfg "github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/zpay32"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/zpay32"
+	bitcoinCfg "github.com/ltcsuite/ltcd/chaincfg"
 	litecoinCfg "github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // MigrateInvoices adds invoice htlcs and a separate cltv delta field to the
@@ -44,7 +44,7 @@ func MigrateInvoices(tx kvdb.RwTx) error {
 
 	nets := []*bitcoinCfg.Params{
 		&bitcoinCfg.MainNetParams, &bitcoinCfg.SimNetParams,
-		&bitcoinCfg.RegressionNetParams, &bitcoinCfg.TestNet3Params,
+		&bitcoinCfg.RegressionNetParams, &bitcoinCfg.TestNet4Params,
 	}
 
 	ltcNets := []*litecoinCfg.Params{

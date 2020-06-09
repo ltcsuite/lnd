@@ -9,15 +9,15 @@ import (
 	"math"
 	"time"
 
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcutil"
 
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/netann"
-	"github.com/lightningnetwork/lnd/zpay32"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/lntypes"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/netann"
+	"github.com/ltcsuite/lnd/zpay32"
 )
 
 // AddInvoiceConfig contains dependencies for invoice creation.
@@ -158,7 +158,7 @@ func AddInvoice(ctx context.Context, cfg *AddInvoiceConfig,
 
 	// We set the max invoice amount to 100k BTC, which itself is several
 	// multiples off the current block reward.
-	maxInvoiceAmt := btcutil.Amount(btcutil.SatoshiPerBitcoin * 100000)
+	maxInvoiceAmt := ltcutil.Amount(ltcutil.SatoshiPerBitcoin * 100000)
 
 	switch {
 	// The value of the invoice must not be negative.
@@ -192,7 +192,7 @@ func AddInvoice(ctx context.Context, cfg *AddInvoiceConfig,
 
 	// If specified, add a fallback address to the payment request.
 	if len(invoice.FallbackAddr) > 0 {
-		addr, err := btcutil.DecodeAddress(invoice.FallbackAddr,
+		addr, err := ltcutil.DecodeAddress(invoice.FallbackAddr,
 			cfg.ChainParams)
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid fallback address: %v",

@@ -3,7 +3,7 @@
 package lnwirefuzz
 
 import (
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 // Fuzz_update_fulfill_htlc is used by go-fuzz.

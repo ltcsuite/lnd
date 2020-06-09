@@ -5,7 +5,7 @@ package lnwirefuzz
 import (
 	"bytes"
 
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 // Fuzz_open_channel is used by go-fuzz.

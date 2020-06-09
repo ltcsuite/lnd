@@ -6,13 +6,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/watchtower/wtdb"
-	"github.com/lightningnetwork/lnd/watchtower/wtserver"
-	"github.com/lightningnetwork/lnd/watchtower/wtwire"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/watchtower/wtdb"
+	"github.com/ltcsuite/lnd/watchtower/wtserver"
+	"github.com/ltcsuite/lnd/watchtower/wtwire"
 )
 
 // reserveStatus is an enum that signals how full a particular session is.

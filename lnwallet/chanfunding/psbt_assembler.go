@@ -7,13 +7,13 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcutil/psbt"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcutil/psbt"
 )
 
 // PsbtState is a type for the state of the PSBT intent state machine.
@@ -157,7 +157,7 @@ func (i *PsbtIntent) BindKeys(localKey *keychain.KeyDescriptor,
 // channel output this intent was created for. It returns the P2WSH funding
 // address, the exact funding amount and a PSBT packet that contains exactly one
 // output that encodes the previous two parameters.
-func (i *PsbtIntent) FundingParams() (btcutil.Address, int64, *psbt.Packet,
+func (i *PsbtIntent) FundingParams() (ltcutil.Address, int64, *psbt.Packet,
 	error) {
 
 	if i.State != PsbtOutputKnown {
@@ -176,7 +176,7 @@ func (i *PsbtIntent) FundingParams() (btcutil.Address, int64, *psbt.Packet,
 	witnessScriptHash := sha256.Sum256(witnessScript)
 
 	// Encode the address in the human readable bech32 format.
-	addr, err := btcutil.NewAddressWitnessScriptHash(
+	addr, err := ltcutil.NewAddressWitnessScriptHash(
 		witnessScriptHash[:], i.netParams,
 	)
 	if err != nil {
@@ -378,7 +378,7 @@ func (i *PsbtIntent) Cancel() {
 // transactions (PSBT).
 type PsbtAssembler struct {
 	// fundingAmt is the total amount of coins in the funding output.
-	fundingAmt btcutil.Amount
+	fundingAmt ltcutil.Amount
 
 	// basePsbt is the user-supplied base PSBT the channel output should be
 	// added to.
@@ -393,7 +393,7 @@ type PsbtAssembler struct {
 // to construct a funding output and channel point. An optional base PSBT can
 // be supplied which will be used to add the channel output to instead of
 // creating a new one.
-func NewPsbtAssembler(fundingAmt btcutil.Amount, basePsbt *psbt.Packet,
+func NewPsbtAssembler(fundingAmt ltcutil.Amount, basePsbt *psbt.Packet,
 	netParams *chaincfg.Params) *PsbtAssembler {
 
 	return &PsbtAssembler{

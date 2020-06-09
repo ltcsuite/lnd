@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/htlcswitch/hop"
-	"github.com/lightningnetwork/lnd/invoices"
-	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/htlcswitch/hop"
+	"github.com/ltcsuite/lnd/invoices"
+	"github.com/ltcsuite/lnd/lntypes"
+	"github.com/ltcsuite/lnd/lnwallet"
 )
 
 // htlcIncomingContestResolver is a ContractResolver that's able to resolve an
@@ -320,7 +320,7 @@ func (h *htlcIncomingContestResolver) report() *ContractReport {
 
 	finalAmt := h.htlc.Amt.ToSatoshis()
 	if h.htlcResolution.SignedSuccessTx != nil {
-		finalAmt = btcutil.Amount(
+		finalAmt = ltcutil.Amount(
 			h.htlcResolution.SignedSuccessTx.TxOut[0].Value,
 		)
 	}

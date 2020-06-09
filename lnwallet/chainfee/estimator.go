@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/btcsuite/btcd/rpcclient"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/rpcclient"
+	"github.com/ltcsuite/ltcutil"
 )
 
 const (
@@ -117,8 +117,8 @@ func (e StaticEstimator) Stop() error {
 var _ Estimator = (*StaticEstimator)(nil)
 
 // BtcdEstimator is an implementation of the Estimator interface backed
-// by the RPC interface of an active btcd node. This implementation will proxy
-// any fee estimation requests to btcd's RPC interface.
+// by the RPC interface of an active ltcd node. This implementation will proxy
+// any fee estimation requests to ltcd's RPC interface.
 type BtcdEstimator struct {
 	// fallbackFeePerKW is the fall back fee rate in sat/kw that is returned
 	// if the fee estimator does not yet have enough data to actually
@@ -131,12 +131,12 @@ type BtcdEstimator struct {
 	// through the network.
 	minFeePerKW SatPerKWeight
 
-	btcdConn *rpcclient.Client
+	ltcdConn *rpcclient.Client
 }
 
 // NewBtcdEstimator creates a new BtcdEstimator given a fully populated
 // rpc config that is able to successfully connect and authenticate with the
-// btcd node, and also a fall back fee rate. The fallback fee rate is used in
+// ltcd node, and also a fall back fee rate. The fallback fee rate is used in
 // the occasion that the estimator has insufficient data, or returns zero for a
 // fee estimate.
 func NewBtcdEstimator(rpcConfig rpcclient.ConnConfig,
@@ -151,7 +151,7 @@ func NewBtcdEstimator(rpcConfig rpcclient.ConnConfig,
 
 	return &BtcdEstimator{
 		fallbackFeePerKW: fallBackFeeRate,
-		btcdConn:         chainConn,
+		ltcdConn:         chainConn,
 	}, nil
 }
 
@@ -160,18 +160,18 @@ func NewBtcdEstimator(rpcConfig rpcclient.ConnConfig,
 //
 // NOTE: This method is part of the Estimator interface.
 func (b *BtcdEstimator) Start() error {
-	if err := b.btcdConn.Connect(20); err != nil {
+	if err := b.ltcdConn.Connect(20); err != nil {
 		return err
 	}
 
 	// Once the connection to the backend node has been established, we'll
 	// query it for its minimum relay fee.
-	info, err := b.btcdConn.GetInfo()
+	info, err := b.ltcdConn.GetInfo()
 	if err != nil {
 		return err
 	}
 
-	relayFee, err := btcutil.NewAmount(info.RelayFee)
+	relayFee, err := ltcutil.NewAmount(info.RelayFee)
 	if err != nil {
 		return err
 	}
@@ -199,7 +199,7 @@ func (b *BtcdEstimator) Start() error {
 //
 // NOTE: This method is part of the Estimator interface.
 func (b *BtcdEstimator) Stop() error {
-	b.btcdConn.Shutdown()
+	b.ltcdConn.Shutdown()
 
 	return nil
 }
@@ -237,14 +237,14 @@ func (b *BtcdEstimator) RelayFeePerKW() SatPerKWeight {
 // confTarget blocks. The estimate is returned in sat/kw.
 func (b *BtcdEstimator) fetchEstimate(confTarget uint32) (SatPerKWeight, error) {
 	// First, we'll fetch the estimate for our confirmation target.
-	btcPerKB, err := b.btcdConn.EstimateFee(int64(confTarget))
+	btcPerKB, err := b.ltcdConn.EstimateFee(int64(confTarget))
 	if err != nil {
 		return 0, err
 	}
 
 	// Next, we'll convert the returned value to satoshis, as it's
 	// currently returned in BTC.
-	satPerKB, err := btcutil.NewAmount(btcPerKB)
+	satPerKB, err := ltcutil.NewAmount(btcPerKB)
 	if err != nil {
 		return 0, err
 	}
@@ -340,7 +340,7 @@ func (b *BitcoindEstimator) Start() error {
 		return err
 	}
 
-	relayFee, err := btcutil.NewAmount(info.RelayFee)
+	relayFee, err := ltcutil.NewAmount(info.RelayFee)
 	if err != nil {
 		return err
 	}
@@ -404,7 +404,7 @@ func (b *BitcoindEstimator) RelayFeePerKW() SatPerKWeight {
 // confTarget blocks. The estimate is returned in sat/kw.
 func (b *BitcoindEstimator) fetchEstimate(confTarget uint32) (SatPerKWeight, error) {
 	// First, we'll send an "estimatesmartfee" command as a raw request,
-	// since it isn't supported by btcd but is available in bitcoind.
+	// since it isn't supported by ltcd but is available in bitcoind.
 	target, err := json.Marshal(uint64(confTarget))
 	if err != nil {
 		return 0, err
@@ -434,7 +434,7 @@ func (b *BitcoindEstimator) fetchEstimate(confTarget uint32) (SatPerKWeight, err
 
 	// Next, we'll convert the returned value to satoshis, as it's currently
 	// returned in BTC.
-	satPerKB, err := btcutil.NewAmount(feeEstimate.FeeRate)
+	satPerKB, err := ltcutil.NewAmount(feeEstimate.FeeRate)
 	if err != nil {
 		return 0, err
 	}

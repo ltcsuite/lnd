@@ -3,7 +3,7 @@ package wtdb
 import (
 	"io"
 
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 // ChannelSummaries is a map for a given channel id to it's ClientChanSummary.

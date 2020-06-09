@@ -9,15 +9,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcwallet/snacl"
-	"github.com/btcsuite/btcwallet/waddrmgr"
-	"github.com/btcsuite/btcwallet/wallet"
-	"github.com/lightningnetwork/lnd/aezeed"
-	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
-	"github.com/lightningnetwork/lnd/walletunlocker"
+	"github.com/ltcsuite/lnd/aezeed"
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/walletunlocker"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcwallet/snacl"
+	"github.com/ltcsuite/ltcwallet/waddrmgr"
+	"github.com/ltcsuite/ltcwallet/wallet"
 )
 
 var (
@@ -50,7 +49,7 @@ func createTestWallet(t *testing.T, dir string, netParams *chaincfg.Params) {
 	waddrmgr.SetSecretKeyGen(keyGen)
 
 	// Create a new test wallet that uses fast scrypt as KDF.
-	netDir := btcwallet.NetworkDir(dir, netParams)
+	netDir := ltcwallet.NetworkDir(dir, netParams)
 	loader := wallet.NewLoader(netParams, netDir, true, 0)
 	_, err := loader.CreateNewWallet(
 		testPassword, testPassword, testSeed, time.Time{},

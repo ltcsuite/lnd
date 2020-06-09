@@ -10,7 +10,7 @@
 set -e
 
 LND_VERSION_REGEX="lnd version (.+) commit"
-PKG="github.com/lightningnetwork/lnd"
+PKG="github.com/ltcsuite/lnd"
 PACKAGE=lnd
 
 # green prints one line of green text (if the terminal supports it).

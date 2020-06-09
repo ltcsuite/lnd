@@ -7,12 +7,13 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcutil/psbt"
-	"github.com/lightningnetwork/lnd"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lntest"
+
+	"github.com/ltcsuite/lnd"
+	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/lntest"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcutil/psbt"
 )
 
 // testPsbtChanFunding makes sure a channel can be opened between carol and dave
@@ -207,7 +208,7 @@ func testPsbtChanFunding(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// Next, to make sure the channel functions as normal, we'll make some
 	// payments within the channel.
-	payAmt := btcutil.Amount(100000)
+	payAmt := ltcutil.Amount(100000)
 	invoice := &lnrpc.Invoice{
 		Memo:  "new chans",
 		Value: int64(payAmt),

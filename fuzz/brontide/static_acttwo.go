@@ -3,7 +3,7 @@
 package brontidefuzz
 
 import (
-	"github.com/lightningnetwork/lnd/brontide"
+	"github.com/ltcsuite/lnd/brontide"
 )
 
 // Fuzz_static_acttwo is a go-fuzz harness for ActTwo in the brontide

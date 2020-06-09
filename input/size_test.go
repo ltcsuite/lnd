@@ -4,15 +4,15 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/btcsuite/btcd/blockchain"
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/blockchain"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/keychain"
 )
 
 const (
@@ -48,7 +48,7 @@ var (
 func TestTxWeightEstimator(t *testing.T) {
 	netParams := &chaincfg.MainNetParams
 
-	p2pkhAddr, err := btcutil.NewAddressPubKeyHash(
+	p2pkhAddr, err := ltcutil.NewAddressPubKeyHash(
 		make([]byte, 20), netParams)
 	if err != nil {
 		t.Fatalf("Failed to generate address: %v", err)
@@ -58,7 +58,7 @@ func TestTxWeightEstimator(t *testing.T) {
 		t.Fatalf("Failed to generate scriptPubKey: %v", err)
 	}
 
-	p2wkhAddr, err := btcutil.NewAddressWitnessPubKeyHash(
+	p2wkhAddr, err := ltcutil.NewAddressWitnessPubKeyHash(
 		make([]byte, 20), netParams)
 	if err != nil {
 		t.Fatalf("Failed to generate address: %v", err)
@@ -68,7 +68,7 @@ func TestTxWeightEstimator(t *testing.T) {
 		t.Fatalf("Failed to generate scriptPubKey: %v", err)
 	}
 
-	p2wshAddr, err := btcutil.NewAddressWitnessScriptHash(
+	p2wshAddr, err := ltcutil.NewAddressWitnessScriptHash(
 		make([]byte, 32), netParams)
 	if err != nil {
 		t.Fatalf("Failed to generate address: %v", err)
@@ -78,7 +78,7 @@ func TestTxWeightEstimator(t *testing.T) {
 		t.Fatalf("Failed to generate scriptPubKey: %v", err)
 	}
 
-	p2shAddr, err := btcutil.NewAddressScriptHash([]byte{0}, netParams)
+	p2shAddr, err := ltcutil.NewAddressScriptHash([]byte{0}, netParams)
 	if err != nil {
 		t.Fatalf("Failed to generate address: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestTxWeightEstimator(t *testing.T) {
 			tx.AddTxOut(&wire.TxOut{PkScript: p2shScript})
 		}
 
-		expectedWeight := blockchain.GetTransactionWeight(btcutil.NewTx(tx))
+		expectedWeight := blockchain.GetTransactionWeight(ltcutil.NewTx(tx))
 		if weightEstimate.Weight() != int(expectedWeight) {
 			t.Errorf("Case %d: Got wrong weight: expected %d, got %d",
 				i, expectedWeight, weightEstimate.Weight())

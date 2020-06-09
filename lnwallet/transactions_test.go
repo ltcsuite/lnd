@@ -7,19 +7,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/shachain"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/shachain"
 )
 
 /**
@@ -32,7 +32,7 @@ import (
 // BOLT 03 spec.
 type testContext struct {
 	netParams *chaincfg.Params
-	block1    *btcutil.Block
+	block1    *ltcutil.Block
 
 	fundingInputPrivKey *btcec.PrivateKey
 	localFundingPrivKey *btcec.PrivateKey
@@ -48,19 +48,19 @@ type testContext struct {
 	localPaymentBasePoint  *btcec.PublicKey
 	remotePaymentBasePoint *btcec.PublicKey
 
-	fundingChangeAddress btcutil.Address
+	fundingChangeAddress ltcutil.Address
 	fundingInputUtxo     *Utxo
 	fundingInputTxOut    *wire.TxOut
-	fundingTx            *btcutil.Tx
+	fundingTx            *ltcutil.Tx
 	fundingOutpoint      wire.OutPoint
 	shortChanID          lnwire.ShortChannelID
 
 	htlcs []channeldb.HTLC
 
 	localCsvDelay uint16
-	fundingAmount btcutil.Amount
-	dustLimit     btcutil.Amount
-	feePerKW      btcutil.Amount
+	fundingAmount ltcutil.Amount
+	dustLimit     ltcutil.Amount
+	feePerKW      ltcutil.Amount
 }
 
 // htlcDesc is a description used to construct each HTLC in each test case.
@@ -193,7 +193,7 @@ func newTestContext() (tc *testContext, err error) {
 	}
 
 	const fundingChangeAddressStr = "bcrt1qgyeqfmptyh780dsk32qawsvdffc2g5q5sxamg0"
-	tc.fundingChangeAddress, err = btcutil.DecodeAddress(
+	tc.fundingChangeAddress, err = ltcutil.DecodeAddress(
 		fundingChangeAddressStr, tc.netParams)
 	if err != nil {
 		err = fmt.Errorf("Failed to parse address: %v", err)
@@ -331,7 +331,7 @@ func (tc *testContext) extractFundingInput() (*Utxo, *wire.TxOut, error) {
 
 	block1Utxo := Utxo{
 		AddressType: WitnessPubKey,
-		Value:       btcutil.Amount(txout.Value),
+		Value:       ltcutil.Amount(txout.Value),
 		OutPoint: wire.OutPoint{
 			Hash:  *tx.Hash(),
 			Index: 0,
@@ -1024,7 +1024,7 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	}
 	fakeFundingTxIn := wire.NewTxIn(fundingOut, nil, nil)
 
-	const channelBalance = btcutil.Amount(1 * 10e8)
+	const channelBalance = ltcutil.Amount(1 * 10e8)
 	const csvTimeout = 5
 
 	// We also set up set some resources for the commitment transaction.

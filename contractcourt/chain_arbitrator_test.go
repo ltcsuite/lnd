@@ -6,11 +6,11 @@ import (
 	"os"
 	"testing"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/clock"
-	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/clock"
+	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // TestChainArbitratorRepulishCloses tests that the chain arbitrator will

@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package verrpc;
 
-option go_package = "github.com/lightningnetwork/lnd/lnrpc/verrpc";
+option go_package = "github.com/ltcsuite/lnd/lnrpc/verrpc";
 
 service Versioner {
     rpc GetVersion (VersionRequest) returns (Version);

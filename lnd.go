@@ -1,4 +1,4 @@
-// Copyright (c) 2013-2017 The btcsuite developers
+// Copyright (c) 2013-2017 The ltcsuite developers
 // Copyright (c) 2015-2016 The Decred developers
 // Copyright (C) 2015-2017 The Lightning Network Developers
 
@@ -27,28 +27,27 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcwallet/wallet"
 	proxy "github.com/grpc-ecosystem/grpc-gateway/runtime"
-	"github.com/lightninglabs/neutrino"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcwallet/wallet"
+	"github.com/ltcsuite/neutrino"
 
-	"github.com/lightningnetwork/lnd/autopilot"
-	"github.com/lightningnetwork/lnd/build"
-	"github.com/lightningnetwork/lnd/cert"
-	"github.com/lightningnetwork/lnd/chanacceptor"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lncfg"
-	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lnwallet"
-	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
-	"github.com/lightningnetwork/lnd/macaroons"
-	"github.com/lightningnetwork/lnd/signal"
-	"github.com/lightningnetwork/lnd/tor"
-	"github.com/lightningnetwork/lnd/walletunlocker"
-	"github.com/lightningnetwork/lnd/watchtower"
-	"github.com/lightningnetwork/lnd/watchtower/wtdb"
+	"github.com/ltcsuite/lnd/autopilot"
+	"github.com/ltcsuite/lnd/build"
+	"github.com/ltcsuite/lnd/cert"
+	"github.com/ltcsuite/lnd/chanacceptor"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lncfg"
+	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/macaroons"
+	"github.com/ltcsuite/lnd/signal"
+	"github.com/ltcsuite/lnd/tor"
+	"github.com/ltcsuite/lnd/walletunlocker"
+	"github.com/ltcsuite/lnd/watchtower"
+	"github.com/ltcsuite/lnd/watchtower/wtdb"
 )
 
 var (
@@ -540,7 +539,7 @@ func Main(lisCfg ListenerCfg) error {
 			DB:             towerDB,
 			EpochRegistrar: activeChainControl.chainNotifier,
 			Net:            cfg.net,
-			NewAddress: func() (btcutil.Address, error) {
+			NewAddress: func() (ltcutil.Address, error) {
 				return activeChainControl.wallet.NewAddress(
 					lnwallet.WitnessPubKey, false,
 				)
@@ -834,7 +833,7 @@ func getTLSConfig(tlsCertPath string, tlsKeyPath string, tlsExtraIPs,
 }
 
 // fileExists reports whether the named file or directory exists.
-// This function is taken from https://github.com/btcsuite/btcd
+// This function is taken from https://github.com/ltcsuite/ltcd
 func fileExists(name string) bool {
 	if _, err := os.Stat(name); err != nil {
 		if os.IsNotExist(err) {
@@ -1060,7 +1059,7 @@ func waitForWalletPassword(restEndpoints []net.Addr,
 				keychain.KeyDerivationVersion)
 		}
 
-		netDir := btcwallet.NetworkDir(
+		netDir := ltcwallet.NetworkDir(
 			chainConfig.ChainDir, activeNetParams.Params,
 		)
 		loader := wallet.NewLoader(

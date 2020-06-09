@@ -4,8 +4,8 @@ import (
 	"errors"
 	"io"
 
-	"github.com/lightningnetwork/lnd/watchtower/blob"
-	"github.com/lightningnetwork/lnd/watchtower/wtpolicy"
+	"github.com/ltcsuite/lnd/watchtower/blob"
+	"github.com/ltcsuite/lnd/watchtower/wtpolicy"
 )
 
 var (

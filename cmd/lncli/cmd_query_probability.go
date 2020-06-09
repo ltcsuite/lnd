@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/lnd/lnrpc/routerrpc"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/routing/route"
 	"github.com/urfave/cli"
 )
 
@@ -43,7 +43,7 @@ func queryProb(ctx *cli.Context) error {
 	}
 
 	amtMsat := lnwire.NewMSatFromSatoshis(
-		btcutil.Amount(amtSat),
+		ltcutil.Amount(amtSat),
 	)
 
 	conn := getClientConn(ctx, false)

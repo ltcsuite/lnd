@@ -8,17 +8,17 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/btcsuite/btcd/btcjson"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/rpcclient"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcutil/gcs/builder"
-	"github.com/lightninglabs/neutrino"
-	"github.com/lightninglabs/neutrino/headerfs"
-	"github.com/lightningnetwork/lnd/chainntnfs"
-	"github.com/lightningnetwork/lnd/queue"
+	"github.com/ltcsuite/ltcd/btcjson"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/rpcclient"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcutil/gcs/builder"
+	"github.com/ltcsuite/neutrino"
+	"github.com/ltcsuite/neutrino/headerfs"
+	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/queue"
 )
 
 const (
@@ -220,7 +220,7 @@ func (n *NeutrinoNotifier) startNotifier() error {
 type filteredBlock struct {
 	hash   chainhash.Hash
 	height uint32
-	txns   []*btcutil.Tx
+	txns   []*ltcutil.Tx
 
 	// connected is true if this update is a new block and false if it is a
 	// disconnected block.
@@ -238,7 +238,7 @@ type rescanFilterUpdate struct {
 // onFilteredBlockConnected is a callback which is executed each a new block is
 // connected to the end of the main chain.
 func (n *NeutrinoNotifier) onFilteredBlockConnected(height int32,
-	header *wire.BlockHeader, txns []*btcutil.Tx) {
+	header *wire.BlockHeader, txns []*ltcutil.Tx) {
 
 	// Append this new chain update to the end of the queue of new chain
 	// updates.
@@ -273,13 +273,13 @@ func (n *NeutrinoNotifier) onFilteredBlockDisconnected(height int32,
 // relevantTx represents a relevant transaction to the notifier that fulfills
 // any outstanding spend requests.
 type relevantTx struct {
-	tx      *btcutil.Tx
+	tx      *ltcutil.Tx
 	details *btcjson.BlockDetails
 }
 
 // onRelevantTx is a callback that proxies relevant transaction notifications
 // from the backend to the notifier's main event handler.
-func (n *NeutrinoNotifier) onRelevantTx(tx *btcutil.Tx, details *btcjson.BlockDetails) {
+func (n *NeutrinoNotifier) onRelevantTx(tx *ltcutil.Tx, details *btcjson.BlockDetails) {
 	select {
 	case n.txUpdates.ChanIn() <- &relevantTx{tx, details}:
 	case <-n.quit:

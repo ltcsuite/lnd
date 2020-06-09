@@ -7,7 +7,7 @@ import (
 	"os"
 	"path"
 
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 

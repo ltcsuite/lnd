@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcwallet/wallet/txauthor"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
 )
 
 // AddressType is an enum-like type which denotes the possible address types
@@ -58,7 +58,7 @@ var ErrNoOutputs = errors.New("no outputs")
 // original output.
 type Utxo struct {
 	AddressType   AddressType
-	Value         btcutil.Amount
+	Value         ltcutil.Amount
 	Confirmations int64
 	PkScript      []byte
 	wire.OutPoint
@@ -74,7 +74,7 @@ type TransactionDetail struct {
 	// PoV of the wallet. If this transaction purely spends from the
 	// wallet's funds, then this value will be negative. Similarly, if this
 	// transaction credits the wallet, then this value will be positive.
-	Value btcutil.Amount
+	Value ltcutil.Amount
 
 	// NumConfirmations is the number of confirmations this transaction
 	// has. If the transaction is unconfirmed, then this value will be
@@ -99,7 +99,7 @@ type TransactionDetail struct {
 	TotalFees int64
 
 	// DestAddresses are the destinations for a transaction
-	DestAddresses []btcutil.Address
+	DestAddresses []ltcutil.Address
 
 	// RawTx returns the raw serialized transaction.
 	RawTx []byte
@@ -126,7 +126,7 @@ type TransactionSubscription interface {
 // Go wallet, a local or remote wallet via an RPC mechanism, or possibly even
 // a daemon assisted hardware wallet. This interface serves the purpose of
 // allowing LightningWallet to be seamlessly compatible with several wallets
-// such as: uspv, btcwallet, Bitcoin Core, Electrum, etc. This interface then
+// such as: uspv, ltcwallet, Bitcoin Core, Electrum, etc. This interface then
 // serves as a "base wallet", with Lightning Network awareness taking place at
 // a "higher" level of abstraction. Essentially, an overlay wallet.
 // Implementors of this interface must closely adhere to the documented
@@ -147,7 +147,7 @@ type WalletController interface {
 	// NOTE: Only witness outputs should be included in the computation of
 	// the total spendable balance of the wallet. We require this as only
 	// witness inputs can be used for funding channels.
-	ConfirmedBalance(confs int32) (btcutil.Amount, error)
+	ConfirmedBalance(confs int32) (ltcutil.Amount, error)
 
 	// NewAddress returns the next external or internal address for the
 	// wallet dictated by the value of the `change` parameter. If change is
@@ -155,7 +155,7 @@ type WalletController interface {
 	// address should be returned. The type of address returned is dictated
 	// by the wallet's capabilities, and may be of type: p2sh, p2wkh,
 	// p2wsh, etc.
-	NewAddress(addrType AddressType, change bool) (btcutil.Address, error)
+	NewAddress(addrType AddressType, change bool) (ltcutil.Address, error)
 
 	// LastUnusedAddress returns the last *unused* address known by the
 	// wallet. An address is unused if it hasn't received any payments.
@@ -163,10 +163,10 @@ type WalletController interface {
 	// "freshest" address without having to worry about "address inflation"
 	// caused by continual refreshing. Similar to NewAddress it can derive
 	// a specified address type. By default, this is a non-change address.
-	LastUnusedAddress(addrType AddressType) (btcutil.Address, error)
+	LastUnusedAddress(addrType AddressType) (ltcutil.Address, error)
 
 	// IsOurAddress checks if the passed address belongs to this wallet
-	IsOurAddress(a btcutil.Address) bool
+	IsOurAddress(a ltcutil.Address) bool
 
 	// SendOutputs funds, signs, and broadcasts a Bitcoin transaction paying
 	// out to the specified outputs. In the case the wallet has insufficient
@@ -247,7 +247,7 @@ type WalletController interface {
 	Stop() error
 
 	// BackEnd returns a name for the wallet's backing chain service,
-	// which could be e.g. btcd, bitcoind, neutrino, or another consensus
+	// which could be e.g. ltcd, bitcoind, neutrino, or another consensus
 	// service.
 	BackEnd() string
 }
@@ -313,7 +313,7 @@ type WalletDriver struct {
 	New func(args ...interface{}) (WalletController, error)
 
 	// BackEnds returns a list of available chain service drivers for the
-	// wallet driver. This could be e.g. bitcoind, btcd, neutrino, etc.
+	// wallet driver. This could be e.g. bitcoind, ltcd, neutrino, etc.
 	BackEnds func() []string
 }
 

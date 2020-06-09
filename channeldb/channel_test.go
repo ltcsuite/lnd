@@ -10,18 +10,18 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	_ "github.com/btcsuite/btcwallet/walletdb/bdb"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/lightningnetwork/lnd/clock"
-	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/shachain"
+	"github.com/ltcsuite/lnd/clock"
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/shachain"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
+	_ "github.com/ltcsuite/ltcwallet/walletdb/bdb"
 )
 
 var (
@@ -277,9 +277,9 @@ func createTestChannelState(t *testing.T, cdb *DB) *OpenChannel {
 
 	localCfg := ChannelConfig{
 		ChannelConstraints: ChannelConstraints{
-			DustLimit:        btcutil.Amount(rand.Int63()),
+			DustLimit:        ltcutil.Amount(rand.Int63()),
 			MaxPendingAmount: lnwire.MilliSatoshi(rand.Int63()),
-			ChanReserve:      btcutil.Amount(rand.Int63()),
+			ChanReserve:      ltcutil.Amount(rand.Int63()),
 			MinHTLC:          lnwire.MilliSatoshi(rand.Int63()),
 			MaxAcceptedHtlcs: uint16(rand.Int31()),
 			CsvDelay:         uint16(rand.Int31()),
@@ -302,9 +302,9 @@ func createTestChannelState(t *testing.T, cdb *DB) *OpenChannel {
 	}
 	remoteCfg := ChannelConfig{
 		ChannelConstraints: ChannelConstraints{
-			DustLimit:        btcutil.Amount(rand.Int63()),
+			DustLimit:        ltcutil.Amount(rand.Int63()),
 			MaxPendingAmount: lnwire.MilliSatoshi(rand.Int63()),
-			ChanReserve:      btcutil.Amount(rand.Int63()),
+			ChanReserve:      ltcutil.Amount(rand.Int63()),
 			MinHTLC:          lnwire.MilliSatoshi(rand.Int63()),
 			MaxAcceptedHtlcs: uint16(rand.Int31()),
 			CsvDelay:         uint16(rand.Int31()),
@@ -356,7 +356,7 @@ func createTestChannelState(t *testing.T, cdb *DB) *OpenChannel {
 		IsInitiator:       true,
 		IsPending:         true,
 		IdentityPub:       pubKey,
-		Capacity:          btcutil.Amount(10000),
+		Capacity:          ltcutil.Amount(10000),
 		LocalChanCfg:      localCfg,
 		RemoteChanCfg:     remoteCfg,
 		TotalMSatSent:     8,
@@ -365,8 +365,8 @@ func createTestChannelState(t *testing.T, cdb *DB) *OpenChannel {
 			CommitHeight:  0,
 			LocalBalance:  lnwire.MilliSatoshi(9000),
 			RemoteBalance: lnwire.MilliSatoshi(3000),
-			CommitFee:     btcutil.Amount(rand.Int63()),
-			FeePerKw:      btcutil.Amount(5000),
+			CommitFee:     ltcutil.Amount(rand.Int63()),
+			FeePerKw:      ltcutil.Amount(5000),
 			CommitTx:      testTx,
 			CommitSig:     bytes.Repeat([]byte{1}, 71),
 		},
@@ -374,8 +374,8 @@ func createTestChannelState(t *testing.T, cdb *DB) *OpenChannel {
 			CommitHeight:  0,
 			LocalBalance:  lnwire.MilliSatoshi(3000),
 			RemoteBalance: lnwire.MilliSatoshi(9000),
-			CommitFee:     btcutil.Amount(rand.Int63()),
-			FeePerKw:      btcutil.Amount(5000),
+			CommitFee:     ltcutil.Amount(rand.Int63()),
+			FeePerKw:      ltcutil.Amount(5000),
 			CommitTx:      testTx,
 			CommitSig:     bytes.Repeat([]byte{1}, 71),
 		},
@@ -472,8 +472,8 @@ func TestOpenChannelPutGetDelete(t *testing.T) {
 	closeSummary := &ChannelCloseSummary{
 		ChanPoint:         state.FundingOutpoint,
 		RemotePub:         state.IdentityPub,
-		SettledBalance:    btcutil.Amount(500),
-		TimeLockedBalance: btcutil.Amount(10000),
+		SettledBalance:    ltcutil.Amount(500),
+		TimeLockedBalance: ltcutil.Amount(10000),
 		IsPending:         false,
 		CloseType:         CooperativeClose,
 	}
@@ -874,8 +874,8 @@ func TestChannelStateTransition(t *testing.T) {
 	closeSummary := &ChannelCloseSummary{
 		ChanPoint:         channel.FundingOutpoint,
 		RemotePub:         channel.IdentityPub,
-		SettledBalance:    btcutil.Amount(500),
-		TimeLockedBalance: btcutil.Amount(10000),
+		SettledBalance:    ltcutil.Amount(500),
+		TimeLockedBalance: ltcutil.Amount(10000),
 		IsPending:         false,
 		CloseType:         RemoteForceClose,
 	}

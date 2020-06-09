@@ -1,9 +1,9 @@
 package chanfunding
 
 import (
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 )
 
 // CoinSource is an interface that allows a caller to access a source of UTXOs
@@ -53,11 +53,11 @@ type OutpointLocker interface {
 type Request struct {
 	// LocalAmt is the amount of coins we're placing into the funding
 	// output.
-	LocalAmt btcutil.Amount
+	LocalAmt ltcutil.Amount
 
 	// RemoteAmt is the amount of coins the remote party is contributing to
 	// the funding output.
-	RemoteAmt btcutil.Amount
+	RemoteAmt ltcutil.Amount
 
 	// MinConfs controls how many confirmations a coin need to be eligible
 	// to be used as an input to the funding transaction. If this value is
@@ -77,7 +77,7 @@ type Request struct {
 
 	// ChangeAddr is a closure that will provide the Assembler with a
 	// change address for the funding transaction if needed.
-	ChangeAddr func() (btcutil.Address, error)
+	ChangeAddr func() (ltcutil.Address, error)
 }
 
 // Intent is returned by an Assembler and represents the base functionality the
@@ -95,13 +95,13 @@ type Intent interface {
 
 	// RemoteFundingAmt is the amount the remote party put into the
 	// channel.
-	RemoteFundingAmt() btcutil.Amount
+	RemoteFundingAmt() ltcutil.Amount
 
 	// LocalFundingAmt is the amount we put into the channel. This may
 	// differ from the local amount requested, as depending on coin
 	// selection, we may bleed from of that LocalAmt into fees to minimize
 	// change.
-	LocalFundingAmt() btcutil.Amount
+	LocalFundingAmt() ltcutil.Amount
 
 	// Cancel allows the caller to cancel a funding Intent at any time.
 	// This will return any resources such as coins back to the eligible

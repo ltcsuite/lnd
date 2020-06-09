@@ -5,11 +5,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/clock"
-	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/queue"
-	"github.com/lightningnetwork/lnd/zpay32"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/clock"
+	"github.com/ltcsuite/lnd/lntypes"
+	"github.com/ltcsuite/lnd/queue"
+	"github.com/ltcsuite/lnd/zpay32"
 )
 
 // invoiceExpiry holds and invoice's payment hash and its expiry. This

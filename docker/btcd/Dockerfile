@@ -1,17 +1,17 @@
 FROM golang:1.12-alpine as builder
 
-LABEL maintainer="Olaoluwa Osuntokun <laolu@lightning.engineering>"
+LABEL maintainer="Loshan T <loshan1212@gmail.com>"
 
 # Install build dependencies such as git and glide.
 RUN apk add --no-cache git gcc musl-dev
 
-WORKDIR $GOPATH/src/github.com/btcsuite/btcd
+WORKDIR $GOPATH/src/github.com/ltcsuite/ltcd
 
 # Pin down btcd to a version that we know works with lnd.
 ARG BTCD_VERSION=v0.20.1-beta
 
 # Grab and install the latest version of of btcd and all related dependencies.
-RUN git clone https://github.com/btcsuite/btcd.git . \
+RUN git clone https://github.com/ltcsuite/ltcd.git . \
     && git checkout $BTCD_VERSION \
     &&  GO111MODULE=on go install -v . ./cmd/...
 
@@ -19,10 +19,10 @@ RUN git clone https://github.com/btcsuite/btcd.git . \
 FROM alpine as final
 
 # Expose mainnet ports (server, rpc)
-EXPOSE 8333 8334
+EXPOSE 9333 9334
 
 # Expose testnet ports (server, rpc)
-EXPOSE 18333 18334
+EXPOSE 19335 19334
 
 # Expose simnet ports (server, rpc)
 EXPOSE 18555 18556
@@ -43,16 +43,16 @@ COPY "start-btcd.sh" .
 RUN apk add --no-cache \
     bash \
     ca-certificates \
-&&  mkdir "/rpc" "/root/.btcd" "/root/.btcctl" \
-&&  touch "/root/.btcd/btcd.conf" \
+&&  mkdir "/rpc" "/root/.ltcd" "/root/.ltcctl" \
+&&  touch "/root/.ltcd/ltcd.conf" \
 &&  chmod +x start-btcctl.sh \
 &&  chmod +x start-btcd.sh \
 # Manually generate certificate and add all domains, it is needed to connect
-# "btcctl" and "lnd" to "btcd" over docker links.
+# "ltcctl" and "lnd" to "ltcd" over docker links.
 && "/bin/gencerts" --host="*" --directory="/rpc" --force
 
 # Create a volume to house pregenerated RPC credentials. This will be
-# shared with any lnd, btcctl containers so they can securely query btcd's RPC
+# shared with any lnd, ltcctl containers so they can securely query btcd's RPC
 # server.
 # You should NOT do this before certificate generation!
 # Otherwise manually generated certificate will be overridden with shared

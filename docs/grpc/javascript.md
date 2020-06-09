@@ -16,7 +16,7 @@ You also need to copy the `lnd` `rpc.proto` file in your project directory (or
 at least somewhere reachable by your Javascript code).
 
 The `rpc.proto` file is [located in the `lnrpc` directory of the `lnd`
-sources](https://github.com/lightningnetwork/lnd/blob/master/lnrpc/rpc.proto).
+sources](https://github.com/ltcsuite/lnd/blob/master/lnrpc/rpc.proto).
 
 In order for the auto-generated code to compile successfully, you'll need to
 comment out the following line:

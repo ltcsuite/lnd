@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/lnrpc"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 func randKey(t *testing.T) *btcec.PublicKey {

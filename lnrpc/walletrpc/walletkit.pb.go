@@ -7,8 +7,8 @@ import (
 	context "context"
 	fmt "fmt"
 	proto "github.com/golang/protobuf/proto"
-	lnrpc "github.com/lightningnetwork/lnd/lnrpc"
-	signrpc "github.com/lightningnetwork/lnd/lnrpc/signrpc"
+	lnrpc "github.com/ltcsuite/lnd/lnrpc"
+	signrpc "github.com/ltcsuite/lnd/lnrpc/signrpc"
 	grpc "google.golang.org/grpc"
 	math "math"
 )

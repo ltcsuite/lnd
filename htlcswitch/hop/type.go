@@ -1,6 +1,6 @@
 package hop
 
-import "github.com/lightningnetwork/lnd/lnwire"
+import "github.com/ltcsuite/lnd/lnwire"
 
 var (
 	// Exit is a special "hop" denoting that an incoming HTLC is meant to

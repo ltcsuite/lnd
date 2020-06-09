@@ -12,21 +12,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/btcjson"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/integration/rpctest"
-	"github.com/btcsuite/btcd/rpcclient"
-	"github.com/btcsuite/btcd/txscript"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcwallet/chain"
-	"github.com/btcsuite/btcwallet/walletdb"
-	_ "github.com/btcsuite/btcwallet/walletdb/bdb" // Required to register the boltdb walletdb implementation.
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcjson"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/integration/rpctest"
+	"github.com/ltcsuite/ltcd/rpcclient"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcwallet/chain"
+	"github.com/ltcsuite/ltcwallet/walletdb"
+	_ "github.com/ltcsuite/ltcwallet/walletdb/bdb" // Required to register the boltdb walletdb implementation.
 
-	"github.com/lightninglabs/neutrino"
-	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/ltcsuite/neutrino"
+	"github.com/ltcsuite/lnd/channeldb"
 )
 
 var (
@@ -40,7 +40,7 @@ var (
 	}
 
 	privKey, pubKey = btcec.PrivKeyFromBytes(btcec.S256(), testPrivKey)
-	addrPk, _       = btcutil.NewAddressPubKey(pubKey.SerializeCompressed(),
+	addrPk, _       = ltcutil.NewAddressPubKey(pubKey.SerializeCompressed(),
 		netParams)
 	testAddr = addrPk.AddressPubKeyHash()
 
@@ -49,7 +49,7 @@ var (
 
 func waitForMempoolTx(r *rpctest.Harness, txid *chainhash.Hash) error {
 	var found bool
-	var tx *btcutil.Tx
+	var tx *ltcutil.Tx
 	var err error
 	timeout := time.After(10 * time.Second)
 	for !found {
@@ -481,7 +481,7 @@ func testFilterSingleBlock(node *rpctest.Harness, chainView FilteredChainView,
 	if err != nil {
 		t.Fatalf("unable to create spending tx: %v", err)
 	}
-	txns := []*btcutil.Tx{btcutil.NewTx(spendingTx1), btcutil.NewTx(spendingTx2)}
+	txns := []*ltcutil.Tx{ltcutil.NewTx(spendingTx1), ltcutil.NewTx(spendingTx2)}
 	block, err := node.GenerateAndSubmitBlock(txns, 11, time.Time{})
 	if err != nil {
 		t.Fatalf("unable to generate block: %v", err)
@@ -564,7 +564,7 @@ func testFilterBlockDisconnected(node *rpctest.Harness,
 	}()
 
 	if err = reorgView.Start(); err != nil {
-		t.Fatalf("unable to start btcd chain view: %v", err)
+		t.Fatalf("unable to start ltcd chain view: %v", err)
 	}
 	defer reorgView.Stop()
 
@@ -865,7 +865,7 @@ var interfaceImpls = []struct {
 			spvNode.Start()
 
 			// Wait until the node has fully synced up to the local
-			// btcd node.
+			// ltcd node.
 			for !spvNode.IsCurrent() {
 				time.Sleep(time.Millisecond * 100)
 			}
@@ -885,7 +885,7 @@ var interfaceImpls = []struct {
 		},
 	},
 	{
-		name: "btcd_websockets",
+		name: "ltcd_websockets",
 		chainViewInit: func(config rpcclient.ConnConfig, _ string) (func(), FilteredChainView, error) {
 			chainView, err := NewBtcdFilteredChainView(config)
 			if err != nil {
@@ -898,7 +898,7 @@ var interfaceImpls = []struct {
 }
 
 func TestFilteredChainView(t *testing.T) {
-	// Initialize the harness around a btcd node which will serve as our
+	// Initialize the harness around a ltcd node which will serve as our
 	// dedicated miner to generate blocks, cause re-orgs, etc. We'll set up
 	// this node with a chain length of 125, so we have plenty of BTC to
 	// play around with.

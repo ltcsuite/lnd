@@ -6,9 +6,9 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/btcsuite/btcd/btcec"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/lightningnetwork/lnd/brontide"
+	"github.com/ltcsuite/lnd/brontide"
+	"github.com/ltcsuite/ltcd/btcec"
 )
 
 var (

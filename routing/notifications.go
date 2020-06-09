@@ -7,13 +7,13 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/go-errors/errors"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 // TopologyClient represents an intent to receive notifications from the
@@ -196,7 +196,7 @@ type ClosedChanSummary struct {
 	ChanID uint64
 
 	// Capacity was the total capacity of the channel before it was closed.
-	Capacity btcutil.Amount
+	Capacity ltcutil.Amount
 
 	// ClosedHeight is the height in the chain that the channel was closed
 	// at.
@@ -268,7 +268,7 @@ type ChannelEdgeUpdate struct {
 	ChanPoint wire.OutPoint
 
 	// Capacity is the capacity of the newly created channel.
-	Capacity btcutil.Amount
+	Capacity ltcutil.Amount
 
 	// MinHTLC is the minimum HTLC amount that this channel will forward.
 	MinHTLC lnwire.MilliSatoshi

@@ -3,8 +3,8 @@ package invoices
 import (
 	"time"
 
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/lntypes"
 )
 
 // HtlcResolution describes how an htlc should be resolved.

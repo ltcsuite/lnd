@@ -8,15 +8,15 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 	"github.com/davecgh/go-spew/spew"
 
-	"github.com/lightningnetwork/lnd/chainntnfs"
-	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/input"
-	"github.com/lightningnetwork/lnd/lnwallet"
-	"github.com/lightningnetwork/lnd/sweep"
+	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/sweep"
 )
 
 //                          SUMMARY OF OUTPUT STATES
@@ -1032,11 +1032,11 @@ func (u *utxoNursery) waitForPreschoolConf(kid *kidOutput,
 type contractMaturityReport struct {
 	// limboBalance is the total number of frozen coins within this
 	// contract.
-	limboBalance btcutil.Amount
+	limboBalance ltcutil.Amount
 
 	// recoveredBalance is the total value that has been successfully swept
 	// back to the user's wallet.
-	recoveredBalance btcutil.Amount
+	recoveredBalance ltcutil.Amount
 	// htlcs records a maturity report for each htlc output in this channel.
 	htlcs []htlcMaturityReport
 }
@@ -1048,7 +1048,7 @@ type htlcMaturityReport struct {
 	outpoint wire.OutPoint
 
 	// amount is the final value that will be swept in back to the wallet.
-	amount btcutil.Amount
+	amount ltcutil.Amount
 
 	// maturityHeight is the absolute block height that this output will
 	// mature at.
@@ -1382,7 +1382,7 @@ func (k *kidOutput) Decode(r io.Reader) error {
 	if _, err := r.Read(scratch[:]); err != nil {
 		return err
 	}
-	k.amt = btcutil.Amount(byteOrder.Uint64(scratch[:]))
+	k.amt = ltcutil.Amount(byteOrder.Uint64(scratch[:]))
 
 	if err := readOutpoint(io.LimitReader(r, 40), &k.outpoint); err != nil {
 		return err

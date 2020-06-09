@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package wtclientrpc;
 
-option go_package = "github.com/lightningnetwork/lnd/lnrpc/wtclientrpc";
+option go_package = "github.com/ltcsuite/lnd/lnrpc/wtclientrpc";
 
 message AddTowerRequest {
     // The identifying public key of the watchtower to add.

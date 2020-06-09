@@ -7,7 +7,7 @@ import (
 	"encoding/binary"
 	"reflect"
 
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/ltcsuite/lnd/lnwire"
 )
 
 // prefixWithMsgType takes []byte and adds a wire protocol prefix

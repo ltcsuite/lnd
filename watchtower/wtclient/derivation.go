@@ -1,8 +1,8 @@
 package wtclient
 
 import (
-	"github.com/btcsuite/btcd/btcec"
-	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/lnd/keychain"
 )
 
 // DeriveSessionKey accepts an session key index for an existing session and

@@ -817,7 +817,6 @@ func loadConfig() (*config, error) {
 		// primary chain.
 		registeredChains.RegisterPrimaryChain(litecoinChain)
 		MaxFundingAmount = maxLtcFundingAmount
-		MaxPaymentMSat = maxLtcPaymentMSat
 	}
 
 	// Ensure that the user didn't attempt to specify negative values for

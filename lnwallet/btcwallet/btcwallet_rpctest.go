@@ -3,8 +3,8 @@
 package btcwallet
 
 import (
-	"github.com/btcsuite/btcwallet/snacl"
-	"github.com/btcsuite/btcwallet/waddrmgr"
+	"github.com/ltcsuite/ltcwallet/snacl"
+	"github.com/ltcsuite/ltcwallet/waddrmgr"
 )
 
 func init() {

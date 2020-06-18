@@ -42,6 +42,7 @@ import (
 	"github.com/ltcsuite/lnd/lncfg"
 	"github.com/ltcsuite/lnd/lnrpc"
 	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwallet/btcwallet"
 	"github.com/ltcsuite/lnd/macaroons"
 	"github.com/ltcsuite/lnd/signal"
 	"github.com/ltcsuite/lnd/tor"
@@ -1059,7 +1060,7 @@ func waitForWalletPassword(restEndpoints []net.Addr,
 				keychain.KeyDerivationVersion)
 		}
 
-		netDir := ltcwallet.NetworkDir(
+		netDir := btcwallet.NetworkDir(
 			chainConfig.ChainDir, activeNetParams.Params,
 		)
 		loader := wallet.NewLoader(

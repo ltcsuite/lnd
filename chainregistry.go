@@ -12,17 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/rpcclient"
-	"github.com/ltcsuite/ltcutil"
-	"github.com/ltcsuite/ltcwallet/chain"
-	"github.com/ltcsuite/ltcwallet/wallet"
-	"github.com/ltcsuite/ltcwallet/walletdb"
-	"github.com/ltcsuite/neutrino"
-	"github.com/ltcsuite/neutrino/headerfs"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/chainntnfs/bitcoindnotify"
-	"github.com/ltcsuite/lnd/chainntnfs/btcdnotify"
+	ltcdnotify "github.com/ltcsuite/lnd/chainntnfs/btcdnotify"
 	"github.com/ltcsuite/lnd/chainntnfs/neutrinonotify"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/htlcswitch"
@@ -33,6 +25,14 @@ import (
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/routing/chainview"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/rpcclient"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcwallet/chain"
+	"github.com/ltcsuite/ltcwallet/wallet"
+	"github.com/ltcsuite/ltcwallet/walletdb"
+	"github.com/ltcsuite/neutrino"
+	"github.com/ltcsuite/neutrino/headerfs"
 )
 
 const (
@@ -205,7 +205,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			"unknown", registeredChains.PrimaryChain())
 	}
 
-	walletConfig := &ltcwallet.Config{
+	walletConfig := &btcwallet.Config{
 		PrivatePass:    privateWalletPw,
 		PublicPass:     publicWalletPw,
 		Birthday:       birthday,
@@ -280,9 +280,9 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			bitcoindHost = bitcoindMode.RPCHost
 		} else {
 			// The RPC ports specified in chainparams.go assume
-			// ltcd, which picks a different port so that ltcwallet
+			// ltcd, which picks a different port so that btcwallet
 			// can use the same RPC port as bitcoind. We convert
-			// this back to the ltcwallet/bitcoind port.
+			// this back to the btcwallet/bitcoind port.
 			rpcPort, err := strconv.Atoi(activeNetParams.rpcPort)
 			if err != nil {
 				return nil, err
@@ -491,7 +491,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			homeChainConfig.Node)
 	}
 
-	wc, err := ltcwallet.New(*walletConfig)
+	wc, err := btcwallet.New(*walletConfig)
 	if err != nil {
 		fmt.Printf("unable to create wallet controller: %v\n", err)
 		return nil, err
@@ -721,7 +721,7 @@ func (c *chainRegistry) NumActiveChains() uint32 {
 func initNeutrinoBackend(chainDir string) (*neutrino.ChainService, func(), error) {
 	// First we'll open the database file for neutrino, creating the
 	// database if needed. We append the normalized network name here to
-	// match the behavior of ltcwallet.
+	// match the behavior of btcwallet.
 	dbPath := filepath.Join(
 		chainDir,
 		normalizeNetwork(activeNetParams.Name),

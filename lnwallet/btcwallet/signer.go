@@ -1,8 +1,12 @@
-package ltcwallet
+package btcwallet
 
 import (
 	"fmt"
 
+	"github.com/go-errors/errors"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/txscript"
@@ -11,10 +15,6 @@ import (
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	base "github.com/ltcsuite/ltcwallet/wallet"
 	"github.com/ltcsuite/ltcwallet/walletdb"
-	"github.com/go-errors/errors"
-	"github.com/ltcsuite/lnd/input"
-	"github.com/ltcsuite/lnd/keychain"
-	"github.com/ltcsuite/lnd/lnwallet"
 )
 
 // FetchInputInfo queries for the WalletController's knowledge of the passed

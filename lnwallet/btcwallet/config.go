@@ -1,4 +1,4 @@
-package ltcwallet
+package btcwallet
 
 import (
 	"path/filepath"

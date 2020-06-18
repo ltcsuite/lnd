@@ -1,4 +1,4 @@
-package ltcwallet
+package btcwallet
 
 import (
 	"bytes"
@@ -8,6 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/txscript"
@@ -19,9 +22,6 @@ import (
 	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
 	"github.com/ltcsuite/ltcwallet/wallet/txrules"
 	"github.com/ltcsuite/ltcwallet/walletdb"
-	"github.com/ltcsuite/lnd/keychain"
-	"github.com/ltcsuite/lnd/lnwallet"
-	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 )
 
 const (

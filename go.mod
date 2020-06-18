@@ -32,7 +32,7 @@ require (
 	github.com/lightninglabs/protobuf-hex-display v1.3.3-0.20191212020323-b444784ce75d
 	github.com/ltcsuite/lightning-onion v1.0.2
 	github.com/ltcsuite/lnd/cert v0.0.0-00010101000000-000000000000
-	github.com/ltcsuite/lnd/queue v1.0.3
+	github.com/ltcsuite/lnd/queue v1.0.4
 	github.com/ltcsuite/lnd/ticker v1.0.1
 	github.com/ltcsuite/ltcd v0.20.1-beta.0.20200617222819-81094527da29
 	github.com/ltcsuite/ltcutil v1.0.2-beta
@@ -46,7 +46,6 @@ require (
 	github.com/mattn/go-runewidth v0.0.9 // indirect
 	github.com/miekg/dns v0.0.0-20171125082028-79bfde677fa8
 	github.com/prometheus/client_golang v0.9.3
-	github.com/prometheus/common v0.4.0
 	github.com/stretchr/testify v1.3.0
 	github.com/tv42/zbase32 v0.0.0-20160707012821-501572607d02
 	github.com/urfave/cli v1.18.0

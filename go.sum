@@ -30,8 +30,6 @@ github.com/btcsuite/btclog v0.0.0-20170628155309-84c8d2346e9f h1:bAs4lUbRJpnnkd9
 github.com/btcsuite/btclog v0.0.0-20170628155309-84c8d2346e9f/go.mod h1:TdznJufoqS23FtqVCzL0ZqgP5MqXbb4fg/WgDys70nA=
 github.com/btcsuite/btcutil v0.0.0-20190425235716-9e5f4b9a998d h1:yJzD/yFppdVCf6ApMkVy8cUxV0XrxdP9rVf6D87/Mng=
 github.com/btcsuite/btcutil v0.0.0-20190425235716-9e5f4b9a998d/go.mod h1:+5NJ2+qvTyV9exUAL/rxXi3DcLg2Ts+ymUAY5y4NvMg=
-github.com/btcsuite/btcutil v1.0.2 h1:9iZ1Terx9fMIOtq1VrwdqfsATL9MC2l8ZrUY6YZ2uts=
-github.com/btcsuite/btcutil v1.0.2/go.mod h1:j9HUFwoQRsZL3V4n+qG+CUnEGHOarIxfC3Le2Yhbcts=
 github.com/btcsuite/btcwallet v0.11.0 h1:XhwqdhEchy5a0q6R+y3F82roD2hYycPCHovgNyJS08w=
 github.com/btcsuite/btcwallet v0.11.0/go.mod h1:qtPAohN1ioo0pvJt/j7bZM8ANBWlYWVCVFL0kkijs7s=
 github.com/btcsuite/btcwallet/wallet/txauthor v1.0.0 h1:KGHMW5sd7yDdDMkCZ/JpP0KltolFsQcB973brBnfj4c=
@@ -41,13 +39,10 @@ github.com/btcsuite/btcwallet/wallet/txrules v1.0.0/go.mod h1:UwQE78yCerZ313EXZw
 github.com/btcsuite/btcwallet/wallet/txsizes v1.0.0 h1:6DxkcoMnCPY4E9cUDPB5tbuuf40SmmMkSQkoE8vCT+s=
 github.com/btcsuite/btcwallet/wallet/txsizes v1.0.0/go.mod h1:pauEU8UuMFiThe5PB3EO+gO5kx87Me5NvdQDsTuq6cs=
 github.com/btcsuite/btcwallet/walletdb v1.0.0/go.mod h1:bZTy9RyYZh9fLnSua+/CD48TJtYJSHjjYcSaszuxCCk=
-github.com/btcsuite/btcwallet/walletdb v1.2.0 h1:E0+M4jHOToAvGWZ27ew5AaDAHDi6fUiXkjUJUnoEOD0=
-github.com/btcsuite/btcwallet/walletdb v1.2.0/go.mod h1:9cwc1Yyg4uvd4ZdfdoMnALji+V9gfWSMfxEdLdR5Vwc=
 github.com/btcsuite/btcwallet/walletdb v1.3.1 h1:lW1Ac3F1jJY4K11P+YQtRNcP5jFk27ASfrV7C6mvRU0=
 github.com/btcsuite/btcwallet/walletdb v1.3.1/go.mod h1:9cwc1Yyg4uvd4ZdfdoMnALji+V9gfWSMfxEdLdR5Vwc=
 github.com/btcsuite/btcwallet/wtxmgr v1.0.0 h1:aIHgViEmZmZfe0tQQqF1xyd2qBqFWxX5vZXkkbjtbeA=
 github.com/btcsuite/btcwallet/wtxmgr v1.0.0/go.mod h1:vc4gBprll6BP0UJ+AIGDaySoc7MdAmZf8kelfNb8CFY=
-github.com/btcsuite/btcwallet/wtxmgr v1.1.0/go.mod h1:OwC0W0HhUszbWdvJvH6xvgabKSJ0lXl11YbmmqF9YXQ=
 github.com/btcsuite/fastsha256 v0.0.0-20160815193821-637e65642941 h1:kij1x2aL7VE6gtx8KMIt8PGPgI5GV9LgtHFG5KaEMPY=
 github.com/btcsuite/fastsha256 v0.0.0-20160815193821-637e65642941/go.mod h1:QcFA8DZHtuIAdYKCq/BzELOaznRsCvwf4zTPmaYwaig=
 github.com/btcsuite/go-socks v0.0.0-20170105172521-4720035b7bfd h1:R/opQEbFEy9JGkIguV40SvRY1uliPX8ifOvi6ICsFCw=
@@ -167,6 +162,8 @@ github.com/ltcsuite/lightning-onion v1.0.2 h1:xzllgO2zZCuBjwPwanr6x6uvzs32OU+LbI
 github.com/ltcsuite/lightning-onion v1.0.2/go.mod h1:xQc584GcwP7y92aVmeHmJt0s7smU8YY0kxlq8R27wIs=
 github.com/ltcsuite/lnd/queue v1.0.3 h1:c3lV2VVknh6tUNBgSHrIUiyaaFfWWdt+s2q0Oz4fDaQ=
 github.com/ltcsuite/lnd/queue v1.0.3/go.mod h1:L0MMGRrsJFPHhTInek8YgW2v7NyB6pXrAh6Bbg2D7u8=
+github.com/ltcsuite/lnd/queue v1.0.4 h1:Wi9Ss0YQH1FD9X2hs1w1ogklkFpF6rJA3+aRCUTpMck=
+github.com/ltcsuite/lnd/queue v1.0.4/go.mod h1:L0MMGRrsJFPHhTInek8YgW2v7NyB6pXrAh6Bbg2D7u8=
 github.com/ltcsuite/lnd/ticker v1.0.1 h1:+0KvqE4HYO+fFPgNo+42hhyEjK0DwBp//IPmkLhCMcI=
 github.com/ltcsuite/lnd/ticker v1.0.1/go.mod h1:WZKpekfDVAVv7Gsrr0GAWC/U1XURfGesFg9sQYJbeL4=
 github.com/ltcsuite/ltcd v0.20.1-beta/go.mod h1:ZFQaYdYULIuTQiWqs7AUiHD2XhDFeeHW1IH+UYMdABU=

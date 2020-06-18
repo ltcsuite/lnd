@@ -8,8 +8,7 @@ import (
 	"path"
 	"testing"
 
-	"github.com/coreos/bbolt"
-
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
 	"github.com/ltcsuite/lnd/macaroons"
 
 	"github.com/ltcsuite/ltcwallet/snacl"
@@ -22,8 +21,9 @@ func TestStore(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	db, err := bbolt.Open(path.Join(tempDir, "weks.db"), 0600,
-		bbolt.DefaultOptions)
+	db, err := kvdb.Create(
+		kvdb.BoltBackendName, path.Join(tempDir, "weks.db"), true,
+	)
 	if err != nil {
 		t.Fatalf("Error opening store DB: %v", err)
 	}
@@ -73,11 +73,13 @@ func TestStore(t *testing.T) {
 	}
 
 	store.Close()
+
 	// Between here and the re-opening of the store, it's possible to get
 	// a double-close, but that's not such a big deal since the tests will
 	// fail anyway in that case.
-	db, err = bbolt.Open(path.Join(tempDir, "weks.db"), 0600,
-		bbolt.DefaultOptions)
+	db, err = kvdb.Create(
+		kvdb.BoltBackendName, path.Join(tempDir, "weks.db"), true,
+	)
 	if err != nil {
 		t.Fatalf("Error opening store DB: %v", err)
 	}

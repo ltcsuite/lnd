@@ -4,10 +4,11 @@ import (
 	"net"
 	"sync/atomic"
 
-	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/lnd/brontide"
+	"github.com/ltcsuite/lnd/tor"
 	"github.com/ltcsuite/lnd/watchtower/lookout"
 	"github.com/ltcsuite/lnd/watchtower/wtserver"
+	"github.com/ltcsuite/ltcd/btcec"
 )
 
 // Standalone encapsulates the server-side functionality required by watchtower
@@ -112,6 +113,15 @@ func (w *Standalone) Start() error {
 
 	log.Infof("Starting watchtower")
 
+	// If a tor controller exists in the config, then automatically create a
+	// hidden service for the watchtower to accept inbound connections from.
+	if w.cfg.TorController != nil {
+		log.Infof("Creating watchtower hidden service")
+		if err := w.createNewHiddenService(); err != nil {
+			return err
+		}
+	}
+
 	if err := w.lookout.Start(); err != nil {
 		return err
 	}
@@ -138,6 +148,39 @@ func (w *Standalone) Stop() error {
 	w.lookout.Stop()
 
 	log.Infof("Watchtower stopped successfully")
+
+	return nil
+}
+
+// createNewHiddenService automatically sets up a v2 or v3 onion service in
+// order to listen for inbound connections over Tor.
+func (w *Standalone) createNewHiddenService() error {
+	// Get all the ports the watchtower is listening on. These will be used to
+	// map the hidden service's virtual port.
+	listenPorts := make([]int, 0, len(w.listeners))
+	for _, listener := range w.listeners {
+		port := listener.Addr().(*net.TCPAddr).Port
+		listenPorts = append(listenPorts, port)
+	}
+
+	// Once we've created the port mapping, we can automatically create the
+	// hidden service. The service's private key will be saved on disk in order
+	// to persistently have access to this hidden service across restarts.
+	onionCfg := tor.AddOnionConfig{
+		VirtualPort: DefaultPeerPort,
+		TargetPorts: listenPorts,
+		Store:       tor.NewOnionFile(w.cfg.WatchtowerKeyPath, 0600),
+		Type:        w.cfg.Type,
+	}
+
+	addr, err := w.cfg.TorController.AddOnion(onionCfg)
+	if err != nil {
+		return err
+	}
+
+	// Append this address to ExternalIPs so that it will be exposed in
+	// tower info calls.
+	w.cfg.ExternalIPs = append(w.cfg.ExternalIPs, addr)
 
 	return nil
 }

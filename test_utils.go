@@ -11,12 +11,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/clock"
 	"github.com/ltcsuite/lnd/contractcourt"
 	"github.com/ltcsuite/lnd/htlcswitch"
 	"github.com/ltcsuite/lnd/input"
@@ -27,6 +24,10 @@ import (
 	"github.com/ltcsuite/lnd/netann"
 	"github.com/ltcsuite/lnd/shachain"
 	"github.com/ltcsuite/lnd/ticker"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 )
 
 var (
@@ -360,6 +361,12 @@ func createTestPeer(notifier chainntnfs.ChainNotifier, publTx chan *wire.MsgTx,
 		contractcourt.ChainArbitratorConfig{
 			Notifier: notifier,
 			ChainIO:  chainIO,
+			IsForwardedHTLC: func(chanID lnwire.ShortChannelID,
+				htlcIndex uint64) bool {
+
+				return true
+			},
+			Clock: clock.NewDefaultClock(),
 		}, dbAlice,
 	)
 	chainArb.WatchNewChannel(aliceChannelState)

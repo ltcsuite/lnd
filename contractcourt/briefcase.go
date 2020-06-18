@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/coreos/bbolt"
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // ContractResolutions is a wrapper struct around the two forms of resolutions
@@ -29,6 +29,11 @@ type ContractResolutions struct {
 	// HtlcResolutions contains all data required to fully resolve any
 	// incoming+outgoing HTLC's present within the commitment transaction.
 	HtlcResolutions lnwallet.HtlcResolutions
+
+	// AnchorResolution contains the data required to sweep the anchor
+	// output. If the channel type doesn't include anchors, the value of
+	// this field will be nil.
+	AnchorResolution *lnwallet.AnchorResolution
 }
 
 // IsEmpty returns true if the set of resolutions is "empty". A resolution is
@@ -37,7 +42,8 @@ type ContractResolutions struct {
 func (c *ContractResolutions) IsEmpty() bool {
 	return c.CommitResolution == nil &&
 		len(c.HtlcResolutions.IncomingHTLCs) == 0 &&
-		len(c.HtlcResolutions.OutgoingHTLCs) == 0
+		len(c.HtlcResolutions.OutgoingHTLCs) == 0 &&
+		c.AnchorResolution == nil
 }
 
 // ArbitratorLog is the primary source of persistent storage for the
@@ -263,6 +269,10 @@ var (
 	// the full set of resolutions for a channel.
 	resolutionsKey = []byte("resolutions")
 
+	// anchorResolutionKey is the key under the logScope that we'll use to
+	// store the anchor resolution, if any.
+	anchorResolutionKey = []byte("anchor-resolution")
+
 	// actionsBucketKey is the key under the logScope that we'll use to
 	// store all chain actions once they're determined.
 	actionsBucketKey = []byte("chain-actions")
@@ -299,7 +309,7 @@ var (
 // boltArbitratorLog is an implementation of the ArbitratorLog interface backed
 // by a bolt DB instance.
 type boltArbitratorLog struct {
-	db *bbolt.DB
+	db kvdb.Backend
 
 	cfg ChannelArbitratorConfig
 
@@ -308,7 +318,7 @@ type boltArbitratorLog struct {
 
 // newBoltArbitratorLog returns a new instance of the boltArbitratorLog given
 // an arbitrator config, and the items needed to create its log scope.
-func newBoltArbitratorLog(db *bbolt.DB, cfg ChannelArbitratorConfig,
+func newBoltArbitratorLog(db kvdb.Backend, cfg ChannelArbitratorConfig,
 	chainHash chainhash.Hash, chanPoint wire.OutPoint) (*boltArbitratorLog, error) {
 
 	scope, err := newLogScope(chainHash, chanPoint)
@@ -327,13 +337,13 @@ func newBoltArbitratorLog(db *bbolt.DB, cfg ChannelArbitratorConfig,
 // interface.
 var _ ArbitratorLog = (*boltArbitratorLog)(nil)
 
-func fetchContractReadBucket(tx *bbolt.Tx, scopeKey []byte) (*bbolt.Bucket, error) {
-	scopeBucket := tx.Bucket(scopeKey)
+func fetchContractReadBucket(tx kvdb.ReadTx, scopeKey []byte) (kvdb.ReadBucket, error) {
+	scopeBucket := tx.ReadBucket(scopeKey)
 	if scopeBucket == nil {
 		return nil, errScopeBucketNoExist
 	}
 
-	contractBucket := scopeBucket.Bucket(contractsBucketKey)
+	contractBucket := scopeBucket.NestedReadBucket(contractsBucketKey)
 	if contractBucket == nil {
 		return nil, errNoContracts
 	}
@@ -341,8 +351,8 @@ func fetchContractReadBucket(tx *bbolt.Tx, scopeKey []byte) (*bbolt.Bucket, erro
 	return contractBucket, nil
 }
 
-func fetchContractWriteBucket(tx *bbolt.Tx, scopeKey []byte) (*bbolt.Bucket, error) {
-	scopeBucket, err := tx.CreateBucketIfNotExists(scopeKey)
+func fetchContractWriteBucket(tx kvdb.RwTx, scopeKey []byte) (kvdb.RwBucket, error) {
+	scopeBucket, err := tx.CreateTopLevelBucket(scopeKey)
 	if err != nil {
 		return nil, err
 	}
@@ -359,8 +369,15 @@ func fetchContractWriteBucket(tx *bbolt.Tx, scopeKey []byte) (*bbolt.Bucket, err
 
 // writeResolver is a helper method that writes a contract resolver and stores
 // it it within the passed contractBucket using its unique resolutionsKey key.
-func (b *boltArbitratorLog) writeResolver(contractBucket *bbolt.Bucket,
+func (b *boltArbitratorLog) writeResolver(contractBucket kvdb.RwBucket,
 	res ContractResolver) error {
+
+	// Only persist resolvers that are stateful. Stateless resolvers don't
+	// expose a resolver key.
+	resKey := res.ResolverKey()
+	if resKey == nil {
+		return nil
+	}
 
 	// First, we'll write to the buffer the type of this resolver. Using
 	// this byte, we can later properly deserialize the resolver properly.
@@ -390,8 +407,6 @@ func (b *boltArbitratorLog) writeResolver(contractBucket *bbolt.Bucket,
 		return err
 	}
 
-	resKey := res.ResolverKey()
-
 	return contractBucket.Put(resKey, buf.Bytes())
 }
 
@@ -400,8 +415,8 @@ func (b *boltArbitratorLog) writeResolver(contractBucket *bbolt.Bucket,
 // NOTE: Part of the ContractResolver interface.
 func (b *boltArbitratorLog) CurrentState() (ArbitratorState, error) {
 	var s ArbitratorState
-	err := b.db.View(func(tx *bbolt.Tx) error {
-		scopeBucket := tx.Bucket(b.scopeKey[:])
+	err := kvdb.View(b.db, func(tx kvdb.ReadTx) error {
+		scopeBucket := tx.ReadBucket(b.scopeKey[:])
 		if scopeBucket == nil {
 			return errScopeBucketNoExist
 		}
@@ -425,8 +440,9 @@ func (b *boltArbitratorLog) CurrentState() (ArbitratorState, error) {
 //
 // NOTE: Part of the ContractResolver interface.
 func (b *boltArbitratorLog) CommitState(s ArbitratorState) error {
-	return b.db.Batch(func(tx *bbolt.Tx) error {
-		scopeBucket, err := tx.CreateBucketIfNotExists(b.scopeKey[:])
+	fmt.Printf("yeee: %T\n", b.db)
+	return kvdb.Batch(b.db, func(tx kvdb.RwTx) error {
+		scopeBucket, err := tx.CreateTopLevelBucket(b.scopeKey[:])
 		if err != nil {
 			return err
 		}
@@ -445,7 +461,7 @@ func (b *boltArbitratorLog) FetchUnresolvedContracts() ([]ContractResolver, erro
 		Checkpoint:              b.checkpointContract,
 	}
 	var contracts []ContractResolver
-	err := b.db.View(func(tx *bbolt.Tx) error {
+	err := kvdb.View(b.db, func(tx kvdb.ReadTx) error {
 		contractBucket, err := fetchContractReadBucket(tx, b.scopeKey[:])
 		if err != nil {
 			return err
@@ -518,7 +534,7 @@ func (b *boltArbitratorLog) FetchUnresolvedContracts() ([]ContractResolver, erro
 //
 // NOTE: Part of the ContractResolver interface.
 func (b *boltArbitratorLog) InsertUnresolvedContracts(resolvers ...ContractResolver) error {
-	return b.db.Batch(func(tx *bbolt.Tx) error {
+	return kvdb.Batch(b.db, func(tx kvdb.RwTx) error {
 		contractBucket, err := fetchContractWriteBucket(tx, b.scopeKey[:])
 		if err != nil {
 			return err
@@ -541,7 +557,7 @@ func (b *boltArbitratorLog) InsertUnresolvedContracts(resolvers ...ContractResol
 //
 // NOTE: Part of the ContractResolver interface.
 func (b *boltArbitratorLog) SwapContract(oldContract, newContract ContractResolver) error {
-	return b.db.Batch(func(tx *bbolt.Tx) error {
+	return kvdb.Batch(b.db, func(tx kvdb.RwTx) error {
 		contractBucket, err := fetchContractWriteBucket(tx, b.scopeKey[:])
 		if err != nil {
 			return err
@@ -561,7 +577,7 @@ func (b *boltArbitratorLog) SwapContract(oldContract, newContract ContractResolv
 //
 // NOTE: Part of the ContractResolver interface.
 func (b *boltArbitratorLog) ResolveContract(res ContractResolver) error {
-	return b.db.Batch(func(tx *bbolt.Tx) error {
+	return kvdb.Batch(b.db, func(tx kvdb.RwTx) error {
 		contractBucket, err := fetchContractWriteBucket(tx, b.scopeKey[:])
 		if err != nil {
 			return err
@@ -579,8 +595,8 @@ func (b *boltArbitratorLog) ResolveContract(res ContractResolver) error {
 //
 // NOTE: Part of the ContractResolver interface.
 func (b *boltArbitratorLog) LogContractResolutions(c *ContractResolutions) error {
-	return b.db.Batch(func(tx *bbolt.Tx) error {
-		scopeBucket, err := tx.CreateBucketIfNotExists(b.scopeKey[:])
+	return kvdb.Batch(b.db, func(tx kvdb.RwTx) error {
+		scopeBucket, err := tx.CreateTopLevelBucket(b.scopeKey[:])
 		if err != nil {
 			return err
 		}
@@ -630,7 +646,26 @@ func (b *boltArbitratorLog) LogContractResolutions(c *ContractResolutions) error
 			}
 		}
 
-		return scopeBucket.Put(resolutionsKey, b.Bytes())
+		err = scopeBucket.Put(resolutionsKey, b.Bytes())
+		if err != nil {
+			return err
+		}
+
+		// Write out the anchor resolution if present.
+		if c.AnchorResolution != nil {
+			var b bytes.Buffer
+			err := encodeAnchorResolution(&b, c.AnchorResolution)
+			if err != nil {
+				return err
+			}
+
+			err = scopeBucket.Put(anchorResolutionKey, b.Bytes())
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
 	})
 }
 
@@ -640,8 +675,8 @@ func (b *boltArbitratorLog) LogContractResolutions(c *ContractResolutions) error
 // NOTE: Part of the ContractResolver interface.
 func (b *boltArbitratorLog) FetchContractResolutions() (*ContractResolutions, error) {
 	c := &ContractResolutions{}
-	err := b.db.View(func(tx *bbolt.Tx) error {
-		scopeBucket := tx.Bucket(b.scopeKey[:])
+	err := kvdb.View(b.db, func(tx kvdb.ReadTx) error {
+		scopeBucket := tx.ReadBucket(b.scopeKey[:])
 		if scopeBucket == nil {
 			return errScopeBucketNoExist
 		}
@@ -710,6 +745,18 @@ func (b *boltArbitratorLog) FetchContractResolutions() (*ContractResolutions, er
 			}
 		}
 
+		anchorResBytes := scopeBucket.Get(anchorResolutionKey)
+		if anchorResBytes != nil {
+			c.AnchorResolution = &lnwallet.AnchorResolution{}
+			resReader := bytes.NewReader(anchorResBytes)
+			err := decodeAnchorResolution(
+				resReader, c.AnchorResolution,
+			)
+			if err != nil {
+				return err
+			}
+		}
+
 		return nil
 	})
 	if err != nil {
@@ -727,13 +774,13 @@ func (b *boltArbitratorLog) FetchContractResolutions() (*ContractResolutions, er
 func (b *boltArbitratorLog) FetchChainActions() (ChainActionMap, error) {
 	actionsMap := make(ChainActionMap)
 
-	err := b.db.View(func(tx *bbolt.Tx) error {
-		scopeBucket := tx.Bucket(b.scopeKey[:])
+	err := kvdb.View(b.db, func(tx kvdb.ReadTx) error {
+		scopeBucket := tx.ReadBucket(b.scopeKey[:])
 		if scopeBucket == nil {
 			return errScopeBucketNoExist
 		}
 
-		actionsBucket := scopeBucket.Bucket(actionsBucketKey)
+		actionsBucket := scopeBucket.NestedReadBucket(actionsBucketKey)
 		if actionsBucket == nil {
 			return errNoActions
 		}
@@ -769,8 +816,8 @@ func (b *boltArbitratorLog) FetchChainActions() (ChainActionMap, error) {
 //
 // NOTE: Part of the ContractResolver interface.
 func (b *boltArbitratorLog) InsertConfirmedCommitSet(c *CommitSet) error {
-	return b.db.Update(func(tx *bbolt.Tx) error {
-		scopeBucket, err := tx.CreateBucketIfNotExists(b.scopeKey[:])
+	return kvdb.Batch(b.db, func(tx kvdb.RwTx) error {
+		scopeBucket, err := tx.CreateTopLevelBucket(b.scopeKey[:])
 		if err != nil {
 			return err
 		}
@@ -790,8 +837,8 @@ func (b *boltArbitratorLog) InsertConfirmedCommitSet(c *CommitSet) error {
 // NOTE: Part of the ContractResolver interface.
 func (b *boltArbitratorLog) FetchConfirmedCommitSet() (*CommitSet, error) {
 	var c *CommitSet
-	err := b.db.View(func(tx *bbolt.Tx) error {
-		scopeBucket := tx.Bucket(b.scopeKey[:])
+	err := kvdb.View(b.db, func(tx kvdb.ReadTx) error {
+		scopeBucket := tx.ReadBucket(b.scopeKey[:])
 		if scopeBucket == nil {
 			return errScopeBucketNoExist
 		}
@@ -822,8 +869,8 @@ func (b *boltArbitratorLog) FetchConfirmedCommitSet() (*CommitSet, error) {
 //
 // NOTE: Part of the ContractResolver interface.
 func (b *boltArbitratorLog) WipeHistory() error {
-	return b.db.Update(func(tx *bbolt.Tx) error {
-		scopeBucket, err := tx.CreateBucketIfNotExists(b.scopeKey[:])
+	return kvdb.Update(b.db, func(tx kvdb.RwTx) error {
+		scopeBucket, err := tx.CreateTopLevelBucket(b.scopeKey[:])
 		if err != nil {
 			return err
 		}
@@ -836,8 +883,8 @@ func (b *boltArbitratorLog) WipeHistory() error {
 
 		// Next, we'll delete any lingering contract state within the
 		// contracts bucket by removing the bucket itself.
-		err = scopeBucket.DeleteBucket(contractsBucketKey)
-		if err != nil && err != bbolt.ErrBucketNotFound {
+		err = scopeBucket.DeleteNestedBucket(contractsBucketKey)
+		if err != nil && err != kvdb.ErrBucketNotFound {
 			return err
 		}
 
@@ -849,13 +896,13 @@ func (b *boltArbitratorLog) WipeHistory() error {
 
 		// We'll delete any chain actions that are still stored by
 		// removing the enclosing bucket.
-		err = scopeBucket.DeleteBucket(actionsBucketKey)
-		if err != nil && err != bbolt.ErrBucketNotFound {
+		err = scopeBucket.DeleteNestedBucket(actionsBucketKey)
+		if err != nil && err != kvdb.ErrBucketNotFound {
 			return err
 		}
 
 		// Finally, we'll delete the enclosing bucket itself.
-		return tx.DeleteBucket(b.scopeKey[:])
+		return tx.DeleteTopLevelBucket(b.scopeKey[:])
 	})
 }
 
@@ -863,7 +910,7 @@ func (b *boltArbitratorLog) WipeHistory() error {
 // ContractResolver instances to checkpoint their state once they reach
 // milestones during contract resolution.
 func (b *boltArbitratorLog) checkpointContract(c ContractResolver) error {
-	return b.db.Batch(func(tx *bbolt.Tx) error {
+	return kvdb.Update(b.db, func(tx kvdb.RwTx) error {
 		contractBucket, err := fetchContractWriteBucket(tx, b.scopeKey[:])
 		if err != nil {
 			return err
@@ -1043,6 +1090,35 @@ func decodeCommitResolution(r io.Reader,
 	}
 
 	return binary.Read(r, endian, &c.MaturityDelay)
+}
+
+func encodeAnchorResolution(w io.Writer,
+	a *lnwallet.AnchorResolution) error {
+
+	if _, err := w.Write(a.CommitAnchor.Hash[:]); err != nil {
+		return err
+	}
+	err := binary.Write(w, endian, a.CommitAnchor.Index)
+	if err != nil {
+		return err
+	}
+
+	return input.WriteSignDescriptor(w, &a.AnchorSignDescriptor)
+}
+
+func decodeAnchorResolution(r io.Reader,
+	a *lnwallet.AnchorResolution) error {
+
+	_, err := io.ReadFull(r, a.CommitAnchor.Hash[:])
+	if err != nil {
+		return err
+	}
+	err = binary.Read(r, endian, &a.CommitAnchor.Index)
+	if err != nil {
+		return err
+	}
+
+	return input.ReadSignDescriptor(r, &a.AnchorSignDescriptor)
 }
 
 func encodeHtlcSetKey(w io.Writer, h *HtlcSetKey) error {

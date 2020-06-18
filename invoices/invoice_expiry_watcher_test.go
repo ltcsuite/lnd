@@ -1,9 +1,11 @@
 package invoices
 
 import (
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/clock"
 	"github.com/ltcsuite/lnd/lntypes"
 )
@@ -12,6 +14,7 @@ import (
 // for InvoiceExpiryWatcher tests.
 type invoiceExpiryWatcherTest struct {
 	t                *testing.T
+	wg               sync.WaitGroup
 	watcher          *InvoiceExpiryWatcher
 	testData         invoiceExpiryTestData
 	canceledInvoices []lntypes.Hash
@@ -29,8 +32,11 @@ func newInvoiceExpiryWatcherTest(t *testing.T, now time.Time,
 		),
 	}
 
+	test.wg.Add(numExpiredInvoices)
+
 	err := test.watcher.Start(func(paymentHash lntypes.Hash) error {
 		test.canceledInvoices = append(test.canceledInvoices, paymentHash)
+		test.wg.Done()
 		return nil
 	})
 
@@ -39,6 +45,22 @@ func newInvoiceExpiryWatcherTest(t *testing.T, now time.Time,
 	}
 
 	return test
+}
+
+func (t *invoiceExpiryWatcherTest) waitForFinish(timeout time.Duration) {
+	done := make(chan struct{})
+
+	// Wait for all cancels.
+	go func() {
+		t.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		t.t.Fatalf("test timeout")
+	}
 }
 
 func (t *invoiceExpiryWatcherTest) checkExpectations() {
@@ -82,9 +104,10 @@ func TestInvoiceExpiryWatcherStartStop(t *testing.T) {
 // Tests that no invoices will expire from an empty InvoiceExpiryWatcher.
 func TestInvoiceExpiryWithNoInvoices(t *testing.T) {
 	t.Parallel()
+
 	test := newInvoiceExpiryWatcherTest(t, testTime, 0, 0)
 
-	time.Sleep(testTimeout)
+	test.waitForFinish(testTimeout)
 	test.watcher.Stop()
 	test.checkExpectations()
 }
@@ -100,7 +123,7 @@ func TestInvoiceExpiryWithOnlyExpiredInvoices(t *testing.T) {
 		test.watcher.AddInvoice(paymentHash, invoice)
 	}
 
-	time.Sleep(testTimeout)
+	test.waitForFinish(testTimeout)
 	test.watcher.Stop()
 	test.checkExpectations()
 }
@@ -109,6 +132,7 @@ func TestInvoiceExpiryWithOnlyExpiredInvoices(t *testing.T) {
 // will be canceled.
 func TestInvoiceExpiryWithPendingAndExpiredInvoices(t *testing.T) {
 	t.Parallel()
+
 	test := newInvoiceExpiryWatcherTest(t, testTime, 5, 5)
 
 	for paymentHash, invoice := range test.testData.expiredInvoices {
@@ -119,7 +143,38 @@ func TestInvoiceExpiryWithPendingAndExpiredInvoices(t *testing.T) {
 		test.watcher.AddInvoice(paymentHash, invoice)
 	}
 
-	time.Sleep(testTimeout)
+	test.waitForFinish(testTimeout)
+	test.watcher.Stop()
+	test.checkExpectations()
+}
+
+// Tests adding multiple invoices at once.
+func TestInvoiceExpiryWhenAddingMultipleInvoices(t *testing.T) {
+	t.Parallel()
+
+	test := newInvoiceExpiryWatcherTest(t, testTime, 5, 5)
+	var invoices []channeldb.InvoiceWithPaymentHash
+
+	for hash, invoice := range test.testData.expiredInvoices {
+		invoices = append(invoices,
+			channeldb.InvoiceWithPaymentHash{
+				Invoice:     *invoice,
+				PaymentHash: hash,
+			},
+		)
+	}
+
+	for hash, invoice := range test.testData.pendingInvoices {
+		invoices = append(invoices,
+			channeldb.InvoiceWithPaymentHash{
+				Invoice:     *invoice,
+				PaymentHash: hash,
+			},
+		)
+	}
+
+	test.watcher.AddInvoices(invoices)
+	test.waitForFinish(testTimeout)
 	test.watcher.Stop()
 	test.checkExpectations()
 }

@@ -8,14 +8,14 @@ import (
 	"os"
 	"time"
 
-	"github.com/ltcsuite/ltcd/chaincfg"
-	"github.com/ltcsuite/ltcwallet/wallet"
 	"github.com/ltcsuite/lnd/aezeed"
 	"github.com/ltcsuite/lnd/chanbackup"
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnrpc"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwallet/btcwallet"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcwallet/wallet"
 )
 
 // ChannelsToRecover wraps any set of packed (serialized+encrypted) channel
@@ -128,7 +128,7 @@ func (u *UnlockerService) GenSeed(ctx context.Context,
 
 	// Before we start, we'll ensure that the wallet hasn't already created
 	// so we don't show a *new* seed to the user if one already exists.
-	netDir := ltcwallet.NetworkDir(u.chainDir, u.netParams)
+	netDir := btcwallet.NetworkDir(u.chainDir, u.netParams)
 	loader := wallet.NewLoader(u.netParams, netDir, u.noFreelistSync, 0)
 	walletExists, err := loader.WalletExists()
 	if err != nil {
@@ -257,7 +257,7 @@ func (u *UnlockerService) InitWallet(ctx context.Context,
 
 	// We'll then open up the directory that will be used to store the
 	// wallet's files so we can check if the wallet already exists.
-	netDir := ltcwallet.NetworkDir(u.chainDir, u.netParams)
+	netDir := btcwallet.NetworkDir(u.chainDir, u.netParams)
 	loader := wallet.NewLoader(
 		u.netParams, netDir, u.noFreelistSync, uint32(recoveryWindow),
 	)
@@ -316,7 +316,7 @@ func (u *UnlockerService) UnlockWallet(ctx context.Context,
 	password := in.WalletPassword
 	recoveryWindow := uint32(in.RecoveryWindow)
 
-	netDir := ltcwallet.NetworkDir(u.chainDir, u.netParams)
+	netDir := btcwallet.NetworkDir(u.chainDir, u.netParams)
 	loader := wallet.NewLoader(
 		u.netParams, netDir, u.noFreelistSync, recoveryWindow,
 	)
@@ -369,7 +369,7 @@ func (u *UnlockerService) UnlockWallet(ctx context.Context,
 func (u *UnlockerService) ChangePassword(ctx context.Context,
 	in *lnrpc.ChangePasswordRequest) (*lnrpc.ChangePasswordResponse, error) {
 
-	netDir := ltcwallet.NetworkDir(u.chainDir, u.netParams)
+	netDir := btcwallet.NetworkDir(u.chainDir, u.netParams)
 	loader := wallet.NewLoader(u.netParams, netDir, u.noFreelistSync, 0)
 
 	// First, we'll make sure the wallet exists for the specific chain and

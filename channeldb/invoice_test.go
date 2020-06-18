@@ -11,6 +11,7 @@ import (
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/record"
+	"github.com/stretchr/testify/assert"
 )
 
 var (
@@ -304,7 +305,9 @@ func TestInvoiceAddTimeSeries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unable to make test db: %v", err)
 	}
-	db.Now = func() time.Time { return testNow }
+
+	_, err = db.InvoicesAddedSince(0)
+	assert.Nil(t, err)
 
 	// We'll start off by creating 20 random invoices, and inserting them
 	// into the database.
@@ -372,6 +375,9 @@ func TestInvoiceAddTimeSeries(t *testing.T) {
 				spew.Sdump(query.resp), spew.Sdump(resp))
 		}
 	}
+
+	_, err = db.InvoicesSettledSince(0)
+	assert.Nil(t, err)
 
 	var settledInvoices []Invoice
 	var settleIndex uint64 = 1
@@ -556,7 +562,6 @@ func TestDuplicateSettleInvoice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unable to make test db: %v", err)
 	}
-	db.Now = func() time.Time { return testNow }
 
 	// We'll start out by creating an invoice and writing it to the DB.
 	amt := lnwire.NewMSatFromSatoshis(1000)
@@ -631,7 +636,6 @@ func TestQueryInvoices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unable to make test db: %v", err)
 	}
-	db.Now = func() time.Time { return testNow }
 
 	// To begin the test, we'll add 50 invoices to the database. We'll
 	// assume that the index of the invoice within the database is the same

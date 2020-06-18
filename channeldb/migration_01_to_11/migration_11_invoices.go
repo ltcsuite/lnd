@@ -6,20 +6,20 @@ import (
 	"fmt"
 	"io"
 
-	bitcoinCfg "github.com/ltcsuite/ltcd/chaincfg"
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/coreos/bbolt"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/zpay32"
+	bitcoinCfg "github.com/ltcsuite/ltcd/chaincfg"
 	litecoinCfg "github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // MigrateInvoices adds invoice htlcs and a separate cltv delta field to the
 // invoices.
-func MigrateInvoices(tx *bbolt.Tx) error {
+func MigrateInvoices(tx kvdb.RwTx) error {
 	log.Infof("Migrating invoices to new invoice format")
 
-	invoiceB := tx.Bucket(invoiceBucket)
+	invoiceB := tx.ReadWriteBucket(invoiceBucket)
 	if invoiceB == nil {
 		return nil
 	}

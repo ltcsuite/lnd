@@ -1,5 +1,7 @@
 package channeldb
 
+import "github.com/ltcsuite/lnd/clock"
+
 const (
 	// DefaultRejectCacheSize is the default number of rejectCacheEntries to
 	// cache for use in the rejection cache of incoming gossip traffic. This
@@ -26,6 +28,13 @@ type Options struct {
 	// freelist to disk, resulting in improved performance at the expense of
 	// increased startup time.
 	NoFreelistSync bool
+
+	// clock is the time source used by the database.
+	clock clock.Clock
+
+	// dryRun will fail to commit a successful migration when opening the
+	// database if set to true.
+	dryRun bool
 }
 
 // DefaultOptions returns an Options populated with default values.
@@ -34,6 +43,7 @@ func DefaultOptions() Options {
 		RejectCacheSize:  DefaultRejectCacheSize,
 		ChannelCacheSize: DefaultChannelCacheSize,
 		NoFreelistSync:   true,
+		clock:            clock.NewDefaultClock(),
 	}
 }
 
@@ -58,5 +68,20 @@ func OptionSetChannelCacheSize(n int) OptionModifier {
 func OptionSetSyncFreelist(b bool) OptionModifier {
 	return func(o *Options) {
 		o.NoFreelistSync = !b
+	}
+}
+
+// OptionClock sets a non-default clock dependency.
+func OptionClock(clock clock.Clock) OptionModifier {
+	return func(o *Options) {
+		o.clock = clock
+	}
+}
+
+// OptionDryRunMigration controls whether or not to intentially fail to commit a
+// successful migration that occurs when opening the database.
+func OptionDryRunMigration(dryRun bool) OptionModifier {
+	return func(o *Options) {
+		o.dryRun = dryRun
 	}
 }

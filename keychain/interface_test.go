@@ -8,13 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcwallet/snacl"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/wallet"
 	"github.com/ltcsuite/ltcwallet/walletdb"
-	"github.com/davecgh/go-spew/spew"
 
 	_ "github.com/ltcsuite/ltcwallet/walletdb/bdb" // Required in order to create the default database.
 )
@@ -41,6 +42,19 @@ var (
 )
 
 func createTestBtcWallet(coinType uint32) (func(), *wallet.Wallet, error) {
+	// Instruct waddrmgr to use the cranked down scrypt parameters when
+	// creating new wallet encryption keys.
+	fastScrypt := waddrmgr.FastScryptOptions
+	keyGen := func(passphrase *[]byte, config *waddrmgr.ScryptOptions) (
+		*snacl.SecretKey, error) {
+
+		return snacl.NewSecretKey(
+			passphrase, fastScrypt.N, fastScrypt.R, fastScrypt.P,
+		)
+	}
+	waddrmgr.SetSecretKeyGen(keyGen)
+
+	// Create a new test wallet that uses fast scrypt as KDF.
 	tempDir, err := ioutil.TempDir("", "keyring-lnwallet")
 	if err != nil {
 		return nil, nil, err

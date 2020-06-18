@@ -15,20 +15,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/go-errors/errors"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/lnpeer"
 	"github.com/ltcsuite/lnd/lntest/wait"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/netann"
 	"github.com/ltcsuite/lnd/routing"
 	"github.com/ltcsuite/lnd/routing/route"
 	"github.com/ltcsuite/lnd/ticker"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 )
 
 var (
@@ -95,7 +97,7 @@ type mockSigner struct {
 }
 
 func (n *mockSigner) SignMessage(pubKey *btcec.PublicKey,
-	msg []byte) (*btcec.Signature, error) {
+	msg []byte) (input.Signature, error) {
 
 	if !pubKey.IsEqual(n.privKey.PubKey()) {
 		return nil, fmt.Errorf("unknown public key")
@@ -451,6 +453,10 @@ func (m *mockNotifier) Start() error {
 	return nil
 }
 
+func (m *mockNotifier) Started() bool {
+	return true
+}
+
 func (m *mockNotifier) Stop() error {
 	return nil
 }
@@ -550,7 +556,7 @@ func createNodeAnnouncement(priv *btcec.PrivateKey,
 	}
 
 	signer := mockSigner{priv}
-	sig, err := SignAnnouncement(&signer, priv.PubKey(), a)
+	sig, err := netann.SignAnnouncement(&signer, priv.PubKey(), a)
 	if err != nil {
 		return nil, err
 	}
@@ -602,7 +608,7 @@ func createUpdateAnnouncement(blockHeight uint32,
 func signUpdate(nodeKey *btcec.PrivateKey, a *lnwire.ChannelUpdate) error {
 	pub := nodeKey.PubKey()
 	signer := mockSigner{nodeKey}
-	sig, err := SignAnnouncement(&signer, pub, a)
+	sig, err := netann.SignAnnouncement(&signer, pub, a)
 	if err != nil {
 		return err
 	}
@@ -644,7 +650,7 @@ func createRemoteChannelAnnouncement(blockHeight uint32,
 
 	pub := nodeKeyPriv1.PubKey()
 	signer := mockSigner{nodeKeyPriv1}
-	sig, err := SignAnnouncement(&signer, pub, a)
+	sig, err := netann.SignAnnouncement(&signer, pub, a)
 	if err != nil {
 		return nil, err
 	}
@@ -655,7 +661,7 @@ func createRemoteChannelAnnouncement(blockHeight uint32,
 
 	pub = nodeKeyPriv2.PubKey()
 	signer = mockSigner{nodeKeyPriv2}
-	sig, err = SignAnnouncement(&signer, pub, a)
+	sig, err = netann.SignAnnouncement(&signer, pub, a)
 	if err != nil {
 		return nil, err
 	}
@@ -666,7 +672,7 @@ func createRemoteChannelAnnouncement(blockHeight uint32,
 
 	pub = bitcoinKeyPriv1.PubKey()
 	signer = mockSigner{bitcoinKeyPriv1}
-	sig, err = SignAnnouncement(&signer, pub, a)
+	sig, err = netann.SignAnnouncement(&signer, pub, a)
 	if err != nil {
 		return nil, err
 	}
@@ -677,7 +683,7 @@ func createRemoteChannelAnnouncement(blockHeight uint32,
 
 	pub = bitcoinKeyPriv2.PubKey()
 	signer = mockSigner{bitcoinKeyPriv2}
-	sig, err = SignAnnouncement(&signer, pub, a)
+	sig, err = netann.SignAnnouncement(&signer, pub, a)
 	if err != nil {
 		return nil, err
 	}

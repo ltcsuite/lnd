@@ -1,8 +1,12 @@
-package ltcwallet
+package btcwallet
 
 import (
 	"fmt"
 
+	"github.com/go-errors/errors"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/txscript"
@@ -11,10 +15,6 @@ import (
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	base "github.com/ltcsuite/ltcwallet/wallet"
 	"github.com/ltcsuite/ltcwallet/walletdb"
-	"github.com/go-errors/errors"
-	"github.com/ltcsuite/lnd/input"
-	"github.com/ltcsuite/lnd/keychain"
-	"github.com/ltcsuite/lnd/lnwallet"
 )
 
 // FetchInputInfo queries for the WalletController's knowledge of the passed
@@ -37,6 +37,11 @@ func (b *BtcWallet) FetchInputInfo(prevOut *wire.OutPoint) (*lnwallet.Utxo, erro
 	// we actually have control of this output. We do this because the check
 	// above only guarantees that the transaction is somehow relevant to us,
 	// like in the event of us being the sender of the transaction.
+	numOutputs := uint32(len(txDetail.TxRecord.MsgTx.TxOut))
+	if prevOut.Index >= numOutputs {
+		return nil, fmt.Errorf("invalid output index %v for "+
+			"transaction with %v outputs", prevOut.Index, numOutputs)
+	}
 	pkScript := txDetail.TxRecord.MsgTx.TxOut[prevOut.Index].PkScript
 	if _, err := b.fetchOutputAddr(pkScript); err != nil {
 		return nil, err
@@ -225,7 +230,7 @@ func maybeTweakPrivKey(signDesc *input.SignDescriptor,
 //
 // This is a part of the WalletController interface.
 func (b *BtcWallet) SignOutputRaw(tx *wire.MsgTx,
-	signDesc *input.SignDescriptor) ([]byte, error) {
+	signDesc *input.SignDescriptor) (input.Signature, error) {
 
 	witnessScript := signDesc.WitnessScript
 
@@ -256,7 +261,7 @@ func (b *BtcWallet) SignOutputRaw(tx *wire.MsgTx,
 	}
 
 	// Chop off the sighash flag at the end of the signature.
-	return sig[:len(sig)-1], nil
+	return btcec.ParseDERSignature(sig[:len(sig)-1], btcec.S256())
 }
 
 // ComputeInputScript generates a complete InputScript for the passed
@@ -358,7 +363,7 @@ var _ input.Signer = (*BtcWallet)(nil)
 //
 // NOTE: This is a part of the MessageSigner interface.
 func (b *BtcWallet) SignMessage(pubKey *btcec.PublicKey,
-	msg []byte) (*btcec.Signature, error) {
+	msg []byte) (input.Signature, error) {
 
 	// First attempt to fetch the private key which corresponds to the
 	// specified public key.

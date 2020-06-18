@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/btcsuite/btclog"
 	"github.com/ltcsuite/lnd/autopilot"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/htlcswitch"
@@ -25,6 +25,7 @@ import (
 	"github.com/ltcsuite/lnd/sweep"
 	"github.com/ltcsuite/lnd/watchtower"
 	"github.com/ltcsuite/lnd/watchtower/wtclient"
+	"github.com/ltcsuite/ltcd/chaincfg"
 )
 
 // subRPCServerConfigs is special sub-config in the main configuration that
@@ -94,7 +95,8 @@ func (s *subRPCServerConfigs) PopulateDependencies(cc *chainControl,
 	tower *watchtower.Standalone,
 	towerClient wtclient.Client,
 	tcpResolver lncfg.TCPResolver,
-	genInvoiceFeatures func() *lnwire.FeatureVector) error {
+	genInvoiceFeatures func() *lnwire.FeatureVector,
+	rpcLogger btclog.Logger) error {
 
 	// First, we'll use reflect to obtain a version of the config struct
 	// that allows us to programmatically inspect its fields.
@@ -202,9 +204,6 @@ func (s *subRPCServerConfigs) PopulateDependencies(cc *chainControl,
 			subCfgValue.FieldByName("NodeSigner").Set(
 				reflect.ValueOf(nodeSigner),
 			)
-			subCfgValue.FieldByName("MaxPaymentMSat").Set(
-				reflect.ValueOf(MaxPaymentMSat),
-			)
 			defaultDelta := cfg.Bitcoin.TimeLockDelta
 			if registeredChains.PrimaryChain() == litecoinChain {
 				defaultDelta = cfg.Litecoin.TimeLockDelta
@@ -219,21 +218,9 @@ func (s *subRPCServerConfigs) PopulateDependencies(cc *chainControl,
 				reflect.ValueOf(genInvoiceFeatures),
 			)
 
+		// RouterRPC isn't conditionally compiled and doesn't need to be
+		// populated using reflection.
 		case *routerrpc.Config:
-			subCfgValue := extractReflectValue(subCfg)
-
-			subCfgValue.FieldByName("NetworkDir").Set(
-				reflect.ValueOf(networkDir),
-			)
-			subCfgValue.FieldByName("MacService").Set(
-				reflect.ValueOf(macService),
-			)
-			subCfgValue.FieldByName("Router").Set(
-				reflect.ValueOf(chanRouter),
-			)
-			subCfgValue.FieldByName("RouterBackend").Set(
-				reflect.ValueOf(routerBackend),
-			)
 
 		case *watchtowerrpc.Config:
 			subCfgValue := extractReflectValue(subCfg)
@@ -259,12 +246,21 @@ func (s *subRPCServerConfigs) PopulateDependencies(cc *chainControl,
 			subCfgValue.FieldByName("Resolver").Set(
 				reflect.ValueOf(tcpResolver),
 			)
+			subCfgValue.FieldByName("Log").Set(
+				reflect.ValueOf(rpcLogger),
+			)
 
 		default:
 			return fmt.Errorf("unknown field: %v, %T", fieldName,
 				cfg)
 		}
 	}
+
+	// Populate routerrpc dependencies.
+	s.RouterRPC.NetworkDir = networkDir
+	s.RouterRPC.MacService = macService
+	s.RouterRPC.Router = chanRouter
+	s.RouterRPC.RouterBackend = routerBackend
 
 	return nil
 }

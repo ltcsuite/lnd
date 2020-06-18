@@ -9,9 +9,9 @@ import (
 	"math"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcutil"
-	"github.com/davecgh/go-spew/spew"
 
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/lntypes"
@@ -36,9 +36,6 @@ type AddInvoiceConfig struct {
 	// NodeSigner is an implementation of the MessageSigner implementation
 	// that's backed by the identity private key of the running lnd node.
 	NodeSigner *netann.NodeSigner
-
-	// MaxPaymentMSat is the maximum allowed payment.
-	MaxPaymentMSat lnwire.MilliSatoshi
 
 	// DefaultCLTVExpiry is the default invoice expiry if no values is
 	// specified.
@@ -159,22 +156,25 @@ func AddInvoice(ctx context.Context, cfg *AddInvoiceConfig,
 			len(invoice.DescriptionHash))
 	}
 
+	// We set the max invoice amount to 100k BTC, which itself is several
+	// multiples off the current block reward.
+	maxInvoiceAmt := ltcutil.Amount(ltcutil.SatoshiPerBitcoin * 100000)
+
+	switch {
 	// The value of the invoice must not be negative.
-	if invoice.Value < 0 {
+	case int64(invoice.Value) < 0:
 		return nil, nil, fmt.Errorf("payments of negative value "+
-			"are not allowed, value is %v", invoice.Value)
+			"are not allowed, value is %v", int64(invoice.Value))
+
+	// Also ensure that the invoice is actually realistic, while preventing
+	// any issues due to underflow.
+	case invoice.Value.ToSatoshis() > maxInvoiceAmt:
+		return nil, nil, fmt.Errorf("invoice amount %v is "+
+			"too large, max is %v", invoice.Value.ToSatoshis(),
+			maxInvoiceAmt)
 	}
 
 	amtMSat := invoice.Value
-
-	// The value of the invoice must also not exceed the current soft-limit
-	// on the largest payment within the network.
-	if amtMSat > cfg.MaxPaymentMSat {
-		return nil, nil, fmt.Errorf("payment of %v is too large, max "+
-			"payment allowed is %v", invoice.Value,
-			cfg.MaxPaymentMSat.ToSatoshis(),
-		)
-	}
 
 	// We also create an encoded payment request which allows the
 	// caller to compactly send the invoice to the payer. We'll create a

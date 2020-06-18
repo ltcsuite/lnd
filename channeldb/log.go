@@ -4,6 +4,7 @@ import (
 	"github.com/btcsuite/btclog"
 	"github.com/ltcsuite/lnd/build"
 	"github.com/ltcsuite/lnd/channeldb/migration12"
+	"github.com/ltcsuite/lnd/channeldb/migration13"
 	"github.com/ltcsuite/lnd/channeldb/migration_01_to_11"
 )
 
@@ -29,4 +30,5 @@ func UseLogger(logger btclog.Logger) {
 	log = logger
 	migration_01_to_11.UseLogger(logger)
 	migration12.UseLogger(logger)
+	migration13.UseLogger(logger)
 }

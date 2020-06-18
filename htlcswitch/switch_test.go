@@ -6,17 +6,21 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"reflect"
 	"testing"
 	"time"
 
-	"github.com/ltcsuite/ltcutil"
 	"github.com/btcsuite/fastsha256"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/htlcswitch/hop"
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/ticker"
+	"github.com/ltcsuite/ltcutil"
 )
+
+var zeroCircuit = channeldb.CircuitKey{}
 
 func genPreimage() ([32]byte, error) {
 	var preimage [32]byte
@@ -32,7 +36,9 @@ func genPreimage() ([32]byte, error) {
 func TestSwitchAddDuplicateLink(t *testing.T) {
 	t.Parallel()
 
-	alicePeer, err := newMockServer(t, "alice", testStartingHeight, nil, 6)
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create alice server: %v", err)
 	}
@@ -90,7 +96,9 @@ func TestSwitchAddDuplicateLink(t *testing.T) {
 func TestSwitchHasActiveLink(t *testing.T) {
 	t.Parallel()
 
-	alicePeer, err := newMockServer(t, "alice", testStartingHeight, nil, 6)
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create alice server: %v", err)
 	}
@@ -158,7 +166,9 @@ func TestSwitchHasActiveLink(t *testing.T) {
 func TestSwitchSendPending(t *testing.T) {
 	t.Parallel()
 
-	alicePeer, err := newMockServer(t, "alice", testStartingHeight, nil, 6)
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create alice server: %v", err)
 	}
@@ -204,10 +214,13 @@ func TestSwitchSendPending(t *testing.T) {
 	// Send the ADD packet, this should not be forwarded out to the link
 	// since there are no eligible links.
 	err = s.forward(packet)
-	expErr := fmt.Sprintf("unable to find link with destination %v",
-		aliceChanID)
-	if err != nil && err.Error() != expErr {
-		t.Fatalf("expected forward failure: %v", err)
+	linkErr, ok := err.(*LinkError)
+	if !ok {
+		t.Fatalf("expected link error, got: %T", err)
+	}
+	if linkErr.WireMessage().Code() != lnwire.CodeUnknownNextPeer {
+		t.Fatalf("expected fail unknown next peer, got: %T",
+			linkErr.WireMessage().Code())
 	}
 
 	// No message should be sent, since the packet was failed.
@@ -253,11 +266,15 @@ func TestSwitchSendPending(t *testing.T) {
 func TestSwitchForward(t *testing.T) {
 	t.Parallel()
 
-	alicePeer, err := newMockServer(t, "alice", testStartingHeight, nil, 6)
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create alice server: %v", err)
 	}
-	bobPeer, err := newMockServer(t, "bob", testStartingHeight, nil, 6)
+	bobPeer, err := newMockServer(
+		t, "bob", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create bob server: %v", err)
 	}
@@ -322,6 +339,10 @@ func TestSwitchForward(t *testing.T) {
 		t.Fatal("wrong amount of circuits")
 	}
 
+	if !s.IsForwardedHTLC(bobChannelLink.ShortChanID(), 0) {
+		t.Fatal("htlc should be identified as forwarded")
+	}
+
 	// Create settle request pretending that bob link handled the add htlc
 	// request and sent the htlc settle request back. This request should
 	// be forwarder back to Alice link.
@@ -358,11 +379,15 @@ func TestSwitchForwardFailAfterFullAdd(t *testing.T) {
 
 	chanID1, chanID2, aliceChanID, bobChanID := genIDs()
 
-	alicePeer, err := newMockServer(t, "alice", testStartingHeight, nil, 6)
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create alice server: %v", err)
 	}
-	bobPeer, err := newMockServer(t, "bob", testStartingHeight, nil, 6)
+	bobPeer, err := newMockServer(
+		t, "bob", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create bob server: %v", err)
 	}
@@ -549,11 +574,15 @@ func TestSwitchForwardSettleAfterFullAdd(t *testing.T) {
 
 	chanID1, chanID2, aliceChanID, bobChanID := genIDs()
 
-	alicePeer, err := newMockServer(t, "alice", testStartingHeight, nil, 6)
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create alice server: %v", err)
 	}
-	bobPeer, err := newMockServer(t, "bob", testStartingHeight, nil, 6)
+	bobPeer, err := newMockServer(
+		t, "bob", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create bob server: %v", err)
 	}
@@ -732,8 +761,8 @@ func TestSwitchForwardSettleAfterFullAdd(t *testing.T) {
 	}
 
 	// Send the settle packet again, which should fail.
-	if err := s2.forward(settle); err == nil {
-		t.Fatalf("expected failure when sending duplicate settle " +
+	if err := s2.forward(settle); err != nil {
+		t.Fatalf("expected success when sending duplicate settle " +
 			"with no pending circuit")
 	}
 }
@@ -743,11 +772,15 @@ func TestSwitchForwardDropAfterFullAdd(t *testing.T) {
 
 	chanID1, chanID2, aliceChanID, bobChanID := genIDs()
 
-	alicePeer, err := newMockServer(t, "alice", testStartingHeight, nil, 6)
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create alice server: %v", err)
 	}
-	bobPeer, err := newMockServer(t, "bob", testStartingHeight, nil, 6)
+	bobPeer, err := newMockServer(
+		t, "bob", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create bob server: %v", err)
 	}
@@ -906,11 +939,15 @@ func TestSwitchForwardFailAfterHalfAdd(t *testing.T) {
 
 	chanID1, chanID2, aliceChanID, bobChanID := genIDs()
 
-	alicePeer, err := newMockServer(t, "alice", testStartingHeight, nil, 6)
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create alice server: %v", err)
 	}
-	bobPeer, err := newMockServer(t, "bob", testStartingHeight, nil, 6)
+	bobPeer, err := newMockServer(
+		t, "bob", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create bob server: %v", err)
 	}
@@ -1043,9 +1080,13 @@ func TestSwitchForwardFailAfterHalfAdd(t *testing.T) {
 	// Resend the failed htlc, it should be returned to alice since the
 	// switch will detect that it has been half added previously.
 	err = s2.forward(ogPacket)
-	if err != ErrIncompleteForward {
-		t.Fatal("unexpected error when reforwarding a "+
-			"failed packet", err)
+	linkErr, ok := err.(*LinkError)
+	if !ok {
+		t.Fatalf("expected link error, got: %T", err)
+	}
+	if linkErr.FailureDetail != OutgoingFailureIncompleteForward {
+		t.Fatalf("expected incomplete forward, got: %v",
+			linkErr.FailureDetail)
 	}
 
 	// After detecting an incomplete forward, the fail packet should have
@@ -1064,11 +1105,15 @@ func TestSwitchForwardCircuitPersistence(t *testing.T) {
 
 	chanID1, chanID2, aliceChanID, bobChanID := genIDs()
 
-	alicePeer, err := newMockServer(t, "alice", testStartingHeight, nil, 6)
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create alice server: %v", err)
 	}
-	bobPeer, err := newMockServer(t, "bob", testStartingHeight, nil, 6)
+	bobPeer, err := newMockServer(
+		t, "bob", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create bob server: %v", err)
 	}
@@ -1294,6 +1339,171 @@ type multiHopFwdTest struct {
 	expectedReply        lnwire.FailCode
 }
 
+// TestCircularForwards tests the allowing/disallowing of circular payments
+// through the same channel in the case where the switch is configured to allow
+// and disallow same channel circular forwards.
+func TestCircularForwards(t *testing.T) {
+	chanID1, aliceChanID := genID()
+	preimage := [sha256.Size]byte{1}
+	hash := fastsha256.Sum256(preimage[:])
+
+	tests := []struct {
+		name                 string
+		allowCircularPayment bool
+		expectedErr          error
+	}{
+		{
+			name:                 "circular payment allowed",
+			allowCircularPayment: true,
+			expectedErr:          nil,
+		},
+		{
+			name:                 "circular payment disallowed",
+			allowCircularPayment: false,
+			expectedErr: NewDetailedLinkError(
+				lnwire.NewTemporaryChannelFailure(nil),
+				OutgoingFailureCircularRoute,
+			),
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			alicePeer, err := newMockServer(
+				t, "alice", testStartingHeight, nil,
+				testDefaultDelta,
+			)
+			if err != nil {
+				t.Fatalf("unable to create alice server: %v",
+					err)
+			}
+
+			s, err := initSwitchWithDB(testStartingHeight, nil)
+			if err != nil {
+				t.Fatalf("unable to init switch: %v", err)
+			}
+			if err := s.Start(); err != nil {
+				t.Fatalf("unable to start switch: %v", err)
+			}
+			defer func() { _ = s.Stop() }()
+
+			// Set the switch to allow or disallow circular routes
+			// according to the test's requirements.
+			s.cfg.AllowCircularRoute = test.allowCircularPayment
+
+			aliceChannelLink := newMockChannelLink(
+				s, chanID1, aliceChanID, alicePeer, true,
+			)
+
+			if err := s.AddLink(aliceChannelLink); err != nil {
+				t.Fatalf("unable to add alice link: %v", err)
+			}
+
+			// Create a new packet that loops through alice's link
+			// in a circle.
+			obfuscator := NewMockObfuscator()
+			packet := &htlcPacket{
+				incomingChanID: aliceChannelLink.ShortChanID(),
+				outgoingChanID: aliceChannelLink.ShortChanID(),
+				htlc: &lnwire.UpdateAddHTLC{
+					PaymentHash: hash,
+					Amount:      1,
+				},
+				obfuscator: obfuscator,
+			}
+
+			// Attempt to forward the packet and check for the expected
+			// error.
+			err = s.forward(packet)
+			if !reflect.DeepEqual(err, test.expectedErr) {
+				t.Fatalf("expected: %v, got: %v",
+					test.expectedErr, err)
+			}
+
+			// Ensure that no circuits were opened.
+			if s.circuits.NumOpen() > 0 {
+				t.Fatal("do not expect any open circuits")
+			}
+		})
+	}
+}
+
+// TestCheckCircularForward tests the error returned by checkCircularForward
+// in cases where we allow and disallow same channel circular forwards.
+func TestCheckCircularForward(t *testing.T) {
+	tests := []struct {
+		name string
+
+		// allowCircular determines whether we should allow circular
+		// forwards.
+		allowCircular bool
+
+		// incomingLink is the link that the htlc arrived on.
+		incomingLink lnwire.ShortChannelID
+
+		// outgoingLink is the link that the htlc forward
+		// is destined to leave on.
+		outgoingLink lnwire.ShortChannelID
+
+		// expectedErr is the error we expect to be returned.
+		expectedErr *LinkError
+	}{
+		{
+			name:          "not circular, allowed in config",
+			allowCircular: true,
+			incomingLink:  lnwire.NewShortChanIDFromInt(123),
+			outgoingLink:  lnwire.NewShortChanIDFromInt(321),
+			expectedErr:   nil,
+		},
+		{
+			name:          "not circular, not allowed in config",
+			allowCircular: false,
+			incomingLink:  lnwire.NewShortChanIDFromInt(123),
+			outgoingLink:  lnwire.NewShortChanIDFromInt(321),
+			expectedErr:   nil,
+		},
+		{
+			name:          "circular, allowed in config",
+			allowCircular: true,
+			incomingLink:  lnwire.NewShortChanIDFromInt(123),
+			outgoingLink:  lnwire.NewShortChanIDFromInt(123),
+			expectedErr:   nil,
+		},
+		{
+			name:          "circular, not allowed in config",
+			allowCircular: false,
+			incomingLink:  lnwire.NewShortChanIDFromInt(123),
+			outgoingLink:  lnwire.NewShortChanIDFromInt(123),
+			expectedErr: NewDetailedLinkError(
+				lnwire.NewTemporaryChannelFailure(nil),
+				OutgoingFailureCircularRoute,
+			),
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Check for a circular forward, the hash passed can
+			// be nil because it is only used for logging.
+			err := checkCircularForward(
+				test.incomingLink, test.outgoingLink,
+				test.allowCircular, lntypes.Hash{},
+			)
+			if !reflect.DeepEqual(err, test.expectedErr) {
+				t.Fatalf("expected: %v, got: %v",
+					test.expectedErr, err)
+			}
+		})
+	}
+}
+
 // TestSkipIneligibleLinksMultiHopForward tests that if a multi-hop HTLC comes
 // along, then we won't attempt to froward it down al ink that isn't yet able
 // to forward any HTLC's.
@@ -1331,7 +1541,7 @@ func TestSkipIneligibleLinksMultiHopForward(t *testing.T) {
 			eligible1: true,
 			failure1: NewDetailedLinkError(
 				lnwire.NewTemporaryChannelFailure(nil),
-				FailureDetailInsufficientBalance,
+				OutgoingFailureInsufficientBalance,
 			),
 			eligible2: true,
 			failure2: NewLinkError(
@@ -1359,11 +1569,15 @@ func testSkipIneligibleLinksMultiHopForward(t *testing.T,
 
 	var packet *htlcPacket
 
-	alicePeer, err := newMockServer(t, "alice", testStartingHeight, nil, 6)
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create alice server: %v", err)
 	}
-	bobPeer, err := newMockServer(t, "bob", testStartingHeight, nil, 6)
+	bobPeer, err := newMockServer(
+		t, "bob", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create bob server: %v", err)
 	}
@@ -1470,7 +1684,9 @@ func testSkipLinkLocalForward(t *testing.T, eligible bool,
 
 	// We'll create a single link for this test, marking it as being unable
 	// to forward form the get go.
-	alicePeer, err := newMockServer(t, "alice", testStartingHeight, nil, 6)
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create alice server: %v", err)
 	}
@@ -1524,11 +1740,15 @@ func testSkipLinkLocalForward(t *testing.T, eligible bool,
 func TestSwitchCancel(t *testing.T) {
 	t.Parallel()
 
-	alicePeer, err := newMockServer(t, "alice", testStartingHeight, nil, 6)
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create alice server: %v", err)
 	}
-	bobPeer, err := newMockServer(t, "bob", testStartingHeight, nil, 6)
+	bobPeer, err := newMockServer(
+		t, "bob", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create bob server: %v", err)
 	}
@@ -1637,11 +1857,15 @@ func TestSwitchAddSamePayment(t *testing.T) {
 
 	chanID1, chanID2, aliceChanID, bobChanID := genIDs()
 
-	alicePeer, err := newMockServer(t, "alice", testStartingHeight, nil, 6)
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create alice server: %v", err)
 	}
-	bobPeer, err := newMockServer(t, "bob", testStartingHeight, nil, 6)
+	bobPeer, err := newMockServer(
+		t, "bob", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create bob server: %v", err)
 	}
@@ -1796,7 +2020,9 @@ func TestSwitchAddSamePayment(t *testing.T) {
 func TestSwitchSendPayment(t *testing.T) {
 	t.Parallel()
 
-	alicePeer, err := newMockServer(t, "alice", testStartingHeight, nil, 6)
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create alice server: %v", err)
 	}
@@ -1901,6 +2127,9 @@ func TestSwitchSendPayment(t *testing.T) {
 		t.Fatalf("unable obfuscate failure: %v", err)
 	}
 
+	if s.IsForwardedHTLC(aliceChannelLink.ShortChanID(), update.ID) {
+		t.Fatal("htlc should be identified as not forwarded")
+	}
 	packet := &htlcPacket{
 		outgoingChanID: aliceChannelLink.ShortChanID(),
 		outgoingHTLCID: 0,
@@ -2334,7 +2563,9 @@ func TestSwitchGetPaymentResult(t *testing.T) {
 func TestInvalidFailure(t *testing.T) {
 	t.Parallel()
 
-	alicePeer, err := newMockServer(t, "alice", testStartingHeight, nil, 6)
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
 	if err != nil {
 		t.Fatalf("unable to create alice server: %v", err)
 	}
@@ -2468,4 +2699,364 @@ func TestInvalidFailure(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("err wasn't received")
 	}
+}
+
+// htlcNotifierEvents is a function that generates a set of expected htlc
+// notifier evetns for each node in a three hop network with the dynamic
+// values provided. These functions take dynamic values so that changes to
+// external systems (such as our default timelock delta) do not break
+// these tests.
+type htlcNotifierEvents func(channels *clusterChannels, htlcID uint64,
+	ts time.Time, htlc *lnwire.UpdateAddHTLC,
+	hops []*hop.Payload) ([]interface{}, []interface{}, []interface{})
+
+// TestHtlcNotifier tests the notifying of htlc events that are routed over a
+// three hop network. It sets up an Alice -> Bob -> Carol network and routes
+// payments from Alice -> Carol to test events from the perspective of a
+// sending (Alice), forwarding (Bob) and receiving (Carol) node. Test cases
+// are present for saduccessful and failed payments.
+func TestHtlcNotifier(t *testing.T) {
+	tests := []struct {
+		name string
+
+		// Options is a set of options to apply to the three hop
+		// network's servers.
+		options []serverOption
+
+		// expectedEvents is a function which returns an expected set
+		// of events for the test.
+		expectedEvents htlcNotifierEvents
+
+		// iterations is the number of times we will send a payment,
+		// this is used to send more than one payment to force non-
+		// zero htlc indexes to make sure we aren't just checking
+		// default values.
+		iterations int
+	}{
+		{
+			name:    "successful three hop payment",
+			options: nil,
+			expectedEvents: func(channels *clusterChannels,
+				htlcID uint64, ts time.Time,
+				htlc *lnwire.UpdateAddHTLC,
+				hops []*hop.Payload) ([]interface{},
+				[]interface{}, []interface{}) {
+
+				return getThreeHopEvents(
+					channels, htlcID, ts, htlc, hops, nil,
+				)
+			},
+			iterations: 2,
+		},
+		{
+			name: "failed at forwarding link",
+			// Set a functional option which disables bob as a
+			// forwarding node to force a payment error.
+			options: []serverOption{
+				serverOptionRejectHtlc(false, true, false),
+			},
+			expectedEvents: func(channels *clusterChannels,
+				htlcID uint64, ts time.Time,
+				htlc *lnwire.UpdateAddHTLC,
+				hops []*hop.Payload) ([]interface{},
+				[]interface{}, []interface{}) {
+
+				return getThreeHopEvents(
+					channels, htlcID, ts, htlc, hops,
+					&LinkError{
+						msg:           &lnwire.FailChannelDisabled{},
+						FailureDetail: OutgoingFailureForwardsDisabled,
+					},
+				)
+			},
+			iterations: 1,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			testHtcNotifier(
+				t, test.options, test.iterations,
+				test.expectedEvents,
+			)
+		})
+	}
+}
+
+// testHtcNotifier runs a htlc notifier test.
+func testHtcNotifier(t *testing.T, testOpts []serverOption, iterations int,
+	getEvents htlcNotifierEvents) {
+
+	t.Parallel()
+
+	// First, we'll create our traditional three hop
+	// network.
+	channels, cleanUp, _, err := createClusterChannels(
+		ltcutil.SatoshiPerBitcoin*3,
+		ltcutil.SatoshiPerBitcoin*5)
+	if err != nil {
+		t.Fatalf("unable to create channel: %v", err)
+	}
+	defer cleanUp()
+
+	// Mock time so that all events are reported with a static timestamp.
+	now := time.Now()
+	mockTime := func() time.Time {
+		return now
+	}
+
+	// Create htlc notifiers for each server in the three hop network and
+	// start them.
+	aliceNotifier := NewHtlcNotifier(mockTime)
+	if err := aliceNotifier.Start(); err != nil {
+		t.Fatalf("could not start alice notifier")
+	}
+	defer aliceNotifier.Stop()
+
+	bobNotifier := NewHtlcNotifier(mockTime)
+	if err := bobNotifier.Start(); err != nil {
+		t.Fatalf("could not start bob notifier")
+	}
+	defer bobNotifier.Stop()
+
+	carolNotifier := NewHtlcNotifier(mockTime)
+	if err := carolNotifier.Start(); err != nil {
+		t.Fatalf("could not start carol notifier")
+	}
+	defer carolNotifier.Stop()
+
+	// Create a notifier server option which will set our htlc notifiers
+	// for the three hop network.
+	notifierOption := serverOptionWithHtlcNotifier(
+		aliceNotifier, bobNotifier, carolNotifier,
+	)
+
+	// Add the htlcNotifier option to any other options
+	// set in the test.
+	options := append(testOpts, notifierOption)
+
+	n := newThreeHopNetwork(
+		t, channels.aliceToBob,
+		channels.bobToAlice, channels.bobToCarol,
+		channels.carolToBob, testStartingHeight,
+		options...,
+	)
+	if err := n.start(); err != nil {
+		t.Fatalf("unable to start three hop "+
+			"network: %v", err)
+	}
+	defer n.stop()
+
+	// Before we forward anything, subscribe to htlc events
+	// from each notifier.
+	aliceEvents, err := aliceNotifier.SubscribeHtlcEvents()
+	if err != nil {
+		t.Fatalf("could not subscribe to alice's"+
+			" events: %v", err)
+	}
+	defer aliceEvents.Cancel()
+
+	bobEvents, err := bobNotifier.SubscribeHtlcEvents()
+	if err != nil {
+		t.Fatalf("could not subscribe to bob's"+
+			" events: %v", err)
+	}
+	defer bobEvents.Cancel()
+
+	carolEvents, err := carolNotifier.SubscribeHtlcEvents()
+	if err != nil {
+		t.Fatalf("could not subscribe to carol's"+
+			" events: %v", err)
+	}
+	defer carolEvents.Cancel()
+
+	// Send multiple payments, as specified by the test to test incrementing
+	// of htlc ids.
+	for i := 0; i < iterations; i++ {
+		// We'll start off by making a payment from
+		// Alice -> Bob -> Carol.
+		htlc, hops := n.sendThreeHopPayment(t)
+
+		alice, bob, carol := getEvents(
+			channels, uint64(i), now, htlc, hops,
+		)
+
+		checkHtlcEvents(t, aliceEvents.Updates(), alice)
+		checkHtlcEvents(t, bobEvents.Updates(), bob)
+		checkHtlcEvents(t, carolEvents.Updates(), carol)
+
+	}
+}
+
+// checkHtlcEvents checks that a subscription has the set of htlc events
+// we expect it to have.
+func checkHtlcEvents(t *testing.T, events <-chan interface{},
+	expectedEvents []interface{}) {
+
+	t.Helper()
+
+	for _, expected := range expectedEvents {
+		select {
+		case event := <-events:
+			if !reflect.DeepEqual(event, expected) {
+				t.Fatalf("expected %v, got: %v", expected,
+					event)
+			}
+
+		case <-time.After(5 * time.Second):
+			t.Fatalf("expected event: %v", expected)
+		}
+	}
+}
+
+// sendThreeHopPayment is a helper function which sends a payment over
+// Alice -> Bob -> Carol in a three hop network and returns Alice's first htlc
+// and the remainder of the hops.
+func (n *threeHopNetwork) sendThreeHopPayment(t *testing.T) (*lnwire.UpdateAddHTLC,
+	[]*hop.Payload) {
+
+	amount := lnwire.NewMSatFromSatoshis(ltcutil.SatoshiPerBitcoin)
+
+	htlcAmt, totalTimelock, hops := generateHops(amount, testStartingHeight,
+		n.firstBobChannelLink, n.carolChannelLink)
+	blob, err := generateRoute(hops...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invoice, htlc, pid, err := generatePayment(
+		amount, htlcAmt, totalTimelock, blob,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = n.carolServer.registry.AddInvoice(*invoice, htlc.PaymentHash)
+	if err != nil {
+		t.Fatalf("unable to add invoice in carol registry: %v", err)
+	}
+
+	if err := n.aliceServer.htlcSwitch.SendHTLC(
+		n.firstBobChannelLink.ShortChanID(), pid, htlc,
+	); err != nil {
+		t.Fatalf("could not send htlc")
+	}
+
+	return htlc, hops
+}
+
+// getThreeHopEvents gets the set of htlc events that we expect for a payment
+// from Alice -> Bob -> Carol. If a non-nil link error is provided, the set
+// of events will fail on Bob's outgoing link.
+func getThreeHopEvents(channels *clusterChannels, htlcID uint64,
+	ts time.Time, htlc *lnwire.UpdateAddHTLC, hops []*hop.Payload,
+	linkError *LinkError) ([]interface{}, []interface{}, []interface{}) {
+
+	aliceKey := HtlcKey{
+		IncomingCircuit: zeroCircuit,
+		OutgoingCircuit: channeldb.CircuitKey{
+			ChanID: channels.aliceToBob.ShortChanID(),
+			HtlcID: htlcID,
+		},
+	}
+
+	// Alice always needs a forwarding event because she initiates the
+	// send.
+	aliceEvents := []interface{}{
+		&ForwardingEvent{
+			HtlcKey: aliceKey,
+			HtlcInfo: HtlcInfo{
+				OutgoingTimeLock: htlc.Expiry,
+				OutgoingAmt:      htlc.Amount,
+			},
+			HtlcEventType: HtlcEventTypeSend,
+			Timestamp:     ts,
+		},
+	}
+
+	bobKey := HtlcKey{
+		IncomingCircuit: channeldb.CircuitKey{
+			ChanID: channels.bobToAlice.ShortChanID(),
+			HtlcID: htlcID,
+		},
+		OutgoingCircuit: channeldb.CircuitKey{
+			ChanID: channels.bobToCarol.ShortChanID(),
+			HtlcID: htlcID,
+		},
+	}
+
+	bobInfo := HtlcInfo{
+		IncomingTimeLock: htlc.Expiry,
+		IncomingAmt:      htlc.Amount,
+		OutgoingTimeLock: hops[1].FwdInfo.OutgoingCTLV,
+		OutgoingAmt:      hops[1].FwdInfo.AmountToForward,
+	}
+
+	// If we expect the payment to fail, we add failures for alice and
+	// bob, and no events for carol because the payment never reaches her.
+	if linkError != nil {
+		aliceEvents = append(aliceEvents,
+			&ForwardingFailEvent{
+				HtlcKey:       aliceKey,
+				HtlcEventType: HtlcEventTypeSend,
+				Timestamp:     ts,
+			},
+		)
+
+		bobEvents := []interface{}{
+			&LinkFailEvent{
+				HtlcKey:       bobKey,
+				HtlcInfo:      bobInfo,
+				HtlcEventType: HtlcEventTypeForward,
+				LinkError:     linkError,
+				Incoming:      false,
+				Timestamp:     ts,
+			},
+		}
+
+		return aliceEvents, bobEvents, nil
+	}
+
+	// If we want to get events for a successful payment, we add a settle
+	// for alice, a forward and settle for bob and a receive settle for
+	// carol.
+	aliceEvents = append(
+		aliceEvents,
+		&SettleEvent{
+			HtlcKey:       aliceKey,
+			HtlcEventType: HtlcEventTypeSend,
+			Timestamp:     ts,
+		},
+	)
+
+	bobEvents := []interface{}{
+		&ForwardingEvent{
+			HtlcKey:       bobKey,
+			HtlcInfo:      bobInfo,
+			HtlcEventType: HtlcEventTypeForward,
+			Timestamp:     ts,
+		},
+		&SettleEvent{
+			HtlcKey:       bobKey,
+			HtlcEventType: HtlcEventTypeForward,
+			Timestamp:     ts,
+		},
+	}
+
+	carolEvents := []interface{}{
+		&SettleEvent{
+			HtlcKey: HtlcKey{
+				IncomingCircuit: channeldb.CircuitKey{
+					ChanID: channels.carolToBob.ShortChanID(),
+					HtlcID: htlcID,
+				},
+				OutgoingCircuit: zeroCircuit,
+			},
+			HtlcEventType: HtlcEventTypeReceive,
+			Timestamp:     ts,
+		},
+	}
+
+	return aliceEvents, bobEvents, carolEvents
 }

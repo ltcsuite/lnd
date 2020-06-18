@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
-	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 )
 
 // AddressType is an enum-like type which denotes the possible address types
@@ -292,7 +293,7 @@ type MessageSigner interface {
 	// that corresponds to the passed public key. If the target private key
 	// is unable to be found, then an error will be returned. The actual
 	// digest signed is the double SHA-256 of the passed message.
-	SignMessage(pubKey *btcec.PublicKey, msg []byte) (*btcec.Signature, error)
+	SignMessage(pubKey *btcec.PublicKey, msg []byte) (input.Signature, error)
 }
 
 // WalletDriver represents a "driver" for a particular concrete

@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/wire"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd"
 	"github.com/ltcsuite/lnd/lnrpc"
@@ -16,21 +14,25 @@ import (
 	"github.com/ltcsuite/lnd/lntest"
 	"github.com/ltcsuite/lnd/lntest/wait"
 	"github.com/ltcsuite/lnd/lntypes"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // testMultiHopReceiverChainClaim tests that in the multi-hop setting, if the
 // receiver of an HTLC knows the preimage, but wasn't able to settle the HTLC
-// off-chain, then it goes on chain to claim the HTLC. In this scenario, the
-// node that sent the outgoing HTLC should extract the preimage from the sweep
-// transaction, and finish settling the HTLC backwards into the route.
-func testMultiHopReceiverChainClaim(net *lntest.NetworkHarness, t *harnessTest) {
+// off-chain, then it goes on chain to claim the HTLC uing the HTLC success
+// transaction. In this scenario, the node that sent the outgoing HTLC should
+// extract the preimage from the sweep transaction, and finish settling the
+// HTLC backwards into the route.
+func testMultiHopReceiverChainClaim(net *lntest.NetworkHarness, t *harnessTest,
+	alice, bob *lntest.HarnessNode, c commitType) {
+
 	ctxb := context.Background()
 
 	// First, we'll create a three hop network: Alice -> Bob -> Carol, with
 	// Carol refusing to actually settle or directly cancel any HTLC's
 	// self.
 	aliceChanPoint, bobChanPoint, carol := createThreeHopNetwork(
-		t, net, false,
+		t, net, alice, bob, false, c,
 	)
 
 	// Clean up carol's node when the test finishes.
@@ -61,7 +63,7 @@ func testMultiHopReceiverChainClaim(net *lntest.NetworkHarness, t *harnessTest) 
 	ctx, cancel := context.WithCancel(ctxb)
 	defer cancel()
 
-	alicePayStream, err := net.Alice.SendPayment(ctx)
+	alicePayStream, err := alice.SendPayment(ctx)
 	if err != nil {
 		t.Fatalf("unable to create payment stream for alice: %v", err)
 	}
@@ -75,7 +77,7 @@ func testMultiHopReceiverChainClaim(net *lntest.NetworkHarness, t *harnessTest) 
 	// At this point, all 3 nodes should now have an active channel with
 	// the created HTLC pending on all of them.
 	var predErr error
-	nodes := []*lntest.HarnessNode{net.Alice, net.Bob, carol}
+	nodes := []*lntest.HarnessNode{alice, bob, carol}
 	err = wait.Predicate(func() bool {
 		predErr = assertActiveHtlcs(nodes, payHash[:])
 		if predErr != nil {
@@ -93,7 +95,7 @@ func testMultiHopReceiverChainClaim(net *lntest.NetworkHarness, t *harnessTest) 
 	// hop logic.
 	waitForInvoiceAccepted(t, carol, payHash)
 
-	restartBob, err := net.SuspendNode(net.Bob)
+	restartBob, err := net.SuspendNode(bob)
 	if err != nil {
 		t.Fatalf("unable to suspend bob: %v", err)
 	}
@@ -123,8 +125,15 @@ func testMultiHopReceiverChainClaim(net *lntest.NetworkHarness, t *harnessTest) 
 	}
 
 	// At this point, Carol should broadcast her active commitment
-	// transaction in order to go to the chain and sweep her HTLC.
-	txids, err := waitForNTxsInMempool(net.Miner.Node, 1, minerMempoolTimeout)
+	// transaction in order to go to the chain and sweep her HTLC. If there
+	// are anchors, Carol also sweeps hers.
+	expectedTxes := 1
+	if c == commitTypeAnchors {
+		expectedTxes = 2
+	}
+	txes, err := getNTxsFromMempool(
+		net.Miner.Node, expectedTxes, minerMempoolTimeout,
+	)
 	if err != nil {
 		t.Fatalf("expected transaction not found in mempool: %v", err)
 	}
@@ -141,20 +150,13 @@ func testMultiHopReceiverChainClaim(net *lntest.NetworkHarness, t *harnessTest) 
 
 	// The commitment transaction should be spending from the funding
 	// transaction.
-	commitHash := txids[0]
-	tx, err := net.Miner.Node.GetRawTransaction(commitHash)
-	if err != nil {
-		t.Fatalf("unable to get txn: %v", err)
-	}
-	commitTx := tx.MsgTx()
-
-	if commitTx.TxIn[0].PreviousOutPoint != carolFundingPoint {
-		t.Fatalf("commit transaction not spending from expected "+
-			"outpoint: %v", spew.Sdump(commitTx))
-	}
+	closingTx := getSpendingTxInMempool(
+		t, net.Miner.Node, minerMempoolTimeout, carolFundingPoint,
+	)
+	closingTxid := closingTx.TxHash()
 
 	// Confirm the commitment.
-	mineBlocks(t, net, 1, 1)
+	mineBlocks(t, net, 1, expectedTxes)
 
 	// Restart bob again.
 	if err := restartBob(); err != nil {
@@ -164,30 +166,21 @@ func testMultiHopReceiverChainClaim(net *lntest.NetworkHarness, t *harnessTest) 
 	// After the force close transaction is mined, Carol should broadcast
 	// her second level HTLC transaction. Bob will broadcast a sweep tx to
 	// sweep his output in the channel with Carol. When Bob notices Carol's
-	// second level transaction in the mempool, he will extract the
-	// preimage and settle the HTLC back off-chain.
-	secondLevelHashes, err := waitForNTxsInMempool(net.Miner.Node, 2,
-		minerMempoolTimeout)
+	// second level transaction in the mempool, he will extract the preimage
+	// and settle the HTLC back off-chain. Bob will also sweep his anchor,
+	// if present.
+	expectedTxes = 2
+	if c == commitTypeAnchors {
+		expectedTxes = 3
+	}
+	txes, err = getNTxsFromMempool(net.Miner.Node,
+		expectedTxes, minerMempoolTimeout)
 	if err != nil {
 		t.Fatalf("transactions not found in mempool: %v", err)
 	}
 
-	// Carol's second level transaction should be spending from
-	// the commitment transaction.
-	var secondLevelHash *chainhash.Hash
-	for _, txid := range secondLevelHashes {
-		tx, err := net.Miner.Node.GetRawTransaction(txid)
-		if err != nil {
-			t.Fatalf("unable to get txn: %v", err)
-		}
-
-		if tx.MsgTx().TxIn[0].PreviousOutPoint.Hash == *commitHash {
-			secondLevelHash = txid
-		}
-	}
-	if secondLevelHash == nil {
-		t.Fatalf("Carol's second level tx not found")
-	}
+	// All transactions should be spending from the commitment transaction.
+	assertAllTxesSpendFrom(t, txes, closingTxid)
 
 	// We'll now mine an additional block which should confirm both the
 	// second layer transactions.
@@ -230,7 +223,7 @@ func testMultiHopReceiverChainClaim(net *lntest.NetworkHarness, t *harnessTest) 
 	// Once the second-level transaction confirmed, Bob should have
 	// extracted the preimage from the chain, and sent it back to Alice,
 	// clearing the HTLC off-chain.
-	nodes = []*lntest.HarnessNode{net.Alice}
+	nodes = []*lntest.HarnessNode{alice}
 	err = wait.Predicate(func() bool {
 		predErr = assertNumActiveHtlcs(nodes, 0)
 		if predErr != nil {
@@ -298,8 +291,21 @@ func testMultiHopReceiverChainClaim(net *lntest.NetworkHarness, t *harnessTest) 
 			"%d sat", invoiceAmt, invoice.AmtPaidSat)
 	}
 
+	// Finally, check that the Alice's payment is correctly marked
+	// succeeded.
+	ctxt, _ = context.WithTimeout(ctxt, defaultTimeout)
+	err = checkPaymentStatus(
+		ctxt, alice, preimage, lnrpc.Payment_SUCCEEDED,
+	)
+	if err != nil {
+		t.Fatalf(err.Error())
+	}
+
 	// We'll close out the channel between Alice and Bob, then shutdown
 	// carol to conclude the test.
 	ctxt, _ = context.WithTimeout(ctxb, channelCloseTimeout)
-	closeChannelAndAssert(ctxt, t, net, net.Alice, aliceChanPoint, false)
+	closeChannelAndAssertType(
+		ctxt, t, net, alice, aliceChanPoint,
+		false, false,
+	)
 }

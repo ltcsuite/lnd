@@ -6,10 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 var (
@@ -18,13 +19,23 @@ var (
 	mockChainHeight    = int32(100)
 )
 
+type dummySignature struct{}
+
+func (s *dummySignature) Serialize() []byte {
+	return []byte{}
+}
+
+func (s *dummySignature) Verify(_ []byte, _ *btcec.PublicKey) bool {
+	return true
+}
+
 type mockSigner struct {
 }
 
 func (m *mockSigner) SignOutputRaw(tx *wire.MsgTx,
-	signDesc *input.SignDescriptor) ([]byte, error) {
+	signDesc *input.SignDescriptor) (input.Signature, error) {
 
-	return []byte{}, nil
+	return &dummySignature{}, nil
 }
 
 func (m *mockSigner) ComputeInputScript(tx *wire.MsgTx,
@@ -189,6 +200,11 @@ func (m *MockNotifier) Start() error {
 	return nil
 }
 
+// Started checks if started
+func (m *MockNotifier) Started() bool {
+	return true
+}
+
 // Stop the notifier.
 func (m *MockNotifier) Stop() error {
 	return nil
@@ -216,7 +232,7 @@ func (m *MockNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 	m.mutex.Unlock()
 
 	// If output has been spent already, signal now. Do this outside the
-	// lock to prevent a dead lock.
+	// lock to prevent a deadlock.
 	if spent {
 		m.sendSpend(channel, outpoint, spendingTx)
 	}

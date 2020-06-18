@@ -205,7 +205,7 @@ func extractPathArgs(ctx *cli.Context) (string, string, error) {
 func main() {
 	app := cli.NewApp()
 	app.Name = "lncli"
-	app.Version = build.Version()
+	app.Version = build.Version() + " commit=" + build.Commit
 	app.Usage = "control plane for your Lightning Network Daemon (lnd)"
 	app.Flags = []cli.Flag{
 		cli.StringFlag{
@@ -282,6 +282,7 @@ func main() {
 		closedChannelsCommand,
 		listPaymentsCommand,
 		describeGraphCommand,
+		getNodeMetricsCommand,
 		getChanInfoCommand,
 		getNodeInfoCommand,
 		queryRoutesCommand,
@@ -299,6 +300,8 @@ func main() {
 		verifyChanBackupCommand,
 		restoreChanBackupCommand,
 		bakeMacaroonCommand,
+		trackPaymentCommand,
+		versionCommand,
 	}
 
 	// Add any extra commands determined by build flags.

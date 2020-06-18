@@ -21,8 +21,8 @@ import (
 	"github.com/ltcsuite/lnd/lnrpc/invoicesrpc"
 	"github.com/ltcsuite/lnd/lnrpc/routerrpc"
 	"github.com/ltcsuite/lnd/lnrpc/signrpc"
+	"github.com/ltcsuite/lnd/lnrpc/verrpc"
 	"github.com/ltcsuite/lnd/lnrpc/walletrpc"
-	"github.com/ltcsuite/lnd/lnrpc/wtclientrpc"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwallet/chanfunding"
 	"github.com/ltcsuite/lnd/monitoring"
@@ -101,8 +101,8 @@ func init() {
 
 	addSubLogger(routing.Subsystem, routing.UseLogger, localchans.UseLogger)
 	addSubLogger(routerrpc.Subsystem, routerrpc.UseLogger)
-	addSubLogger(wtclientrpc.Subsystem, wtclientrpc.UseLogger)
 	addSubLogger(chanfitness.Subsystem, chanfitness.UseLogger)
+	addSubLogger(verrpc.Subsystem, verrpc.UseLogger)
 }
 
 // addSubLogger is a helper method to conveniently create and register the

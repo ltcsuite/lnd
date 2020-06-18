@@ -1,4 +1,4 @@
-package ltcwallet
+package btcwallet
 
 import (
 	"bytes"
@@ -8,6 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/txscript"
@@ -19,9 +22,6 @@ import (
 	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
 	"github.com/ltcsuite/ltcwallet/wallet/txrules"
 	"github.com/ltcsuite/ltcwallet/walletdb"
-	"github.com/ltcsuite/lnd/keychain"
-	"github.com/ltcsuite/lnd/lnwallet"
-	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 )
 
 const (
@@ -300,7 +300,7 @@ func (b *BtcWallet) SendOutputs(outputs []*wire.TxOut,
 	if len(outputs) < 1 {
 		return nil, lnwallet.ErrNoOutputs
 	}
-	return b.wallet.SendOutputs(outputs, defaultAccount, 1, feeSatPerKB)
+	return b.wallet.SendOutputs(outputs, defaultAccount, 1, feeSatPerKB, "")
 }
 
 // CreateSimpleTx creates a Bitcoin transaction paying to the specified
@@ -430,7 +430,7 @@ func (b *BtcWallet) ListUnspentWitness(minConfs, maxConfs int32) (
 // (currently ErrDoubleSpend). If the transaction is already published to the
 // network (either in the mempool or chain) no error will be returned.
 func (b *BtcWallet) PublishTransaction(tx *wire.MsgTx) error {
-	if err := b.wallet.PublishTransaction(tx); err != nil {
+	if err := b.wallet.PublishTransaction(tx, ""); err != nil {
 
 		// If we failed to publish the transaction, check whether we
 		// got an error of known type.

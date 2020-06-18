@@ -321,7 +321,7 @@ func (s *Server) SignOutputRaw(ctx context.Context, in *SignReq) (*SignResp, err
 			return nil, err
 		}
 
-		resp.RawSigs[i] = sig
+		resp.RawSigs[i] = sig.Serialize()
 	}
 
 	return resp, nil
@@ -373,8 +373,9 @@ func (s *Server) ComputeInputScript(ctx context.Context,
 				Value:    signDesc.Output.Value,
 				PkScript: signDesc.Output.PkScript,
 			},
-			HashType:  txscript.SigHashType(signDesc.Sighash),
-			SigHashes: sigHashCache,
+			HashType:   txscript.SigHashType(signDesc.Sighash),
+			SigHashes:  sigHashCache,
+			InputIndex: int(signDesc.InputIndex),
 		})
 	}
 

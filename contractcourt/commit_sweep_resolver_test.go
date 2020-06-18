@@ -5,12 +5,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/lnd/sweep"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 )
 
 type commitSweepResolverTestContext struct {
@@ -93,12 +94,14 @@ func (i *commitSweepResolverTestContext) waitForResult() {
 }
 
 type mockSweeper struct {
-	sweptInputs chan input.Input
+	sweptInputs   chan input.Input
+	updatedInputs chan wire.OutPoint
 }
 
 func newMockSweeper() *mockSweeper {
 	return &mockSweeper{
-		sweptInputs: make(chan input.Input),
+		sweptInputs:   make(chan input.Input),
+		updatedInputs: make(chan wire.OutPoint),
 	}
 }
 
@@ -120,6 +123,22 @@ func (s *mockSweeper) CreateSweepTx(inputs []input.Input, feePref sweep.FeePrefe
 	return nil, nil
 }
 
+func (s *mockSweeper) RelayFeePerKW() chainfee.SatPerKWeight {
+	return 253
+}
+
+func (s *mockSweeper) UpdateParams(input wire.OutPoint,
+	params sweep.ParamsUpdate) (chan sweep.Result, error) {
+
+	s.updatedInputs <- input
+
+	result := make(chan sweep.Result, 1)
+	result <- sweep.Result{
+		Tx: &wire.MsgTx{},
+	}
+	return result, nil
+}
+
 var _ UtxoSweeper = &mockSweeper{}
 
 // TestCommitSweepResolverNoDelay tests resolution of a direct commitment output
@@ -133,6 +152,7 @@ func TestCommitSweepResolverNoDelay(t *testing.T) {
 			Output: &wire.TxOut{
 				Value: 100,
 			},
+			WitnessScript: []byte{0},
 		},
 	}
 
@@ -162,6 +182,7 @@ func TestCommitSweepResolverDelay(t *testing.T) {
 			Output: &wire.TxOut{
 				Value: amt,
 			},
+			WitnessScript: []byte{0},
 		},
 		MaturityDelay: 3,
 		SelfOutPoint:  outpoint,

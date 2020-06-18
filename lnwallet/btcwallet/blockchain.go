@@ -1,4 +1,4 @@
-package ltcwallet
+package btcwallet
 
 import (
 	"encoding/hex"
@@ -9,10 +9,10 @@ import (
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
 
+	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/ltcwallet/chain"
 	"github.com/ltcsuite/neutrino"
 	"github.com/ltcsuite/neutrino/headerfs"
-	"github.com/ltcsuite/lnd/lnwallet"
 )
 
 var (

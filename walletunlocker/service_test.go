@@ -12,9 +12,10 @@ import (
 	"github.com/ltcsuite/lnd/aezeed"
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnrpc"
-	ltcwallet "github.com/ltcsuite/lnd/lnwallet/btcwallet"
 	"github.com/ltcsuite/lnd/walletunlocker"
 	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcwallet/snacl"
+	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/wallet"
 )
 
@@ -35,6 +36,19 @@ var (
 )
 
 func createTestWallet(t *testing.T, dir string, netParams *chaincfg.Params) {
+	// Instruct waddrmgr to use the cranked down scrypt parameters when
+	// creating new wallet encryption keys.
+	fastScrypt := waddrmgr.FastScryptOptions
+	keyGen := func(passphrase *[]byte, config *waddrmgr.ScryptOptions) (
+		*snacl.SecretKey, error) {
+
+		return snacl.NewSecretKey(
+			passphrase, fastScrypt.N, fastScrypt.R, fastScrypt.P,
+		)
+	}
+	waddrmgr.SetSecretKeyGen(keyGen)
+
+	// Create a new test wallet that uses fast scrypt as KDF.
 	netDir := ltcwallet.NetworkDir(dir, netParams)
 	loader := wallet.NewLoader(netParams, netDir, true, 0)
 	_, err := loader.CreateNewWallet(

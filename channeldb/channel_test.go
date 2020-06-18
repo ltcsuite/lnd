@@ -10,15 +10,18 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
+
+	"github.com/davecgh/go-spew/spew"
+	"github.com/ltcsuite/lnd/clock"
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/shachain"
 	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
 	_ "github.com/ltcsuite/ltcwallet/walletdb/bdb"
-	"github.com/davecgh/go-spew/spew"
-	"github.com/ltcsuite/lnd/keychain"
-	"github.com/ltcsuite/lnd/lnwire"
-	"github.com/ltcsuite/lnd/shachain"
 )
 
 var (
@@ -68,6 +71,19 @@ var (
 	privKey, pubKey = btcec.PrivKeyFromBytes(btcec.S256(), key[:])
 
 	wireSig, _ = lnwire.NewSigFromSignature(testSig)
+
+	testClock = clock.NewTestClock(testNow)
+
+	// defaultPendingHeight is the default height at which we set
+	// channels to pending.
+	defaultPendingHeight = 100
+
+	// defaultAddr is the default address that we mark test channels pending
+	// with.
+	defaultAddr = &net.TCPAddr{
+		IP:   net.ParseIP("127.0.0.1"),
+		Port: 18555,
+	}
 )
 
 // makeTestDB creates a new instance of the ChannelDB for testing purposes. A
@@ -82,7 +98,7 @@ func makeTestDB() (*DB, func(), error) {
 	}
 
 	// Next, create channeldb for the first time.
-	cdb, err := Open(tempDirName)
+	cdb, err := Open(tempDirName, OptionClock(testClock))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -95,21 +111,167 @@ func makeTestDB() (*DB, func(), error) {
 	return cdb, cleanUp, nil
 }
 
-func createTestChannelState(cdb *DB) (*OpenChannel, error) {
+// testChannelParams is a struct which details the specifics of how a channel
+// should be created.
+type testChannelParams struct {
+	// channel is the channel that will be written to disk.
+	channel *OpenChannel
+
+	// addr is the address that the channel will be synced pending with.
+	addr *net.TCPAddr
+
+	// pendingHeight is the height that the channel should be recorded as
+	// pending.
+	pendingHeight uint32
+
+	// openChannel is set to true if the channel should be fully marked as
+	// open if this is false, the channel will be left in pending state.
+	openChannel bool
+}
+
+// testChannelOption is a functional option which can be used to alter the
+// default channel that is creates for testing.
+type testChannelOption func(params *testChannelParams)
+
+// channelCommitmentOption is an option which allows overwriting of the default
+// commitment height and balances. The local boolean can be used to set these
+// balances on the local or remote commit.
+func channelCommitmentOption(height uint64, localBalance,
+	remoteBalance lnwire.MilliSatoshi, local bool) testChannelOption {
+
+	return func(params *testChannelParams) {
+		if local {
+			params.channel.LocalCommitment.CommitHeight = height
+			params.channel.LocalCommitment.LocalBalance = localBalance
+			params.channel.LocalCommitment.RemoteBalance = remoteBalance
+		} else {
+			params.channel.RemoteCommitment.CommitHeight = height
+			params.channel.RemoteCommitment.LocalBalance = localBalance
+			params.channel.RemoteCommitment.RemoteBalance = remoteBalance
+		}
+	}
+}
+
+// pendingHeightOption is an option which can be used to set the height the
+// channel is marked as pending at.
+func pendingHeightOption(height uint32) testChannelOption {
+	return func(params *testChannelParams) {
+		params.pendingHeight = height
+	}
+}
+
+// openChannelOption is an option which can be used to create a test channel
+// that is open.
+func openChannelOption() testChannelOption {
+	return func(params *testChannelParams) {
+		params.openChannel = true
+	}
+}
+
+// localHtlcsOption is an option which allows setting of htlcs on the local
+// commitment.
+func localHtlcsOption(htlcs []HTLC) testChannelOption {
+	return func(params *testChannelParams) {
+		params.channel.LocalCommitment.Htlcs = htlcs
+	}
+}
+
+// remoteHtlcsOption is an option which allows setting of htlcs on the remote
+// commitment.
+func remoteHtlcsOption(htlcs []HTLC) testChannelOption {
+	return func(params *testChannelParams) {
+		params.channel.RemoteCommitment.Htlcs = htlcs
+	}
+}
+
+// localShutdownOption is an option which sets the local upfront shutdown
+// script for the channel.
+func localShutdownOption(addr lnwire.DeliveryAddress) testChannelOption {
+	return func(params *testChannelParams) {
+		params.channel.LocalShutdownScript = addr
+	}
+}
+
+// remoteShutdownOption is an option which sets the remote upfront shutdown
+// script for the channel.
+func remoteShutdownOption(addr lnwire.DeliveryAddress) testChannelOption {
+	return func(params *testChannelParams) {
+		params.channel.RemoteShutdownScript = addr
+	}
+}
+
+// fundingPointOption is an option which sets the funding outpoint of the
+// channel.
+func fundingPointOption(chanPoint wire.OutPoint) testChannelOption {
+	return func(params *testChannelParams) {
+		params.channel.FundingOutpoint = chanPoint
+	}
+}
+
+// channelIDOption is an option which sets the short channel ID of the channel.
+var channelIDOption = func(chanID lnwire.ShortChannelID) testChannelOption {
+	return func(params *testChannelParams) {
+		params.channel.ShortChannelID = chanID
+	}
+}
+
+// createTestChannel writes a test channel to the database. It takes a set of
+// functional options which can be used to overwrite the default of creating
+// a pending channel that was broadcast at height 100.
+func createTestChannel(t *testing.T, cdb *DB,
+	opts ...testChannelOption) *OpenChannel {
+
+	// Create a default set of parameters.
+	params := &testChannelParams{
+		channel:       createTestChannelState(t, cdb),
+		addr:          defaultAddr,
+		openChannel:   false,
+		pendingHeight: uint32(defaultPendingHeight),
+	}
+
+	// Apply all functional options to the test channel params.
+	for _, o := range opts {
+		o(params)
+	}
+
+	// Mark the channel as pending.
+	err := params.channel.SyncPending(params.addr, params.pendingHeight)
+	if err != nil {
+		t.Fatalf("unable to save and serialize channel "+
+			"state: %v", err)
+	}
+
+	// If the parameters do not specify that we should open the channel
+	// fully, we return the pending channel.
+	if !params.openChannel {
+		return params.channel
+	}
+
+	// Mark the channel as open with the short channel id provided.
+	err = params.channel.MarkAsOpen(params.channel.ShortChannelID)
+	if err != nil {
+		t.Fatalf("unable to mark channel open: %v", err)
+	}
+
+	return params.channel
+}
+
+func createTestChannelState(t *testing.T, cdb *DB) *OpenChannel {
 	// Simulate 1000 channel updates.
 	producer, err := shachain.NewRevocationProducerFromBytes(key[:])
 	if err != nil {
-		return nil, err
+		t.Fatalf("could not get producer: %v", err)
 	}
 	store := shachain.NewRevocationStore()
 	for i := 0; i < 1; i++ {
 		preImage, err := producer.AtIndex(uint64(i))
 		if err != nil {
-			return nil, err
+			t.Fatalf("could not get "+
+				"preimage: %v", err)
 		}
 
 		if err := store.AddNextEntry(preImage); err != nil {
-			return nil, err
+			t.Fatalf("could not add entry: %v", err)
 		}
 	}
 
@@ -187,7 +349,7 @@ func createTestChannelState(cdb *DB) (*OpenChannel, error) {
 	chanID := lnwire.NewShortChanIDFromInt(uint64(rand.Int63()))
 
 	return &OpenChannel{
-		ChanType:          SingleFunderBit,
+		ChanType:          SingleFunderBit | FrozenBit,
 		ChainHash:         key,
 		FundingOutpoint:   wire.OutPoint{Hash: key, Index: rand.Uint32()},
 		ShortChannelID:    chanID,
@@ -225,7 +387,8 @@ func createTestChannelState(cdb *DB) (*OpenChannel, error) {
 		Db:                      cdb,
 		Packager:                NewChannelPackager(chanID),
 		FundingTxn:              testTx,
-	}, nil
+		ThawHeight:              uint32(defaultPendingHeight),
+	}
 }
 
 func TestOpenChannelPutGetDelete(t *testing.T) {
@@ -237,15 +400,10 @@ func TestOpenChannelPutGetDelete(t *testing.T) {
 	}
 	defer cleanUp()
 
-	// Create the test channel state, then add an additional fake HTLC
-	// before syncing to disk.
-	state, err := createTestChannelState(cdb)
-	if err != nil {
-		t.Fatalf("unable to create channel state: %v", err)
-	}
-	state.LocalCommitment.Htlcs = []HTLC{
-		{
-			Signature:     testSig.Serialize(),
+	// Create the test channel state, with additional htlcs on the local
+	// and remote commitment.
+	localHtlcs := []HTLC{
+		{Signature: testSig.Serialize(),
 			Incoming:      true,
 			Amt:           10,
 			RHash:         key,
@@ -253,7 +411,8 @@ func TestOpenChannelPutGetDelete(t *testing.T) {
 			OnionBlob:     []byte("onionblob"),
 		},
 	}
-	state.RemoteCommitment.Htlcs = []HTLC{
+
+	remoteHtlcs := []HTLC{
 		{
 			Signature:     testSig.Serialize(),
 			Incoming:      false,
@@ -264,13 +423,11 @@ func TestOpenChannelPutGetDelete(t *testing.T) {
 		},
 	}
 
-	addr := &net.TCPAddr{
-		IP:   net.ParseIP("127.0.0.1"),
-		Port: 18556,
-	}
-	if err := state.SyncPending(addr, 101); err != nil {
-		t.Fatalf("unable to save and serialize channel state: %v", err)
-	}
+	state := createTestChannel(
+		t, cdb,
+		remoteHtlcsOption(remoteHtlcs),
+		localHtlcsOption(localHtlcs),
+	)
 
 	openChannels, err := cdb.FetchOpenChannels(state.IdentityPub)
 	if err != nil {
@@ -357,36 +514,28 @@ func TestOptionalShutdown(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		modifyChannel  func(channel *OpenChannel)
-		expectedLocal  lnwire.DeliveryAddress
-		expectedRemote lnwire.DeliveryAddress
+		localShutdown  lnwire.DeliveryAddress
+		remoteShutdown lnwire.DeliveryAddress
 	}{
 		{
-			name:          "no shutdown scripts",
-			modifyChannel: func(channel *OpenChannel) {},
+			name:           "no shutdown scripts",
+			localShutdown:  nil,
+			remoteShutdown: nil,
 		},
 		{
-			name: "local shutdown script",
-			modifyChannel: func(channel *OpenChannel) {
-				channel.LocalShutdownScript = local
-			},
-			expectedLocal: local,
+			name:           "local shutdown script",
+			localShutdown:  local,
+			remoteShutdown: nil,
 		},
 		{
-			name: "remote shutdown script",
-			modifyChannel: func(channel *OpenChannel) {
-				channel.RemoteShutdownScript = remote
-			},
-			expectedRemote: remote,
+			name:           "remote shutdown script",
+			localShutdown:  nil,
+			remoteShutdown: remote,
 		},
 		{
-			name: "both scripts set",
-			modifyChannel: func(channel *OpenChannel) {
-				channel.LocalShutdownScript = local
-				channel.RemoteShutdownScript = remote
-			},
-			expectedLocal:  local,
-			expectedRemote: remote,
+			name:           "both scripts set",
+			localShutdown:  local,
+			remoteShutdown: remote,
 		},
 	}
 
@@ -400,40 +549,40 @@ func TestOptionalShutdown(t *testing.T) {
 			}
 			defer cleanUp()
 
-			// Create the test channel state, then add an additional fake HTLC
-			// before syncing to disk.
-			state, err := createTestChannelState(cdb)
+			// Create a channel with upfront scripts set as
+			// specified in the test.
+			state := createTestChannel(
+				t, cdb,
+				localShutdownOption(test.localShutdown),
+				remoteShutdownOption(test.remoteShutdown),
+			)
+
+			openChannels, err := cdb.FetchOpenChannels(
+				state.IdentityPub,
+			)
 			if err != nil {
-				t.Fatalf("unable to create channel state: %v", err)
-			}
-
-			test.modifyChannel(state)
-
-			// Write channels to Db.
-			addr := &net.TCPAddr{
-				IP:   net.ParseIP("127.0.0.1"),
-				Port: 18556,
-			}
-			if err := state.SyncPending(addr, 101); err != nil {
-				t.Fatalf("unable to save and serialize channel state: %v", err)
-			}
-
-			openChannels, err := cdb.FetchOpenChannels(state.IdentityPub)
-			if err != nil {
-				t.Fatalf("unable to fetch open channel: %v", err)
+				t.Fatalf("unable to fetch open"+
+					" channel: %v", err)
 			}
 
 			if len(openChannels) != 1 {
-				t.Fatalf("Expected one channel open, got: %v", len(openChannels))
+				t.Fatalf("Expected one channel open,"+
+					" got: %v", len(openChannels))
 			}
 
-			if !bytes.Equal(openChannels[0].LocalShutdownScript, test.expectedLocal) {
-				t.Fatalf("Expected local: %x, got: %x", test.expectedLocal,
+			if !bytes.Equal(openChannels[0].LocalShutdownScript,
+				test.localShutdown) {
+
+				t.Fatalf("Expected local: %x, got: %x",
+					test.localShutdown,
 					openChannels[0].LocalShutdownScript)
 			}
 
-			if !bytes.Equal(openChannels[0].RemoteShutdownScript, test.expectedRemote) {
-				t.Fatalf("Expected remote: %x, got: %x", test.expectedRemote,
+			if !bytes.Equal(openChannels[0].RemoteShutdownScript,
+				test.remoteShutdown) {
+
+				t.Fatalf("Expected remote: %x, got: %x",
+					test.remoteShutdown,
 					openChannels[0].RemoteShutdownScript)
 			}
 		})
@@ -459,18 +608,7 @@ func TestChannelStateTransition(t *testing.T) {
 
 	// First create a minimal channel, then perform a full sync in order to
 	// persist the data.
-	channel, err := createTestChannelState(cdb)
-	if err != nil {
-		t.Fatalf("unable to create channel state: %v", err)
-	}
-
-	addr := &net.TCPAddr{
-		IP:   net.ParseIP("127.0.0.1"),
-		Port: 18556,
-	}
-	if err := channel.SyncPending(addr, 101); err != nil {
-		t.Fatalf("unable to save and serialize channel state: %v", err)
-	}
+	channel := createTestChannel(t, cdb)
 
 	// Add some HTLCs which were added during this new state transition.
 	// Half of the HTLCs are incoming, while the other half are outgoing.
@@ -524,8 +662,32 @@ func TestChannelStateTransition(t *testing.T) {
 	// First update the local node's broadcastable state and also add a
 	// CommitDiff remote node's as well in order to simulate a proper state
 	// transition.
-	if err := channel.UpdateCommitment(&commitment); err != nil {
+	unsignedAckedUpdates := []LogUpdate{
+		{
+			LogIndex: 2,
+			UpdateMsg: &lnwire.UpdateAddHTLC{
+				ChanID: lnwire.ChannelID{1, 2, 3},
+			},
+		},
+	}
+
+	err = channel.UpdateCommitment(&commitment, unsignedAckedUpdates)
+	if err != nil {
 		t.Fatalf("unable to update commitment: %v", err)
+	}
+
+	// Assert that update is correctly written to the database.
+	dbUnsignedAckedUpdates, err := channel.UnsignedAckedUpdates()
+	if err != nil {
+		t.Fatalf("unable to fetch dangling remote updates: %v", err)
+	}
+	if len(dbUnsignedAckedUpdates) != 1 {
+		t.Fatalf("unexpected number of dangling remote updates")
+	}
+	if !reflect.DeepEqual(
+		dbUnsignedAckedUpdates[0], unsignedAckedUpdates[0],
+	) {
+		t.Fatalf("unexpected update")
 	}
 
 	// The balances, new update, the HTLCs and the changes to the fake
@@ -749,21 +911,9 @@ func TestFetchPendingChannels(t *testing.T) {
 	}
 	defer cleanUp()
 
-	// Create first test channel state
-	state, err := createTestChannelState(cdb)
-	if err != nil {
-		t.Fatalf("unable to create channel state: %v", err)
-	}
-
-	addr := &net.TCPAddr{
-		IP:   net.ParseIP("127.0.0.1"),
-		Port: 18555,
-	}
-
+	// Create a pending channel that was broadcast at height 99.
 	const broadcastHeight = 99
-	if err := state.SyncPending(addr, broadcastHeight); err != nil {
-		t.Fatalf("unable to save and serialize channel state: %v", err)
-	}
+	createTestChannel(t, cdb, pendingHeightOption(broadcastHeight))
 
 	pendingChannels, err := cdb.FetchPendingChannels()
 	if err != nil {
@@ -840,35 +990,8 @@ func TestFetchClosedChannels(t *testing.T) {
 	}
 	defer cleanUp()
 
-	// First create a test channel, that we'll be closing within this pull
-	// request.
-	state, err := createTestChannelState(cdb)
-	if err != nil {
-		t.Fatalf("unable to create channel state: %v", err)
-	}
-
-	// Next sync the channel to disk, marking it as being in a pending open
-	// state.
-	addr := &net.TCPAddr{
-		IP:   net.ParseIP("127.0.0.1"),
-		Port: 18555,
-	}
-	const broadcastHeight = 99
-	if err := state.SyncPending(addr, broadcastHeight); err != nil {
-		t.Fatalf("unable to save and serialize channel state: %v", err)
-	}
-
-	// Next, simulate the confirmation of the channel by marking it as
-	// pending within the database.
-	chanOpenLoc := lnwire.ShortChannelID{
-		BlockHeight: 5,
-		TxIndex:     10,
-		TxPosition:  15,
-	}
-	err = state.MarkAsOpen(chanOpenLoc)
-	if err != nil {
-		t.Fatalf("unable to mark channel as open: %v", err)
-	}
+	// Create an open channel in the database.
+	state := createTestChannel(t, cdb, openChannelOption())
 
 	// Next, close the channel by including a close channel summary in the
 	// database.
@@ -948,7 +1071,6 @@ func TestFetchWaitingCloseChannels(t *testing.T) {
 
 	const numChannels = 2
 	const broadcastHeight = 99
-	addr := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 18555}
 
 	// We'll start by creating two channels within our test database. One of
 	// them will have their funding transaction confirmed on-chain, while
@@ -961,15 +1083,11 @@ func TestFetchWaitingCloseChannels(t *testing.T) {
 
 	channels := make([]*OpenChannel, numChannels)
 	for i := 0; i < numChannels; i++ {
-		channel, err := createTestChannelState(db)
-		if err != nil {
-			t.Fatalf("unable to create channel: %v", err)
-		}
-		err = channel.SyncPending(addr, broadcastHeight)
-		if err != nil {
-			t.Fatalf("unable to sync channel: %v", err)
-		}
-		channels[i] = channel
+		// Create a pending channel in the database at the broadcast
+		// height.
+		channels[i] = createTestChannel(
+			t, db, pendingHeightOption(broadcastHeight),
+		)
 	}
 
 	// We'll only confirm the first one.
@@ -993,13 +1111,13 @@ func TestFetchWaitingCloseChannels(t *testing.T) {
 			},
 		)
 
-		if err := channel.MarkCommitmentBroadcasted(closeTx); err != nil {
+		if err := channel.MarkCommitmentBroadcasted(closeTx, true); err != nil {
 			t.Fatalf("unable to mark commitment broadcast: %v", err)
 		}
 
 		// Now try to marking a coop close with a nil tx. This should
 		// succeed, but it shouldn't exit when queried.
-		if err = channel.MarkCoopBroadcasted(nil); err != nil {
+		if err = channel.MarkCoopBroadcasted(nil, true); err != nil {
 			t.Fatalf("unable to mark nil coop broadcast: %v", err)
 		}
 		_, err := channel.BroadcastedCooperative()
@@ -1011,7 +1129,7 @@ func TestFetchWaitingCloseChannels(t *testing.T) {
 		// it as coop closed. Later we will test that distinct
 		// transactions are returned for both coop and force closes.
 		closeTx.TxIn[0].PreviousOutPoint.Index ^= 1
-		if err := channel.MarkCoopBroadcasted(closeTx); err != nil {
+		if err := channel.MarkCoopBroadcasted(closeTx, true); err != nil {
 			t.Fatalf("unable to mark coop broadcast: %v", err)
 		}
 	}
@@ -1079,21 +1197,7 @@ func TestRefreshShortChanID(t *testing.T) {
 	defer cleanUp()
 
 	// First create a test channel.
-	state, err := createTestChannelState(cdb)
-	if err != nil {
-		t.Fatalf("unable to create channel state: %v", err)
-	}
-
-	addr := &net.TCPAddr{
-		IP:   net.ParseIP("127.0.0.1"),
-		Port: 18555,
-	}
-
-	// Mark the channel as pending within the channeldb.
-	const broadcastHeight = 99
-	if err := state.SyncPending(addr, broadcastHeight); err != nil {
-		t.Fatalf("unable to save and serialize channel state: %v", err)
-	}
+	state := createTestChannel(t, cdb)
 
 	// Next, locate the pending channel with the database.
 	pendingChannels, err := cdb.FetchPendingChannels()
@@ -1171,5 +1275,368 @@ func TestRefreshShortChanID(t *testing.T) {
 	// is up to date.
 	if pendingChannel.IsPending {
 		t.Fatalf("channel pending state wasn't updated: want false got true")
+	}
+}
+
+// TestCloseInitiator tests the setting of close initiator statuses for
+// cooperative closes and local force closes.
+func TestCloseInitiator(t *testing.T) {
+	tests := []struct {
+		name string
+		// updateChannel is called to update the channel as broadcast,
+		// cooperatively or not, based on the test's requirements.
+		updateChannel    func(c *OpenChannel) error
+		expectedStatuses []ChannelStatus
+	}{
+		{
+			name: "local coop close",
+			// Mark the channel as cooperatively closed, initiated
+			// by the local party.
+			updateChannel: func(c *OpenChannel) error {
+				return c.MarkCoopBroadcasted(
+					&wire.MsgTx{}, true,
+				)
+			},
+			expectedStatuses: []ChannelStatus{
+				ChanStatusLocalCloseInitiator,
+				ChanStatusCoopBroadcasted,
+			},
+		},
+		{
+			name: "remote coop close",
+			// Mark the channel as cooperatively closed, initiated
+			// by the remote party.
+			updateChannel: func(c *OpenChannel) error {
+				return c.MarkCoopBroadcasted(
+					&wire.MsgTx{}, false,
+				)
+			},
+			expectedStatuses: []ChannelStatus{
+				ChanStatusRemoteCloseInitiator,
+				ChanStatusCoopBroadcasted,
+			},
+		},
+		{
+			name: "local force close",
+			// Mark the channel's commitment as broadcast with
+			// local initiator.
+			updateChannel: func(c *OpenChannel) error {
+				return c.MarkCommitmentBroadcasted(
+					&wire.MsgTx{}, true,
+				)
+			},
+			expectedStatuses: []ChannelStatus{
+				ChanStatusLocalCloseInitiator,
+				ChanStatusCommitBroadcasted,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			cdb, cleanUp, err := makeTestDB()
+			if err != nil {
+				t.Fatalf("unable to make test database: %v",
+					err)
+			}
+			defer cleanUp()
+
+			// Create an open channel.
+			channel := createTestChannel(
+				t, cdb, openChannelOption(),
+			)
+
+			err = test.updateChannel(channel)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Lookup open channels in the database.
+			dbChans, err := fetchChannels(
+				cdb, pendingChannelFilter(false),
+			)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(dbChans) != 1 {
+				t.Fatalf("expected 1 channel, got: %v",
+					len(dbChans))
+			}
+
+			// Check that the statuses that we expect were written
+			// to disk.
+			for _, status := range test.expectedStatuses {
+				if !dbChans[0].HasChanStatus(status) {
+					t.Fatalf("expected channel to have "+
+						"status: %v, has status: %v",
+						status, dbChans[0].chanStatus)
+				}
+			}
+		})
+	}
+}
+
+// TestCloseChannelStatus tests setting of a channel status on the historical
+// channel on channel close.
+func TestCloseChannelStatus(t *testing.T) {
+	cdb, cleanUp, err := makeTestDB()
+	if err != nil {
+		t.Fatalf("unable to make test database: %v",
+			err)
+	}
+	defer cleanUp()
+
+	// Create an open channel.
+	channel := createTestChannel(
+		t, cdb, openChannelOption(),
+	)
+
+	if err := channel.CloseChannel(
+		&ChannelCloseSummary{
+			ChanPoint: channel.FundingOutpoint,
+			RemotePub: channel.IdentityPub,
+		}, ChanStatusRemoteCloseInitiator,
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	histChan, err := channel.Db.FetchHistoricalChannel(
+		&channel.FundingOutpoint,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !histChan.HasChanStatus(ChanStatusRemoteCloseInitiator) {
+		t.Fatalf("channel should have status")
+	}
+}
+
+// TestBalanceAtHeight tests lookup of our local and remote balance at a given
+// height.
+func TestBalanceAtHeight(t *testing.T) {
+	const (
+		// Values that will be set on our current local commit in
+		// memory.
+		localHeight        = 2
+		localLocalBalance  = 1000
+		localRemoteBalance = 1500
+
+		// Values that will be set on our current remote commit in
+		// memory.
+		remoteHeight        = 3
+		remoteLocalBalance  = 2000
+		remoteRemoteBalance = 2500
+
+		// Values that will be written to disk in the revocation log.
+		oldHeight        = 0
+		oldLocalBalance  = 200
+		oldRemoteBalance = 300
+
+		// Heights to test error cases.
+		unknownHeight   = 1
+		unreachedHeight = 4
+	)
+
+	// putRevokedState is a helper function used to put commitments is
+	// the revocation log bucket to test lookup of balances at heights that
+	// are not our current height.
+	putRevokedState := func(c *OpenChannel, height uint64, local,
+		remote lnwire.MilliSatoshi) error {
+
+		err := kvdb.Update(c.Db, func(tx kvdb.RwTx) error {
+			chanBucket, err := fetchChanBucketRw(
+				tx, c.IdentityPub, &c.FundingOutpoint,
+				c.ChainHash,
+			)
+			if err != nil {
+				return err
+			}
+
+			logKey := revocationLogBucket
+			logBucket, err := chanBucket.CreateBucketIfNotExists(
+				logKey,
+			)
+			if err != nil {
+				return err
+			}
+
+			// Make a copy of our current commitment so we do not
+			// need to re-fill all the required fields and copy in
+			// our new desired values.
+			commit := c.LocalCommitment
+			commit.CommitHeight = height
+			commit.LocalBalance = local
+			commit.RemoteBalance = remote
+
+			return appendChannelLogEntry(logBucket, &commit)
+		})
+
+		return err
+	}
+
+	tests := []struct {
+		name                  string
+		targetHeight          uint64
+		expectedLocalBalance  lnwire.MilliSatoshi
+		expectedRemoteBalance lnwire.MilliSatoshi
+		expectedError         error
+	}{
+		{
+			name:                  "target is current local height",
+			targetHeight:          localHeight,
+			expectedLocalBalance:  localLocalBalance,
+			expectedRemoteBalance: localRemoteBalance,
+			expectedError:         nil,
+		},
+		{
+			name:                  "target is current remote height",
+			targetHeight:          remoteHeight,
+			expectedLocalBalance:  remoteLocalBalance,
+			expectedRemoteBalance: remoteRemoteBalance,
+			expectedError:         nil,
+		},
+		{
+			name:                  "need to lookup commit",
+			targetHeight:          oldHeight,
+			expectedLocalBalance:  oldLocalBalance,
+			expectedRemoteBalance: oldRemoteBalance,
+			expectedError:         nil,
+		},
+		{
+			name:                  "height not found",
+			targetHeight:          unknownHeight,
+			expectedLocalBalance:  0,
+			expectedRemoteBalance: 0,
+			expectedError:         errLogEntryNotFound,
+		},
+		{
+			name:                  "height not reached",
+			targetHeight:          unreachedHeight,
+			expectedLocalBalance:  0,
+			expectedRemoteBalance: 0,
+			expectedError:         errHeightNotReached,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			cdb, cleanUp, err := makeTestDB()
+			if err != nil {
+				t.Fatalf("unable to make test database: %v",
+					err)
+			}
+			defer cleanUp()
+
+			// Create options to set the heights and balances of
+			// our local and remote commitments.
+			localCommitOpt := channelCommitmentOption(
+				localHeight, localLocalBalance,
+				localRemoteBalance, true,
+			)
+
+			remoteCommitOpt := channelCommitmentOption(
+				remoteHeight, remoteLocalBalance,
+				remoteRemoteBalance, false,
+			)
+
+			// Create an open channel.
+			channel := createTestChannel(
+				t, cdb, openChannelOption(),
+				localCommitOpt, remoteCommitOpt,
+			)
+
+			// Write an older commit to disk.
+			err = putRevokedState(channel, oldHeight,
+				oldLocalBalance, oldRemoteBalance)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			local, remote, err := channel.BalancesAtHeight(
+				test.targetHeight,
+			)
+			if err != test.expectedError {
+				t.Fatalf("expected: %v, got: %v",
+					test.expectedError, err)
+			}
+
+			if local != test.expectedLocalBalance {
+				t.Fatalf("expected local: %v, got: %v",
+					test.expectedLocalBalance, local)
+			}
+
+			if remote != test.expectedRemoteBalance {
+				t.Fatalf("expected remote: %v, got: %v",
+					test.expectedRemoteBalance, remote)
+			}
+		})
+	}
+}
+
+// TestHasChanStatus asserts the behavior of HasChanStatus by checking the
+// behavior of various status flags in addition to the special case of
+// ChanStatusDefault which is treated like a flag in the code base even though
+// it isn't.
+func TestHasChanStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		status ChannelStatus
+		expHas map[ChannelStatus]bool
+	}{
+		{
+			name:   "default",
+			status: ChanStatusDefault,
+			expHas: map[ChannelStatus]bool{
+				ChanStatusDefault: true,
+				ChanStatusBorked:  false,
+			},
+		},
+		{
+			name:   "single flag",
+			status: ChanStatusBorked,
+			expHas: map[ChannelStatus]bool{
+				ChanStatusDefault: false,
+				ChanStatusBorked:  true,
+			},
+		},
+		{
+			name:   "multiple flags",
+			status: ChanStatusBorked | ChanStatusLocalDataLoss,
+			expHas: map[ChannelStatus]bool{
+				ChanStatusDefault:       false,
+				ChanStatusBorked:        true,
+				ChanStatusLocalDataLoss: true,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			c := &OpenChannel{
+				chanStatus: test.status,
+			}
+
+			for status, expHas := range test.expHas {
+				has := c.HasChanStatus(status)
+				if has == expHas {
+					continue
+				}
+
+				t.Fatalf("expected chan status to "+
+					"have %s? %t, got: %t",
+					status, expHas, has)
+			}
+		})
 	}
 }

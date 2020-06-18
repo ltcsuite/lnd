@@ -3,14 +3,15 @@ package contractcourt
 import (
 	"io"
 
-	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/htlcswitch/hop"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/invoices"
 	"github.com/ltcsuite/lnd/lntypes"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/sweep"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // Registry is an interface which represents the invoice registry.
@@ -27,7 +28,7 @@ type Registry interface {
 	NotifyExitHopHtlc(payHash lntypes.Hash, paidAmount lnwire.MilliSatoshi,
 		expiry uint32, currentHeight int32,
 		circuitKey channeldb.CircuitKey, hodlChan chan<- interface{},
-		payload invoices.Payload) (*invoices.HtlcResolution, error)
+		payload invoices.Payload) (invoices.HtlcResolution, error)
 
 	// HodlUnsubscribeAll unsubscribes from all htlc resolutions.
 	HodlUnsubscribeAll(subscriber chan<- interface{})
@@ -51,4 +52,16 @@ type UtxoSweeper interface {
 	// estimate before generating the required witnesses.
 	CreateSweepTx(inputs []input.Input, feePref sweep.FeePreference,
 		currentBlockHeight uint32) (*wire.MsgTx, error)
+
+	// RelayFeePerKW returns the minimum fee rate required for transactions
+	// to be relayed.
+	RelayFeePerKW() chainfee.SatPerKWeight
+
+	// UpdateParams allows updating the sweep parameters of a pending input
+	// in the UtxoSweeper. This function can be used to provide an updated
+	// fee preference that will be used for a new sweep transaction of the
+	// input that will act as a replacement transaction (RBF) of the
+	// original sweeping transaction, if any.
+	UpdateParams(input wire.OutPoint, params sweep.ParamsUpdate) (
+		chan sweep.Result, error)
 }

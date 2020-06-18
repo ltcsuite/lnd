@@ -4,14 +4,13 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/ltcsuite/ltcd/txscript"
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/htlcswitch"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 )
 
 var (
@@ -155,6 +154,9 @@ type channelCloser struct {
 	// remoteDeliveryScript is the script that we'll send the remote
 	// party's settled channel funds to.
 	remoteDeliveryScript []byte
+
+	// locallyInitiated is true if we initiated the channel close.
+	locallyInitiated bool
 }
 
 // newChannelCloser creates a new instance of the channel closure given the
@@ -162,7 +164,7 @@ type channelCloser struct {
 // only be populated iff, we're the initiator of this closing request.
 func newChannelCloser(cfg chanCloseCfg, deliveryScript []byte,
 	idealFeePerKw chainfee.SatPerKWeight, negotiationHeight uint32,
-	closeReq *htlcswitch.ChanClose) *channelCloser {
+	closeReq *htlcswitch.ChanClose, locallyInitiated bool) *channelCloser {
 
 	// Given the target fee-per-kw, we'll compute what our ideal _total_
 	// fee will be starting at for this fee negotiation.
@@ -198,6 +200,7 @@ func newChannelCloser(cfg chanCloseCfg, deliveryScript []byte,
 		idealFeeSat:         idealFeeSat,
 		localDeliveryScript: deliveryScript,
 		priorFeeOffers:      make(map[ltcutil.Amount]*lnwire.ClosingSigned),
+		locallyInitiated:    locallyInitiated,
 	}
 }
 
@@ -219,21 +222,19 @@ func (c *channelCloser) initChanShutdown() (*lnwire.Shutdown, error) {
 			"close: %v", c.chanPoint, err)
 	}
 
+	// Before returning the shutdown message, we'll unregister the channel
+	// to ensure that it isn't seen as usable within the system.
+	c.cfg.unregisterChannel(c.cid)
+
 	// Before continuing, mark the channel as cooperatively closed with a
 	// nil txn. Even though we haven't negotiated the final txn, this
 	// guarantees that our listchannels rpc will be externally consistent,
 	// and reflect that the channel is being shutdown by the time the
 	// closing request returns.
-	err := c.cfg.channel.MarkCoopBroadcasted(nil)
+	err := c.cfg.channel.MarkCoopBroadcasted(nil, c.locallyInitiated)
 	if err != nil {
 		return nil, err
 	}
-
-	// Before returning the shutdown message, we'll unregister the channel
-	// to ensure that it isn't seen as usable within the system.
-	//
-	// TODO(roasbeef): fail if err?
-	c.cfg.unregisterChannel(c.cid)
 
 	peerLog.Infof("ChannelPoint(%v): sending shutdown message", c.chanPoint)
 
@@ -345,6 +346,21 @@ func (c *channelCloser) ProcessCloseMsg(msg lnwire.Message) ([]lnwire.Message, b
 				"instead have %v", spew.Sdump(msg))
 		}
 
+		// As we're the responder to this shutdown (the other party
+		// wants to close), we'll check if this is a frozen channel or
+		// not. If the channel is frozen as we were also the initiator
+		// of the channel opening, then we'll deny their close attempt.
+		chanInitiator := c.cfg.channel.IsInitiator()
+		if !chanInitiator && c.cfg.channel.State().ChanType.IsFrozen() &&
+			c.negotiationHeight < c.cfg.channel.State().ThawHeight {
+
+			return nil, false, fmt.Errorf("initiator attempting "+
+				"to co-op close frozen ChannelPoint(%v) "+
+				"(current_height=%v, thaw_height=%v)",
+				c.chanPoint, c.negotiationHeight,
+				c.cfg.channel.State().ThawHeight)
+		}
+
 		// If the remote node opened the channel with option upfront shutdown
 		// script, check that the script they provided matches.
 		if err := maybeMatchScript(
@@ -380,7 +396,7 @@ func (c *channelCloser) ProcessCloseMsg(msg lnwire.Message) ([]lnwire.Message, b
 
 		// We'll also craft our initial close proposal in order to keep
 		// the negotiation moving, but only if we're the negotiator.
-		if c.cfg.channel.IsInitiator() {
+		if chanInitiator {
 			closeSigned, err := c.proposeCloseSigned(c.idealFeeSat)
 			if err != nil {
 				return nil, false, err
@@ -493,11 +509,15 @@ func (c *channelCloser) ProcessCloseMsg(msg lnwire.Message) ([]lnwire.Message, b
 		// transaction!  We'll craft the final closing transaction so
 		// we can broadcast it to the network.
 		matchingSig := c.priorFeeOffers[remoteProposedFee].Signature
-		localSigBytes := matchingSig.ToSignatureBytes()
-		localSig := append(localSigBytes, byte(txscript.SigHashAll))
+		localSig, err := matchingSig.ToSignature()
+		if err != nil {
+			return nil, false, err
+		}
 
-		remoteSigBytes := closeSignedMsg.Signature.ToSignatureBytes()
-		remoteSig := append(remoteSigBytes, byte(txscript.SigHashAll))
+		remoteSig, err := closeSignedMsg.Signature.ToSignature()
+		if err != nil {
+			return nil, false, err
+		}
 
 		closeTx, _, err := c.cfg.channel.CompleteCooperativeClose(
 			localSig, remoteSig, c.localDeliveryScript,
@@ -511,7 +531,9 @@ func (c *channelCloser) ProcessCloseMsg(msg lnwire.Message) ([]lnwire.Message, b
 		// Before publishing the closing tx, we persist it to the
 		// database, such that it can be republished if something goes
 		// wrong.
-		err = c.cfg.channel.MarkCoopBroadcasted(closeTx)
+		err = c.cfg.channel.MarkCoopBroadcasted(
+			closeTx, c.locallyInitiated,
+		)
 		if err != nil {
 			return nil, false, err
 		}
@@ -570,7 +592,7 @@ func (c *channelCloser) proposeCloseSigned(fee ltcutil.Amount) (*lnwire.ClosingS
 	// party responds we'll be able to decide if we've agreed on fees or
 	// not.
 	c.lastFeeProposal = fee
-	parsedSig, err := lnwire.NewSigFromRawSignature(rawSig)
+	parsedSig, err := lnwire.NewSigFromSignature(rawSig)
 	if err != nil {
 		return nil, err
 	}

@@ -1,12 +1,20 @@
 language: go
 cache:
   directories:
-    - ~/bitcoin/bitcoin-0.19.0.1/bin
+    - ~/bitcoin/bitcoin-0.19.1/bin
+    - $DOWNLOAD_CACHE
     - $GOCACHE
     - $GOPATH/pkg/mod
     - $GOPATH/src/github.com/btcsuite
     - $GOPATH/src/github.com/golang
+    - $GOPATH/src/github.com/grpc-ecosystem
     - $GOPATH/src/gopkg.in/alecthomas
+    - $GOPATH/src/google.golang.org
+
+# Remove Travis' default flag --depth=50 from the git clone command to make sure
+# we have the whole git history, including the commit we lint against.
+git:
+  depth: false
 
 go:
   - "1.13.x"
@@ -14,18 +22,28 @@ go:
 env:
   global:
     - GOCACHE=$HOME/.go-build
+    - DOWNLOAD_CACHE=$HOME/download_cache
 
 sudo: required
 
-before_script: bash ./scripts/install_bitcoind.sh
+addons:
+  apt:
+    packages:
+      - clang-format
+
+before_script:
+  - bash ./scripts/install_travis_proto.sh
+  - bash ./scripts/install_bitcoind.sh
 
 jobs:
   include:
     - stage: Build
-      script: 
-      - make unit pkg=... case=_NONE_ 
-      - make lint
-      - make btcd
+      script:
+        - make rpc-check
+        - make unit pkg=... case=_NONE_
+        - make lint workers=1
+        - make btcd
+        - make release sys=windows-amd64
     - stage: Test
       script: make travis-cover
       name: Unit Cover

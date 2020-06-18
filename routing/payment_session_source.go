@@ -26,9 +26,6 @@ type SessionSource struct {
 	// the available bandwidth of the link should be returned.
 	QueryBandwidth func(*channeldb.ChannelEdgeInfo) lnwire.MilliSatoshi
 
-	// SelfNode is our own node.
-	SelfNode *channeldb.LightningNode
-
 	// MissionControl is a shared memory of sorts that executions of payment
 	// path finding use in order to remember which vertexes/edges were
 	// pruned from prior attempts. During payment execution, errors sent by
@@ -43,17 +40,27 @@ type SessionSource struct {
 	PathFindingConfig PathFindingConfig
 }
 
+// getRoutingGraph returns a routing graph and a clean-up function for
+// pathfinding.
+func (m *SessionSource) getRoutingGraph() (routingGraph, func(), error) {
+	routingTx, err := newDbRoutingTx(m.Graph)
+	if err != nil {
+		return nil, nil, err
+	}
+	return routingTx, func() {
+		err := routingTx.close()
+		if err != nil {
+			log.Errorf("Error closing db tx: %v", err)
+		}
+	}, nil
+}
+
 // NewPaymentSession creates a new payment session backed by the latest prune
 // view from Mission Control. An optional set of routing hints can be provided
 // in order to populate additional edges to explore when finding a path to the
 // payment's destination.
-func (m *SessionSource) NewPaymentSession(routeHints [][]zpay32.HopHint,
-	target route.Vertex) (PaymentSession, error) {
-
-	edges, err := RouteHintsToEdges(routeHints, target)
-	if err != nil {
-		return nil, err
-	}
+func (m *SessionSource) NewPaymentSession(p *LightningPayment) (
+	PaymentSession, error) {
 
 	sourceNode, err := m.Graph.SourceNode()
 	if err != nil {
@@ -66,21 +73,15 @@ func (m *SessionSource) NewPaymentSession(routeHints [][]zpay32.HopHint,
 		return generateBandwidthHints(sourceNode, m.QueryBandwidth)
 	}
 
-	return &paymentSession{
-		additionalEdges:   edges,
-		getBandwidthHints: getBandwidthHints,
-		sessionSource:     m,
-		pathFinder:        findPath,
-	}, nil
-}
-
-// NewPaymentSessionForRoute creates a new paymentSession instance that is just
-// used for failure reporting to missioncontrol.
-func (m *SessionSource) NewPaymentSessionForRoute(preBuiltRoute *route.Route) PaymentSession {
-	return &paymentSession{
-		sessionSource: m,
-		preBuiltRoute: preBuiltRoute,
+	session, err := newPaymentSession(
+		p, getBandwidthHints, m.getRoutingGraph,
+		m.MissionControl, m.PathFindingConfig,
+	)
+	if err != nil {
+		return nil, err
 	}
+
+	return session, nil
 }
 
 // NewPaymentSessionEmpty creates a new paymentSession instance that is empty,
@@ -88,9 +89,7 @@ func (m *SessionSource) NewPaymentSessionForRoute(preBuiltRoute *route.Route) Pa
 // missioncontrol for resumed payment we don't want to make more attempts for.
 func (m *SessionSource) NewPaymentSessionEmpty() PaymentSession {
 	return &paymentSession{
-		sessionSource:      m,
-		preBuiltRoute:      &route.Route{},
-		preBuiltRouteTried: true,
+		empty: true,
 	}
 }
 

@@ -1,5 +1,3 @@
-// +build routerrpc
-
 package routerrpc
 
 import (
@@ -9,15 +7,15 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/lnd/channeldb"
-	"github.com/ltcsuite/lnd/htlcswitch"
 	"github.com/ltcsuite/lnd/lnrpc"
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/routing"
 	"github.com/ltcsuite/lnd/routing/route"
+	"github.com/ltcsuite/ltcutil"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -33,6 +31,8 @@ const (
 )
 
 var (
+	errServerShuttingDown = errors.New("routerrpc server shutting down")
+
 	// macaroonOps are the set of capabilities that our minted macaroon (if
 	// it doesn't already exist) will have.
 	macaroonOps = []bakery.Op{
@@ -48,7 +48,7 @@ var (
 
 	// macPermissions maps RPC calls to the permissions they require.
 	macPermissions = map[string][]bakery.Op{
-		"/routerrpc.Router/SendPayment": {{
+		"/routerrpc.Router/SendPaymentV2": {{
 			Entity: "offchain",
 			Action: "write",
 		}},
@@ -56,7 +56,7 @@ var (
 			Entity: "offchain",
 			Action: "write",
 		}},
-		"/routerrpc.Router/TrackPayment": {{
+		"/routerrpc.Router/TrackPaymentV2": {{
 			Entity: "offchain",
 			Action: "read",
 		}},
@@ -80,6 +80,18 @@ var (
 			Entity: "offchain",
 			Action: "read",
 		}},
+		"/routerrpc.Router/SubscribeHtlcEvents": {{
+			Entity: "offchain",
+			Action: "read",
+		}},
+		"/routerrpc.Router/SendPayment": {{
+			Entity: "offchain",
+			Action: "write",
+		}},
+		"/routerrpc.Router/TrackPayment": {{
+			Entity: "offchain",
+			Action: "read",
+		}},
 	}
 
 	// DefaultRouterMacFilename is the default name of the router macaroon
@@ -91,7 +103,12 @@ var (
 // Server is a stand alone sub RPC server which exposes functionality that
 // allows clients to route arbitrary payment through the Lightning Network.
 type Server struct {
+	started  int32 // To be used atomically.
+	shutdown int32 // To be used atomically.
+
 	cfg *Config
+
+	quit chan struct{}
 }
 
 // A compile time check to ensure that Server fully implements the RouterServer
@@ -151,7 +168,8 @@ func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
 	}
 
 	routerServer := &Server{
-		cfg: cfg,
+		cfg:  cfg,
+		quit: make(chan struct{}),
 	}
 
 	return routerServer, macPermissions, nil
@@ -161,6 +179,10 @@ func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
 //
 // NOTE: This is part of the lnrpc.SubServer interface.
 func (s *Server) Start() error {
+	if atomic.AddInt32(&s.started, 1) != 1 {
+		return nil
+	}
+
 	return nil
 }
 
@@ -168,6 +190,11 @@ func (s *Server) Start() error {
 //
 // NOTE: This is part of the lnrpc.SubServer interface.
 func (s *Server) Stop() error {
+	if atomic.AddInt32(&s.shutdown, 1) != 1 {
+		return nil
+	}
+
+	close(s.quit)
 	return nil
 }
 
@@ -195,13 +222,13 @@ func (s *Server) RegisterWithRootServer(grpcServer *grpc.Server) error {
 	return nil
 }
 
-// SendPayment attempts to route a payment described by the passed
+// SendPaymentV2 attempts to route a payment described by the passed
 // PaymentRequest to the final destination. If we are unable to route the
 // payment, or cannot find a route that satisfies the constraints in the
 // PaymentRequest, then an error will be returned. Otherwise, the payment
 // pre-image, along with the final route will be returned.
-func (s *Server) SendPayment(req *SendPaymentRequest,
-	stream Router_SendPaymentServer) error {
+func (s *Server) SendPaymentV2(req *SendPaymentRequest,
+	stream Router_SendPaymentV2Server) error {
 
 	payment, err := s.cfg.RouterBackend.extractIntentFromSendRequest(req)
 	if err != nil {
@@ -228,7 +255,7 @@ func (s *Server) SendPayment(req *SendPaymentRequest,
 		return err
 	}
 
-	return s.trackPayment(payment.PaymentHash, stream)
+	return s.trackPayment(payment.PaymentHash, stream, req.NoInflightUpdates)
 }
 
 // EstimateRouteFee allows callers to obtain a lower bound w.r.t how much it
@@ -310,156 +337,6 @@ func (s *Server) SendToRoute(ctx context.Context,
 	return &SendToRouteResponse{
 		Failure: rpcErr,
 	}, nil
-}
-
-// marshallError marshall an error as received from the switch to rpc structs
-// suitable for returning to the caller of an rpc method.
-//
-// Because of difficulties with using protobuf oneof constructs in some
-// languages, the decision was made here to use a single message format for all
-// failure messages with some fields left empty depending on the failure type.
-func marshallError(sendError error) (*Failure, error) {
-	response := &Failure{}
-
-	if sendError == htlcswitch.ErrUnreadableFailureMessage {
-		response.Code = Failure_UNREADABLE_FAILURE
-		return response, nil
-	}
-
-	rtErr, ok := sendError.(htlcswitch.ClearTextError)
-	if !ok {
-		return nil, sendError
-	}
-
-	switch onionErr := rtErr.WireMessage().(type) {
-
-	case *lnwire.FailIncorrectDetails:
-		response.Code = Failure_INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS
-		response.Height = onionErr.Height()
-
-	case *lnwire.FailIncorrectPaymentAmount:
-		response.Code = Failure_INCORRECT_PAYMENT_AMOUNT
-
-	case *lnwire.FailFinalIncorrectCltvExpiry:
-		response.Code = Failure_FINAL_INCORRECT_CLTV_EXPIRY
-		response.CltvExpiry = onionErr.CltvExpiry
-
-	case *lnwire.FailFinalIncorrectHtlcAmount:
-		response.Code = Failure_FINAL_INCORRECT_HTLC_AMOUNT
-		response.HtlcMsat = uint64(onionErr.IncomingHTLCAmount)
-
-	case *lnwire.FailFinalExpiryTooSoon:
-		response.Code = Failure_FINAL_EXPIRY_TOO_SOON
-
-	case *lnwire.FailInvalidRealm:
-		response.Code = Failure_INVALID_REALM
-
-	case *lnwire.FailExpiryTooSoon:
-		response.Code = Failure_EXPIRY_TOO_SOON
-		response.ChannelUpdate = marshallChannelUpdate(&onionErr.Update)
-
-	case *lnwire.FailExpiryTooFar:
-		response.Code = Failure_EXPIRY_TOO_FAR
-
-	case *lnwire.FailInvalidOnionVersion:
-		response.Code = Failure_INVALID_ONION_VERSION
-		response.OnionSha_256 = onionErr.OnionSHA256[:]
-
-	case *lnwire.FailInvalidOnionHmac:
-		response.Code = Failure_INVALID_ONION_HMAC
-		response.OnionSha_256 = onionErr.OnionSHA256[:]
-
-	case *lnwire.FailInvalidOnionKey:
-		response.Code = Failure_INVALID_ONION_KEY
-		response.OnionSha_256 = onionErr.OnionSHA256[:]
-
-	case *lnwire.FailAmountBelowMinimum:
-		response.Code = Failure_AMOUNT_BELOW_MINIMUM
-		response.ChannelUpdate = marshallChannelUpdate(&onionErr.Update)
-		response.HtlcMsat = uint64(onionErr.HtlcMsat)
-
-	case *lnwire.FailFeeInsufficient:
-		response.Code = Failure_FEE_INSUFFICIENT
-		response.ChannelUpdate = marshallChannelUpdate(&onionErr.Update)
-		response.HtlcMsat = uint64(onionErr.HtlcMsat)
-
-	case *lnwire.FailIncorrectCltvExpiry:
-		response.Code = Failure_INCORRECT_CLTV_EXPIRY
-		response.ChannelUpdate = marshallChannelUpdate(&onionErr.Update)
-		response.CltvExpiry = onionErr.CltvExpiry
-
-	case *lnwire.FailChannelDisabled:
-		response.Code = Failure_CHANNEL_DISABLED
-		response.ChannelUpdate = marshallChannelUpdate(&onionErr.Update)
-		response.Flags = uint32(onionErr.Flags)
-
-	case *lnwire.FailTemporaryChannelFailure:
-		response.Code = Failure_TEMPORARY_CHANNEL_FAILURE
-		response.ChannelUpdate = marshallChannelUpdate(onionErr.Update)
-
-	case *lnwire.FailRequiredNodeFeatureMissing:
-		response.Code = Failure_REQUIRED_NODE_FEATURE_MISSING
-
-	case *lnwire.FailRequiredChannelFeatureMissing:
-		response.Code = Failure_REQUIRED_CHANNEL_FEATURE_MISSING
-
-	case *lnwire.FailUnknownNextPeer:
-		response.Code = Failure_UNKNOWN_NEXT_PEER
-
-	case *lnwire.FailTemporaryNodeFailure:
-		response.Code = Failure_TEMPORARY_NODE_FAILURE
-
-	case *lnwire.FailPermanentNodeFailure:
-		response.Code = Failure_PERMANENT_NODE_FAILURE
-
-	case *lnwire.FailPermanentChannelFailure:
-		response.Code = Failure_PERMANENT_CHANNEL_FAILURE
-
-	case *lnwire.FailMPPTimeout:
-		response.Code = Failure_MPP_TIMEOUT
-
-	case nil:
-		response.Code = Failure_UNKNOWN_FAILURE
-
-	default:
-		return nil, fmt.Errorf("cannot marshall failure %T", onionErr)
-	}
-
-	// If the ClearTextError received is a ForwardingError, the error
-	// originated from a node along the route, not locally on our outgoing
-	// link. We set failureSourceIdx to the index of the node where the
-	// failure occurred. If the error is not a ForwardingError, the failure
-	// occurred at our node, so we leave the index as 0 to indicate that
-	// we failed locally.
-	fErr, ok := rtErr.(*htlcswitch.ForwardingError)
-	if ok {
-		response.FailureSourceIndex = uint32(fErr.FailureSourceIdx)
-	}
-
-	return response, nil
-}
-
-// marshallChannelUpdate marshalls a channel update as received over the wire to
-// the router rpc format.
-func marshallChannelUpdate(update *lnwire.ChannelUpdate) *ChannelUpdate {
-	if update == nil {
-		return nil
-	}
-
-	return &ChannelUpdate{
-		Signature:       update.Signature[:],
-		ChainHash:       update.ChainHash[:],
-		ChanId:          update.ShortChannelID.ToUint64(),
-		Timestamp:       update.Timestamp,
-		MessageFlags:    uint32(update.MessageFlags),
-		ChannelFlags:    uint32(update.ChannelFlags),
-		TimeLockDelta:   uint32(update.TimeLockDelta),
-		HtlcMinimumMsat: uint64(update.HtlcMinimumMsat),
-		BaseFee:         update.BaseFee,
-		FeeRate:         update.FeeRate,
-		HtlcMaximumMsat: uint64(update.HtlcMaximumMsat),
-		ExtraOpaqueData: update.ExtraOpaqueData,
-	}
 }
 
 // ResetMissionControl clears all mission control state and starts with a clean
@@ -550,10 +427,10 @@ func (s *Server) QueryProbability(ctx context.Context,
 	}, nil
 }
 
-// TrackPayment returns a stream of payment state updates. The stream is
+// TrackPaymentV2 returns a stream of payment state updates. The stream is
 // closed when the payment completes.
-func (s *Server) TrackPayment(request *TrackPaymentRequest,
-	stream Router_TrackPaymentServer) error {
+func (s *Server) TrackPaymentV2(request *TrackPaymentRequest,
+	stream Router_TrackPaymentV2Server) error {
 
 	paymentHash, err := lntypes.MakeHash(request.PaymentHash)
 	if err != nil {
@@ -562,17 +439,17 @@ func (s *Server) TrackPayment(request *TrackPaymentRequest,
 
 	log.Debugf("TrackPayment called for payment %v", paymentHash)
 
-	return s.trackPayment(paymentHash, stream)
+	return s.trackPayment(paymentHash, stream, request.NoInflightUpdates)
 }
 
 // trackPayment writes payment status updates to the provided stream.
 func (s *Server) trackPayment(paymentHash lntypes.Hash,
-	stream Router_TrackPaymentServer) error {
+	stream Router_TrackPaymentV2Server, noInflightUpdates bool) error {
 
 	router := s.cfg.RouterBackend
 
 	// Subscribe to the outcome of this payment.
-	inFlight, resultChan, err := router.Tower.SubscribePayment(
+	subscription, err := router.Tower.SubscribePayment(
 		paymentHash,
 	)
 	switch {
@@ -581,121 +458,45 @@ func (s *Server) trackPayment(paymentHash lntypes.Hash,
 	case err != nil:
 		return err
 	}
+	defer subscription.Close()
 
-	// If it is in flight, send a state update to the client. Payment status
-	// update streams are expected to always send the current payment state
-	// immediately.
-	if inFlight {
-		err = stream.Send(&PaymentStatus{
-			State: PaymentState_IN_FLIGHT,
-		})
-		if err != nil {
-			return err
-		}
-	}
-
-	// Wait for the outcome of the payment. For payments that have
-	// completed, the result should already be waiting on the channel.
-	select {
-	case result := <-resultChan:
-		// Marshall result to rpc type.
-		var status PaymentStatus
-		if result.Success {
-			log.Debugf("Payment %v successfully completed",
-				paymentHash)
-
-			status.State = PaymentState_SUCCEEDED
-			status.Preimage = result.Preimage[:]
-		} else {
-			state, err := marshallFailureReason(
-				result.FailureReason,
-			)
-			if err != nil {
-				return err
+	// Stream updates back to the client. The first update is always the
+	// current state of the payment.
+	for {
+		select {
+		case item, ok := <-subscription.Updates:
+			if !ok {
+				// No more payment updates.
+				return nil
 			}
-			status.State = state
-		}
+			result := item.(*channeldb.MPPayment)
 
-		// Extract the last route from the given list of HTLCs. This
-		// will populate the legacy route field for backwards
-		// compatibility.
-		//
-		// NOTE: For now there will be at most one HTLC, this code
-		// should be revisted or the field removed when multiple HTLCs
-		// are permitted.
-		var legacyRoute *route.Route
-		for _, htlc := range result.HTLCs {
-			switch {
-			case htlc.Settle != nil:
-				legacyRoute = &htlc.Route
+			// Skip in-flight updates unless requested.
+			if noInflightUpdates &&
+				result.Status == channeldb.StatusInFlight {
 
-			// Only display the route for failed payments if we got
-			// an incorrect payment details error, so that it can be
-			// used for probing or fee estimation.
-			case htlc.Failure != nil && result.FailureReason ==
-				channeldb.FailureReasonPaymentDetails:
-
-				legacyRoute = &htlc.Route
+				continue
 			}
-		}
-		if legacyRoute != nil {
-			status.Route, err = router.MarshallRoute(legacyRoute)
-			if err != nil {
-				return err
-			}
-		}
 
-		// Marshal our list of HTLCs that have been tried for this
-		// payment.
-		htlcs := make([]*lnrpc.HTLCAttempt, 0, len(result.HTLCs))
-		for _, dbHtlc := range result.HTLCs {
-			htlc, err := router.MarshalHTLCAttempt(dbHtlc)
+			rpcPayment, err := router.MarshallPayment(result)
 			if err != nil {
 				return err
 			}
 
-			htlcs = append(htlcs, htlc)
+			// Send event to the client.
+			err = stream.Send(rpcPayment)
+			if err != nil {
+				return err
+			}
+
+		case <-s.quit:
+			return errServerShuttingDown
+
+		case <-stream.Context().Done():
+			log.Debugf("Payment status stream %v canceled", paymentHash)
+			return stream.Context().Err()
 		}
-		status.Htlcs = htlcs
-
-		// Send event to the client.
-		err = stream.Send(&status)
-		if err != nil {
-			return err
-		}
-
-	case <-stream.Context().Done():
-		log.Debugf("Payment status stream %v canceled", paymentHash)
-		return stream.Context().Err()
 	}
-
-	return nil
-}
-
-// marshallFailureReason marshalls the failure reason to the corresponding rpc
-// type.
-func marshallFailureReason(reason channeldb.FailureReason) (
-	PaymentState, error) {
-
-	switch reason {
-
-	case channeldb.FailureReasonTimeout:
-		return PaymentState_FAILED_TIMEOUT, nil
-
-	case channeldb.FailureReasonNoRoute:
-		return PaymentState_FAILED_NO_ROUTE, nil
-
-	case channeldb.FailureReasonError:
-		return PaymentState_FAILED_ERROR, nil
-
-	case channeldb.FailureReasonPaymentDetails:
-		return PaymentState_FAILED_INCORRECT_PAYMENT_DETAILS, nil
-
-	case channeldb.FailureReasonInsufficientBalance:
-		return PaymentState_FAILED_INSUFFICIENT_BALANCE, nil
-	}
-
-	return 0, errors.New("unknown failure reason")
 }
 
 // BuildRoute builds a route from a list of hop addresses.
@@ -742,4 +543,43 @@ func (s *Server) BuildRoute(ctx context.Context,
 	}
 
 	return routeResp, nil
+}
+
+// SubscribeHtlcEvents creates a uni-directional stream from the server to
+// the client which delivers a stream of htlc events.
+func (s *Server) SubscribeHtlcEvents(req *SubscribeHtlcEventsRequest,
+	stream Router_SubscribeHtlcEventsServer) error {
+
+	htlcClient, err := s.cfg.RouterBackend.SubscribeHtlcEvents()
+	if err != nil {
+		return err
+	}
+	defer htlcClient.Cancel()
+
+	for {
+		select {
+		case event := <-htlcClient.Updates():
+			rpcEvent, err := rpcHtlcEvent(event)
+			if err != nil {
+				return err
+			}
+
+			if err := stream.Send(rpcEvent); err != nil {
+				return err
+			}
+
+		// If the stream's context is cancelled, return an error.
+		case <-stream.Context().Done():
+			log.Debugf("htlc event stream cancelled")
+			return stream.Context().Err()
+
+		// If the subscribe client terminates, exit with an error.
+		case <-htlcClient.Quit():
+			return errors.New("htlc event subscription terminated")
+
+		// If the server has been signalled to shut down, exit.
+		case <-s.quit:
+			return errServerShuttingDown
+		}
+	}
 }

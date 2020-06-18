@@ -760,7 +760,7 @@ func TestRestart(t *testing.T) {
 	// Expect last tx to be republished.
 	ctx.receiveTx()
 
-	// Simulate other subsystem (eg contract resolver) re-offering inputs.
+	// Simulate other subsystem (e.g. contract resolver) re-offering inputs.
 	spendChan1, err := ctx.sweeper.SweepInput(input1, defaultFeePref)
 	if err != nil {
 		t.Fatal(err)
@@ -858,7 +858,7 @@ func TestRestartRemoteSpend(t *testing.T) {
 	// Mine remote spending tx.
 	ctx.backend.mine()
 
-	// Simulate other subsystem (eg contract resolver) re-offering input 0.
+	// Simulate other subsystem (e.g. contract resolver) re-offering input 0.
 	spendChan, err := ctx.sweeper.SweepInput(input1, defaultFeePref)
 	if err != nil {
 		t.Fatal(err)
@@ -901,7 +901,7 @@ func TestRestartConfirmed(t *testing.T) {
 	// Mine the sweep tx.
 	ctx.backend.mine()
 
-	// Simulate other subsystem (eg contract resolver) re-offering input 0.
+	// Simulate other subsystem (e.g. contract resolver) re-offering input 0.
 	spendChan, err := ctx.sweeper.SweepInput(input, defaultFeePref)
 	if err != nil {
 		t.Fatal(err)
@@ -1178,7 +1178,9 @@ func TestBumpFeeRBF(t *testing.T) {
 
 	// We'll first try to bump the fee of an output currently unknown to the
 	// UtxoSweeper. Doing so should result in a lnwallet.ErrNotMine error.
-	bumpResult, err := ctx.sweeper.BumpFee(wire.OutPoint{}, lowFeePref)
+	_, err := ctx.sweeper.UpdateParams(
+		wire.OutPoint{}, ParamsUpdate{Fee: lowFeePref},
+	)
 	if err != lnwallet.ErrNotMine {
 		t.Fatalf("expected error lnwallet.ErrNotMine, got \"%v\"", err)
 	}
@@ -1206,12 +1208,14 @@ func TestBumpFeeRBF(t *testing.T) {
 	ctx.estimator.blocksToFee[highFeePref.ConfTarget] = highFeeRate
 
 	// We should expect to see an error if a fee preference isn't provided.
-	_, err = ctx.sweeper.BumpFee(*input.OutPoint(), FeePreference{})
+	_, err = ctx.sweeper.UpdateParams(*input.OutPoint(), ParamsUpdate{})
 	if err != ErrNoFeePreference {
 		t.Fatalf("expected ErrNoFeePreference, got %v", err)
 	}
 
-	bumpResult, err = ctx.sweeper.BumpFee(*input.OutPoint(), highFeePref)
+	bumpResult, err := ctx.sweeper.UpdateParams(
+		*input.OutPoint(), ParamsUpdate{Fee: highFeePref},
+	)
 	if err != nil {
 		t.Fatalf("unable to bump input's fee: %v", err)
 	}
@@ -1227,4 +1231,64 @@ func TestBumpFeeRBF(t *testing.T) {
 	ctx.expectResult(bumpResult, nil)
 
 	ctx.finish(1)
+}
+
+// TestExclusiveGroup tests the sweeper exclusive group functionality.
+func TestExclusiveGroup(t *testing.T) {
+	ctx := createSweeperTestContext(t)
+
+	// Sweep three inputs in the same exclusive group.
+	var results []chan Result
+	for i := 0; i < 3; i++ {
+		exclusiveGroup := uint64(1)
+		result, err := ctx.sweeper.SweepInput(
+			spendableInputs[i], Params{
+				Fee:            FeePreference{ConfTarget: 6},
+				ExclusiveGroup: &exclusiveGroup,
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		results = append(results, result)
+	}
+
+	// We expect all inputs to be published in separate transactions, even
+	// though they share the same fee preference.
+	ctx.tick()
+	for i := 0; i < 3; i++ {
+		sweepTx := ctx.receiveTx()
+		if len(sweepTx.TxOut) != 1 {
+			t.Fatal("expected a single tx out in the sweep tx")
+		}
+
+		// Remove all txes except for the one that sweeps the first
+		// input. This simulates the sweeps being conflicting.
+		if sweepTx.TxIn[0].PreviousOutPoint !=
+			*spendableInputs[0].OutPoint() {
+
+			ctx.backend.deleteUnconfirmed(sweepTx.TxHash())
+		}
+	}
+
+	// Mine the first sweep tx.
+	ctx.backend.mine()
+
+	// Expect the first input to be swept by the confirmed sweep tx.
+	result0 := <-results[0]
+	if result0.Err != nil {
+		t.Fatal("expected first input to be swept")
+	}
+
+	// Expect the other two inputs to return an error. They have no chance
+	// of confirming.
+	result1 := <-results[1]
+	if result1.Err != ErrExclusiveGroupSpend {
+		t.Fatal("expected second input to be canceled")
+	}
+
+	result2 := <-results[2]
+	if result2.Err != ErrExclusiveGroupSpend {
+		t.Fatal("expected third input to be canceled")
+	}
 }

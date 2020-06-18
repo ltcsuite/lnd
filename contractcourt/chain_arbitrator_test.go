@@ -6,10 +6,11 @@ import (
 	"os"
 	"testing"
 
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/clock"
+	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/lnd/channeldb"
-	"github.com/ltcsuite/lnd/lnwallet"
 )
 
 // TestChainArbitratorRepulishCloses tests that the chain arbitrator will
@@ -34,7 +35,9 @@ func TestChainArbitratorRepublishCloses(t *testing.T) {
 	const numChans = 10
 	var channels []*channeldb.OpenChannel
 	for i := 0; i < numChans; i++ {
-		lChannel, _, cleanup, err := lnwallet.CreateTestChannels(true)
+		lChannel, _, cleanup, err := lnwallet.CreateTestChannels(
+			channeldb.SingleFunderTweaklessBit,
+		)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -61,12 +64,12 @@ func TestChainArbitratorRepublishCloses(t *testing.T) {
 	for i := 0; i < numChans/2; i++ {
 		closeTx := channels[i].FundingTxn.Copy()
 		closeTx.TxIn[0].PreviousOutPoint = channels[i].FundingOutpoint
-		err := channels[i].MarkCommitmentBroadcasted(closeTx)
+		err := channels[i].MarkCommitmentBroadcasted(closeTx, true)
 		if err != nil {
 			t.Fatal(err)
 		}
 
-		err = channels[i].MarkCoopBroadcasted(closeTx)
+		err = channels[i].MarkCoopBroadcasted(closeTx, true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -83,6 +86,7 @@ func TestChainArbitratorRepublishCloses(t *testing.T) {
 			published[tx.TxHash()]++
 			return nil
 		},
+		Clock: clock.NewDefaultClock(),
 	}
 	chainArb := NewChainArbitrator(
 		chainArbCfg, db,
@@ -147,7 +151,9 @@ func TestResolveContract(t *testing.T) {
 
 	// With the DB created, we'll make a new channel, and mark it as
 	// pending open within the database.
-	newChannel, _, cleanup, err := lnwallet.CreateTestChannels(true)
+	newChannel, _, cleanup, err := lnwallet.CreateTestChannels(
+		channeldb.SingleFunderTweaklessBit,
+	)
 	if err != nil {
 		t.Fatalf("unable to make new test channel: %v", err)
 	}
@@ -171,6 +177,7 @@ func TestResolveContract(t *testing.T) {
 		PublishTx: func(tx *wire.MsgTx) error {
 			return nil
 		},
+		Clock: clock.NewDefaultClock(),
 	}
 	chainArb := NewChainArbitrator(
 		chainArbCfg, db,

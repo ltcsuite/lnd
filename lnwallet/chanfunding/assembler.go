@@ -27,7 +27,7 @@ type CoinSource interface {
 type CoinSelectionLocker interface {
 	// WithCoinSelectLock will execute the passed function closure in a
 	// synchronized manner preventing any coin selection operations from
-	// proceeding while the closure if executing. This can be seen as the
+	// proceeding while the closure is executing. This can be seen as the
 	// ability to execute a function closure under an exclusive coin
 	// selection lock.
 	WithCoinSelectLock(func() error) error
@@ -126,7 +126,7 @@ type Assembler interface {
 
 // FundingTxAssembler is a super-set of the regular Assembler interface that's
 // also able to provide a fully populated funding transaction via the intents
-// that it produuces.
+// that it produces.
 type FundingTxAssembler interface {
 	Assembler
 

@@ -31,31 +31,9 @@ var (
 	serialNumberLimit = new(big.Int).Lsh(big.NewInt(1), 128)
 )
 
-// GenCertPair generates a key/cert pair to the paths provided. The
-// auto-generated certificates should *not* be used in production for public
-// access as they're self-signed and don't necessarily contain all of the
-// desired hostnames for the service. For production/public use, consider a
-// real PKI.
-//
-// This function is adapted from https://github.com/ltcsuite/ltcd and
-// https://github.com/ltcsuite/ltcutil
-func GenCertPair(org, certFile, keyFile string, tlsExtraIPs,
-	tlsExtraDomains []string, certValidity time.Duration) error {
-
-	now := time.Now()
-	validUntil := now.Add(certValidity)
-
-	// Check that the certificate validity isn't past the ASN.1 end of time.
-	if validUntil.After(endOfTime) {
-		validUntil = endOfTime
-	}
-
-	// Generate a serial number that's below the serialNumberLimit.
-	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
-	if err != nil {
-		return fmt.Errorf("failed to generate serial number: %s", err)
-	}
-
+// ipAddresses returns the parserd IP addresses to use when creating the TLS
+// certificate.
+func ipAddresses(tlsExtraIPs []string) ([]net.IP, error) {
 	// Collect the host's IP addresses, including loopback, in a slice.
 	ipAddresses := []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}
 
@@ -72,7 +50,7 @@ func GenCertPair(org, certFile, keyFile string, tlsExtraIPs,
 	// Add all the interface IPs that aren't already in the slice.
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, a := range addrs {
 		ipAddr, _, err := net.ParseCIDR(a.String())
@@ -89,6 +67,12 @@ func GenCertPair(org, certFile, keyFile string, tlsExtraIPs,
 		}
 	}
 
+	return ipAddresses, nil
+}
+
+// dnsNames returns the host and DNS names to use when creating the TLS
+// ceftificate.
+func dnsNames(tlsExtraDomains []string) (string, []string) {
 	// Collect the host's names into a slice.
 	host, err := os.Hostname()
 	if err != nil {
@@ -113,6 +97,119 @@ func GenCertPair(org, certFile, keyFile string, tlsExtraIPs,
 	// in-memory connections used on mobile.
 	dnsNames = append(dnsNames, "bufconn")
 
+	return host, dnsNames
+}
+
+// IsOutdated returns whether the given certificate is outdated w.r.t. the IPs
+// and domains given. The certificate is considered up to date if it was
+// created with _exactly_ the IPs and domains given.
+func IsOutdated(cert *x509.Certificate, tlsExtraIPs,
+	tlsExtraDomains []string) (bool, error) {
+
+	// Parse the slice of IP strings.
+	ips, err := ipAddresses(tlsExtraIPs)
+	if err != nil {
+		return false, err
+	}
+
+	// To not consider the certificate outdated if it has duplicate IPs or
+	// if only the order has changed, we create two maps from the slice of
+	// IPs to compare.
+	ips1 := make(map[string]net.IP)
+	for _, ip := range ips {
+		ips1[ip.String()] = ip
+	}
+
+	ips2 := make(map[string]net.IP)
+	for _, ip := range cert.IPAddresses {
+		ips2[ip.String()] = ip
+	}
+
+	// If the certificate has a different number of IP addresses, it is
+	// definitely out of date.
+	if len(ips1) != len(ips2) {
+		return true, nil
+	}
+
+	// Go through each IP address, and check that they are equal. We expect
+	// both the string representation and the exact IP to match.
+	for s, ip1 := range ips1 {
+		// Assert the IP string is found in both sets.
+		ip2, ok := ips2[s]
+		if !ok {
+			return true, nil
+		}
+
+		// And that the IPs are considered equal.
+		if !ip1.Equal(ip2) {
+			return true, nil
+		}
+	}
+
+	// Get the full list of DNS names to use.
+	_, dnsNames := dnsNames(tlsExtraDomains)
+
+	// We do the same kind of deduplication for the DNS names.
+	dns1 := make(map[string]struct{})
+	for _, n := range cert.DNSNames {
+		dns1[n] = struct{}{}
+	}
+
+	dns2 := make(map[string]struct{})
+	for _, n := range dnsNames {
+		dns2[n] = struct{}{}
+	}
+
+	// If the number of domains are different, it is out of date.
+	if len(dns1) != len(dns2) {
+		return true, nil
+	}
+
+	// Similarly, check that each DNS name matches what is found in the
+	// certificate.
+	for k := range dns1 {
+		if _, ok := dns2[k]; !ok {
+			return true, nil
+		}
+	}
+
+	// Certificate was up-to-date.
+	return false, nil
+}
+
+// GenCertPair generates a key/cert pair to the paths provided. The
+// auto-generated certificates should *not* be used in production for public
+// access as they're self-signed and don't necessarily contain all of the
+// desired hostnames for the service. For production/public use, consider a
+// real PKI.
+//
+// This function is adapted from https://github.com/btcsuite/btcd and
+// https://github.com/btcsuite/btcutil
+func GenCertPair(org, certFile, keyFile string, tlsExtraIPs,
+	tlsExtraDomains []string, certValidity time.Duration) error {
+
+	now := time.Now()
+	validUntil := now.Add(certValidity)
+
+	// Check that the certificate validity isn't past the ASN.1 end of time.
+	if validUntil.After(endOfTime) {
+		validUntil = endOfTime
+	}
+
+	// Generate a serial number that's below the serialNumberLimit.
+	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
+	if err != nil {
+		return fmt.Errorf("failed to generate serial number: %s", err)
+	}
+
+	// Get all DNS names and IP addresses to use when creating the
+	// certificate.
+	host, dnsNames := dnsNames(tlsExtraDomains)
+	ipAddresses, err := ipAddresses(tlsExtraIPs)
+	if err != nil {
+		return err
+	}
+
 	// Generate a private key for the certificate.
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -131,6 +228,7 @@ func GenCertPair(org, certFile, keyFile string, tlsExtraIPs,
 
 		KeyUsage: x509.KeyUsageKeyEncipherment |
 			x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		IsCA:                  true, // so can sign self.
 		BasicConstraintsValid: true,
 

@@ -55,6 +55,9 @@ var deps = depDesc{
 	lnwire.MPPOptional: {
 		lnwire.PaymentAddrOptional: {},
 	},
+	lnwire.AnchorsOptional: {
+		lnwire.StaticRemoteKeyOptional: {},
+	},
 }
 
 // ValidateDeps asserts that a feature vector sets all features and their
@@ -82,7 +85,7 @@ func validateDeps(features featureSet, supported supportedFeatures) error {
 			return NewErrMissingFeatureDep(bit)
 		}
 
-		// Alternatively, if we know that this depdendency is valid, we
+		// Alternatively, if we know that this dependency is valid, we
 		// can short circuit and continue verifying other bits.
 		if checked {
 			continue

@@ -1,7 +1,6 @@
 package lnwallet
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
@@ -11,16 +10,16 @@ import (
 	"net"
 	"os"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/shachain"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcutil"
 )
 
 var (
@@ -81,6 +80,19 @@ var (
 		},
 		LockTime: 5,
 	}
+
+	// A valid, DER-encoded signature (taken from btcec unit tests).
+	testSigBytes = []byte{
+		0x30, 0x44, 0x02, 0x20, 0x4e, 0x45, 0xe1, 0x69,
+		0x32, 0xb8, 0xaf, 0x51, 0x49, 0x61, 0xa1, 0xd3,
+		0xa1, 0xa2, 0x5f, 0xdf, 0x3f, 0x4f, 0x77, 0x32,
+		0xe9, 0xd6, 0x24, 0xc6, 0xc6, 0x15, 0x48, 0xab,
+		0x5f, 0xb8, 0xcd, 0x41, 0x02, 0x20, 0x18, 0x15,
+		0x22, 0xec, 0x8e, 0xca, 0x07, 0xde, 0x48, 0x60,
+		0xa4, 0xac, 0xdd, 0x12, 0x90, 0x9d, 0x83, 0x1c,
+		0xc5, 0x6c, 0xbb, 0xac, 0x46, 0x22, 0x08, 0x22,
+		0x21, 0xa8, 0x76, 0x8d, 0x1d, 0x09,
+	}
 )
 
 // CreateTestChannels creates to fully populated channels to be used within
@@ -91,7 +103,7 @@ var (
 // the test has been finalized. The clean up function will remote all temporary
 // files created. If tweaklessCommits is true, then the commits within the
 // channels will use the new format, otherwise the legacy format.
-func CreateTestChannels(tweaklessCommits bool) (
+func CreateTestChannels(chanType channeldb.ChannelType) (
 	*LightningChannel, *LightningChannel, func(), error) {
 
 	channelCapacity, err := ltcutil.NewAmount(10)
@@ -206,11 +218,6 @@ func CreateTestChannels(tweaklessCommits bool) (
 	}
 	aliceCommitPoint := input.ComputeCommitmentPoint(aliceFirstRevoke[:])
 
-	chanType := channeldb.SingleFunderTweaklessBit
-	if !tweaklessCommits {
-		chanType = channeldb.SingleFunderBit
-	}
-
 	aliceCommitTx, bobCommitTx, err := CreateCommitmentTxns(
 		channelBal, channelBal, &aliceCfg, &bobCfg, aliceCommitPoint,
 		bobCommitPoint, *fundingTxIn, chanType,
@@ -244,25 +251,34 @@ func CreateTestChannels(tweaklessCommits bool) (
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	commitFee := calcStaticFee(0)
+	commitFee := calcStaticFee(chanType, 0)
+	var anchorAmt ltcutil.Amount
+	if chanType.HasAnchors() {
+		anchorAmt += 2 * anchorSize
+	}
+
+	aliceBalance := lnwire.NewMSatFromSatoshis(
+		channelBal - commitFee - anchorAmt,
+	)
+	bobBalance := lnwire.NewMSatFromSatoshis(channelBal)
 
 	aliceCommit := channeldb.ChannelCommitment{
 		CommitHeight:  0,
-		LocalBalance:  lnwire.NewMSatFromSatoshis(channelBal - commitFee),
-		RemoteBalance: lnwire.NewMSatFromSatoshis(channelBal),
+		LocalBalance:  aliceBalance,
+		RemoteBalance: bobBalance,
 		CommitFee:     commitFee,
 		FeePerKw:      ltcutil.Amount(feePerKw),
 		CommitTx:      aliceCommitTx,
-		CommitSig:     bytes.Repeat([]byte{1}, 71),
+		CommitSig:     testSigBytes,
 	}
 	bobCommit := channeldb.ChannelCommitment{
 		CommitHeight:  0,
-		LocalBalance:  lnwire.NewMSatFromSatoshis(channelBal),
-		RemoteBalance: lnwire.NewMSatFromSatoshis(channelBal - commitFee),
+		LocalBalance:  bobBalance,
+		RemoteBalance: aliceBalance,
 		CommitFee:     commitFee,
 		FeePerKw:      ltcutil.Amount(feePerKw),
 		CommitTx:      bobCommitTx,
-		CommitSig:     bytes.Repeat([]byte{1}, 71),
+		CommitSig:     testSigBytes,
 	}
 
 	var chanIDBytes [8]byte
@@ -449,14 +465,14 @@ func txFromHex(txHex string) (*ltcutil.Tx, error) {
 // calculations into account.
 //
 // TODO(bvu): Refactor when dynamic fee estimation is added.
-func calcStaticFee(numHTLCs int) ltcutil.Amount {
+func calcStaticFee(chanType channeldb.ChannelType, numHTLCs int) ltcutil.Amount {
 	const (
-		commitWeight = ltcutil.Amount(724)
-		htlcWeight   = 172
-		feePerKw     = ltcutil.Amount(24/4) * 1000
+		htlcWeight = 172
+		feePerKw   = ltcutil.Amount(24/4) * 1000
 	)
-	return feePerKw * (commitWeight +
-		ltcutil.Amount(htlcWeight*numHTLCs)) / 1000
+	return feePerKw *
+		(ltcutil.Amount(CommitWeight(chanType) +
+			htlcWeight*int64(numHTLCs))) / 1000
 }
 
 // ForceStateTransition executes the necessary interaction between the two

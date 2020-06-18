@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coreos/bbolt"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/routing/route"
 )
@@ -44,7 +44,7 @@ type mcTestContext struct {
 	mc  *MissionControl
 	now time.Time
 
-	db     *bbolt.DB
+	db     kvdb.Backend
 	dbPath string
 
 	pid uint64
@@ -63,7 +63,7 @@ func createMcTestContext(t *testing.T) *mcTestContext {
 
 	ctx.dbPath = file.Name()
 
-	ctx.db, err = bbolt.Open(ctx.dbPath, 0600, nil)
+	ctx.db, err = kvdb.Open(kvdb.BoltBackendName, ctx.dbPath, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,8 +186,8 @@ func TestMissionControl(t *testing.T) {
 	// Check whether history snapshot looks sane.
 	history := ctx.mc.GetHistorySnapshot()
 
-	if len(history.Pairs) != 3 {
-		t.Fatalf("expected 3 pairs, but got %v", len(history.Pairs))
+	if len(history.Pairs) != 4 {
+		t.Fatalf("expected 4 pairs, but got %v", len(history.Pairs))
 	}
 
 	// Test reporting a success.

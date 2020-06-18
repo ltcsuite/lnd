@@ -3,6 +3,7 @@ package lnwire
 import (
 	"fmt"
 
+	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/ltcd/btcec"
 )
 
@@ -64,7 +65,7 @@ func NewSigFromRawSignature(sig []byte) (Sig, error) {
 
 // NewSigFromSignature creates a new signature as used on the wire, from an
 // existing btcec.Signature.
-func NewSigFromSignature(e *btcec.Signature) (Sig, error) {
+func NewSigFromSignature(e input.Signature) (Sig, error) {
 	if e == nil {
 		return Sig{}, fmt.Errorf("cannot decode empty signature")
 	}

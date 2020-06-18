@@ -23,7 +23,7 @@ environment for testing as one doesn't need to wait tens of minutes for blocks
 to arrive in order to test channel related functionality. Additionally, it's
 possible to spin up an arbitrary number of `lnd` instances within containers to
 create a mini development cluster. All state is saved between instances using a
-shared value.
+shared volume.
 
 Current workflow is big because we recreate the whole network by ourselves,
 next versions will use the started `btcd` bitcoin node in `testnet` and
@@ -64,8 +64,8 @@ bitcoin into.
 $ export NETWORK="simnet" 
 
 # Create persistent volumes for alice and bob.
-docker volume create simnet_lnd_alice
-docker volume create simnet_lnd_bob
+$ docker volume create simnet_lnd_alice
+$ docker volume create simnet_lnd_bob
 
 # Run the "Alice" container and log into it:
 $ docker-compose run -d --name alice --volume simnet_lnd_alice:/root/.lnd lnd

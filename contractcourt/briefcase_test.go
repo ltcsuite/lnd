@@ -10,15 +10,15 @@ import (
 
 	prand "math/rand"
 
+	"github.com/davecgh/go-spew/spew"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/coreos/bbolt"
-	"github.com/davecgh/go-spew/spew"
-	"github.com/ltcsuite/lnd/channeldb"
-	"github.com/ltcsuite/lnd/input"
-	"github.com/ltcsuite/lnd/lnwallet"
 )
 
 var (
@@ -44,6 +44,15 @@ var (
 			0x2d, 0xe7, 0x93, 0xe4,
 		},
 		Index: 2,
+	}
+
+	testChanPoint3 = wire.OutPoint{
+		Hash: chainhash.Hash{
+			0x48, 0x59, 0xe6, 0x96, 0x31, 0x13, 0xa1, 0x17,
+			0x51, 0xb6, 0x37, 0xd8, 0xfc, 0xd2, 0xc6, 0xda,
+			0x2d, 0xe7, 0x93, 0xe4,
+		},
+		Index: 3,
 	}
 
 	testPreimage = [32]byte{
@@ -95,7 +104,7 @@ var (
 	}
 )
 
-func makeTestDB() (*bbolt.DB, func(), error) {
+func makeTestDB() (kvdb.Backend, func(), error) {
 	// First, create a temporary directory to be used for the duration of
 	// this test.
 	tempDirName, err := ioutil.TempDir("", "arblog")
@@ -103,7 +112,7 @@ func makeTestDB() (*bbolt.DB, func(), error) {
 		return nil, nil, err
 	}
 
-	db, err := bbolt.Open(tempDirName+"/test.db", 0600, nil)
+	db, err := kvdb.Create(kvdb.BoltBackendName, tempDirName+"/test.db", true)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -539,6 +548,10 @@ func TestContractResolutionsStorage(t *testing.T) {
 					SweepSignDesc:   testSignDesc,
 				},
 			},
+		},
+		AnchorResolution: &lnwallet.AnchorResolution{
+			CommitAnchor:         testChanPoint3,
+			AnchorSignDescriptor: testSignDesc,
 		},
 	}
 

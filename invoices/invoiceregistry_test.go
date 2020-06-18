@@ -9,6 +9,7 @@ import (
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/record"
+	"github.com/stretchr/testify/assert"
 )
 
 // TestSettleInvoice tests settling of an invoice and related notifications.
@@ -16,7 +17,8 @@ func TestSettleInvoice(t *testing.T) {
 	ctx := newTestContext(t)
 	defer ctx.cleanup()
 
-	allSubscriptions := ctx.registry.SubscribeNotifications(0, 0)
+	allSubscriptions, err := ctx.registry.SubscribeNotifications(0, 0)
+	assert.Nil(t, err)
 	defer allSubscriptions.Cancel()
 
 	// Subscribe to the not yet existing invoice.
@@ -74,29 +76,38 @@ func TestSettleInvoice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolution.Preimage != nil {
-		t.Fatal("expected cancel resolution")
+	failResolution, ok := resolution.(*HtlcFailResolution)
+	if !ok {
+		t.Fatalf("expected fail resolution, got: %T",
+			resolution)
 	}
-	if resolution.AcceptHeight != testCurrentHeight {
+	if failResolution.AcceptHeight != testCurrentHeight {
 		t.Fatalf("expected acceptHeight %v, but got %v",
-			testCurrentHeight, resolution.AcceptHeight)
+			testCurrentHeight, failResolution.AcceptHeight)
 	}
-	if resolution.Outcome != ResultExpiryTooSoon {
+	if failResolution.Outcome != ResultExpiryTooSoon {
 		t.Fatalf("expected expiry too soon, got: %v",
-			resolution.Outcome)
+			failResolution.Outcome)
 	}
 
 	// Settle invoice with a slightly higher amount.
 	amtPaid := lnwire.MilliSatoshi(100500)
 	resolution, err = ctx.registry.NotifyExitHopHtlc(
-		testInvoicePaymentHash, amtPaid, testHtlcExpiry, testCurrentHeight,
-		getCircuitKey(0), hodlChan, testPayload,
+		testInvoicePaymentHash, amtPaid, testHtlcExpiry,
+		testCurrentHeight, getCircuitKey(0), hodlChan,
+		testPayload,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolution.Outcome != ResultSettled {
-		t.Fatalf("expected settled, got: %v", resolution.Outcome)
+	settleResolution, ok := resolution.(*HtlcSettleResolution)
+	if !ok {
+		t.Fatalf("expected settle resolution, got: %T",
+			resolution)
+	}
+	if settleResolution.Outcome != ResultSettled {
+		t.Fatalf("expected settled, got: %v",
+			settleResolution.Outcome)
 	}
 
 	// We expect the settled state to be sent to the single invoice
@@ -134,12 +145,14 @@ func TestSettleInvoice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected NotifyExitHopHtlc error: %v", err)
 	}
-	if resolution.Preimage == nil {
-		t.Fatal("expected settle resolution")
+	settleResolution, ok = resolution.(*HtlcSettleResolution)
+	if !ok {
+		t.Fatalf("expected settle resolution, got: %T",
+			resolution)
 	}
-	if resolution.Outcome != ResultReplayToSettled {
+	if settleResolution.Outcome != ResultReplayToSettled {
 		t.Fatalf("expected replay settled, got: %v",
-			resolution.Outcome)
+			settleResolution.Outcome)
 	}
 
 	// Try to settle again with a new higher-valued htlc. This payment
@@ -152,12 +165,14 @@ func TestSettleInvoice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected NotifyExitHopHtlc error: %v", err)
 	}
-	if resolution.Preimage == nil {
-		t.Fatal("expected settle resolution")
+	settleResolution, ok = resolution.(*HtlcSettleResolution)
+	if !ok {
+		t.Fatalf("expected settle resolution, got: %T",
+			resolution)
 	}
-	if resolution.Outcome != ResultDuplicateToSettled {
+	if settleResolution.Outcome != ResultDuplicateToSettled {
 		t.Fatalf("expected duplicate settled, got: %v",
-			resolution.Outcome)
+			settleResolution.Outcome)
 	}
 
 	// Try to settle again with a lower amount. This should fail just as it
@@ -169,12 +184,14 @@ func TestSettleInvoice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected NotifyExitHopHtlc error: %v", err)
 	}
-	if resolution.Preimage != nil {
-		t.Fatal("expected cancel resolution")
+	failResolution, ok = resolution.(*HtlcFailResolution)
+	if !ok {
+		t.Fatalf("expected fail resolution, got: %T",
+			resolution)
 	}
-	if resolution.Outcome != ResultAmountTooLow {
+	if failResolution.Outcome != ResultAmountTooLow {
 		t.Fatalf("expected amount too low, got: %v",
-			resolution.Outcome)
+			failResolution.Outcome)
 	}
 
 	// Check that settled amount is equal to the sum of values of the htlcs
@@ -206,11 +223,12 @@ func TestCancelInvoice(t *testing.T) {
 	ctx := newTestContext(t)
 	defer ctx.cleanup()
 
-	allSubscriptions := ctx.registry.SubscribeNotifications(0, 0)
+	allSubscriptions, err := ctx.registry.SubscribeNotifications(0, 0)
+	assert.Nil(t, err)
 	defer allSubscriptions.Cancel()
 
 	// Try to cancel the not yet existing invoice. This should fail.
-	err := ctx.registry.CancelInvoice(testInvoicePaymentHash)
+	err = ctx.registry.CancelInvoice(testInvoicePaymentHash)
 	if err != channeldb.ErrInvoiceNotFound {
 		t.Fatalf("expected ErrInvoiceNotFound, but got %v", err)
 	}
@@ -298,17 +316,18 @@ func TestCancelInvoice(t *testing.T) {
 	if err != nil {
 		t.Fatal("expected settlement of a canceled invoice to succeed")
 	}
-
-	if resolution.Preimage != nil {
-		t.Fatal("expected cancel htlc resolution")
+	failResolution, ok := resolution.(*HtlcFailResolution)
+	if !ok {
+		t.Fatalf("expected fail resolution, got: %T",
+			resolution)
 	}
-	if resolution.AcceptHeight != testCurrentHeight {
+	if failResolution.AcceptHeight != testCurrentHeight {
 		t.Fatalf("expected acceptHeight %v, but got %v",
-			testCurrentHeight, resolution.AcceptHeight)
+			testCurrentHeight, failResolution.AcceptHeight)
 	}
-	if resolution.Outcome != ResultInvoiceAlreadyCanceled {
-		t.Fatalf("expected invoice already canceled, got: %v",
-			resolution.Outcome)
+	if failResolution.Outcome != ResultInvoiceAlreadyCanceled {
+		t.Fatalf("expected expiry too soon, got: %v",
+			failResolution.Outcome)
 	}
 }
 
@@ -317,7 +336,7 @@ func TestCancelInvoice(t *testing.T) {
 func TestSettleHoldInvoice(t *testing.T) {
 	defer timeout()()
 
-	cdb, cleanup, err := newTestChannelDB()
+	cdb, cleanup, err := newTestChannelDB(clock.NewTestClock(time.Time{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +355,8 @@ func TestSettleHoldInvoice(t *testing.T) {
 	}
 	defer registry.Stop()
 
-	allSubscriptions := registry.SubscribeNotifications(0, 0)
+	allSubscriptions, err := registry.SubscribeNotifications(0, 0)
+	assert.Nil(t, err)
 	defer allSubscriptions.Cancel()
 
 	// Subscribe to the not yet existing invoice.
@@ -422,12 +442,14 @@ func TestSettleHoldInvoice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected settle to succeed but got %v", err)
 	}
-	if resolution == nil || resolution.Preimage != nil {
-		t.Fatalf("expected htlc to be canceled")
+	failResolution, ok := resolution.(*HtlcFailResolution)
+	if !ok {
+		t.Fatalf("expected fail resolution, got: %T",
+			resolution)
 	}
-	if resolution.Outcome != ResultExpiryTooSoon {
+	if failResolution.Outcome != ResultExpiryTooSoon {
 		t.Fatalf("expected expiry too soon, got: %v",
-			resolution.Outcome)
+			failResolution.Outcome)
 	}
 
 	// We expect the accepted state to be sent to the single invoice
@@ -449,16 +471,21 @@ func TestSettleHoldInvoice(t *testing.T) {
 	}
 
 	htlcResolution := (<-hodlChan).(HtlcResolution)
-	if *htlcResolution.Preimage != testInvoicePreimage {
+	settleResolution, ok := htlcResolution.(*HtlcSettleResolution)
+	if !ok {
+		t.Fatalf("expected settle resolution, got: %T",
+			htlcResolution)
+	}
+	if settleResolution.Preimage != testInvoicePreimage {
 		t.Fatal("unexpected preimage in hodl resolution")
 	}
-	if htlcResolution.AcceptHeight != testCurrentHeight {
+	if settleResolution.AcceptHeight != testCurrentHeight {
 		t.Fatalf("expected acceptHeight %v, but got %v",
-			testCurrentHeight, resolution.AcceptHeight)
+			testCurrentHeight, settleResolution.AcceptHeight)
 	}
-	if htlcResolution.Outcome != ResultSettled {
+	if settleResolution.Outcome != ResultSettled {
 		t.Fatalf("expected result settled, got: %v",
-			htlcResolution.Outcome)
+			settleResolution.Outcome)
 	}
 
 	// We expect a settled notification to be sent out for both all and
@@ -497,7 +524,7 @@ func TestSettleHoldInvoice(t *testing.T) {
 func TestCancelHoldInvoice(t *testing.T) {
 	defer timeout()()
 
-	cdb, cleanup, err := newTestChannelDB()
+	cdb, cleanup, err := newTestChannelDB(clock.NewTestClock(time.Time{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,8 +572,10 @@ func TestCancelHoldInvoice(t *testing.T) {
 	}
 
 	htlcResolution := (<-hodlChan).(HtlcResolution)
-	if htlcResolution.Preimage != nil {
-		t.Fatal("expected cancel htlc resolution")
+	_, ok := htlcResolution.(*HtlcFailResolution)
+	if !ok {
+		t.Fatalf("expected fail resolution, got: %T",
+			htlcResolution)
 	}
 
 	// Offering the same htlc again at a higher height should still result
@@ -559,16 +588,18 @@ func TestCancelHoldInvoice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected settle to succeed but got %v", err)
 	}
-	if resolution.Preimage != nil {
-		t.Fatalf("expected htlc to be canceled")
+	failResolution, ok := resolution.(*HtlcFailResolution)
+	if !ok {
+		t.Fatalf("expected fail resolution, got: %T",
+			resolution)
 	}
-	if resolution.AcceptHeight != testCurrentHeight {
+	if failResolution.AcceptHeight != testCurrentHeight {
 		t.Fatalf("expected acceptHeight %v, but got %v",
-			testCurrentHeight, resolution.AcceptHeight)
+			testCurrentHeight, failResolution.AcceptHeight)
 	}
-	if resolution.Outcome != ResultReplayToCanceled {
+	if failResolution.Outcome != ResultReplayToCanceled {
 		t.Fatalf("expected replay to canceled, got %v",
-			resolution.Outcome)
+			failResolution.Outcome)
 	}
 }
 
@@ -585,16 +616,21 @@ func TestUnknownInvoice(t *testing.T) {
 	// succeed.
 	hodlChan := make(chan interface{})
 	amt := lnwire.MilliSatoshi(100000)
-	result, err := ctx.registry.NotifyExitHopHtlc(
+	resolution, err := ctx.registry.NotifyExitHopHtlc(
 		testInvoicePaymentHash, amt, testHtlcExpiry, testCurrentHeight,
 		getCircuitKey(0), hodlChan, testPayload,
 	)
 	if err != nil {
 		t.Fatal("unexpected error")
 	}
-	if result.Outcome != ResultInvoiceNotFound {
+	failResolution, ok := resolution.(*HtlcFailResolution)
+	if !ok {
+		t.Fatalf("expected fail resolution, got: %T",
+			resolution)
+	}
+	if failResolution.Outcome != ResultInvoiceNotFound {
 		t.Fatalf("expected ResultInvoiceNotFound, got: %v",
-			result.Outcome)
+			failResolution.Outcome)
 	}
 }
 
@@ -619,7 +655,8 @@ func testKeySend(t *testing.T, keySendEnabled bool) {
 
 	ctx.registry.cfg.AcceptKeySend = keySendEnabled
 
-	allSubscriptions := ctx.registry.SubscribeNotifications(0, 0)
+	allSubscriptions, err := ctx.registry.SubscribeNotifications(0, 0)
+	assert.Nil(t, err)
 	defer allSubscriptions.Cancel()
 
 	hodlChan := make(chan interface{}, 1)
@@ -646,16 +683,17 @@ func testKeySend(t *testing.T, keySendEnabled bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// Expect a cancel resolution with the correct outcome.
-	if resolution.Preimage != nil {
-		t.Fatal("expected cancel resolution")
+	failResolution, ok := resolution.(*HtlcFailResolution)
+	if !ok {
+		t.Fatalf("expected fail resolution, got: %T",
+			resolution)
 	}
+
 	switch {
-	case !keySendEnabled && resolution.Outcome != ResultInvoiceNotFound:
+	case !keySendEnabled && failResolution.Outcome != ResultInvoiceNotFound:
 		t.Fatal("expected invoice not found outcome")
 
-	case keySendEnabled && resolution.Outcome != ResultKeySendError:
+	case keySendEnabled && failResolution.Outcome != ResultKeySendError:
 		t.Fatal("expected keysend error")
 	}
 
@@ -676,15 +714,25 @@ func testKeySend(t *testing.T, keySendEnabled bool) {
 
 	// Expect a cancel resolution if keysend is disabled.
 	if !keySendEnabled {
-		if resolution.Outcome != ResultInvoiceNotFound {
+		failResolution, ok = resolution.(*HtlcFailResolution)
+		if !ok {
+			t.Fatalf("expected fail resolution, got: %T",
+				resolution)
+		}
+		if failResolution.Outcome != ResultInvoiceNotFound {
 			t.Fatal("expected keysend payment not to be accepted")
 		}
 		return
 	}
 
 	// Otherwise we expect no error and a settle resolution for the htlc.
-	if resolution.Preimage == nil || *resolution.Preimage != preimage {
-		t.Fatal("expected valid settle event")
+	settleResolution, ok := resolution.(*HtlcSettleResolution)
+	if !ok {
+		t.Fatalf("expected settle resolution, got: %T",
+			resolution)
+	}
+	if settleResolution.Preimage != preimage {
+		t.Fatalf("expected settle with matching preimage")
 	}
 
 	// We expect a new invoice notification to be sent out.
@@ -739,12 +787,14 @@ func TestMppPayment(t *testing.T) {
 	ctx.clock.SetTime(testTime.Add(30 * time.Second))
 
 	htlcResolution := (<-hodlChan1).(HtlcResolution)
-	if htlcResolution.Preimage != nil {
-		t.Fatal("expected cancel resolution")
+	failResolution, ok := htlcResolution.(*HtlcFailResolution)
+	if !ok {
+		t.Fatalf("expected fail resolution, got: %T",
+			resolution)
 	}
-	if htlcResolution.Outcome != ResultMppTimeout {
+	if failResolution.Outcome != ResultMppTimeout {
 		t.Fatalf("expected mpp timeout, got: %v",
-			htlcResolution.Outcome)
+			failResolution.Outcome)
 	}
 
 	// Send htlc 2.
@@ -771,12 +821,14 @@ func TestMppPayment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolution == nil {
-		t.Fatal("expected a settle resolution")
+	settleResolution, ok := resolution.(*HtlcSettleResolution)
+	if !ok {
+		t.Fatalf("expected settle resolution, got: %T",
+			htlcResolution)
 	}
-	if resolution.Outcome != ResultSettled {
+	if settleResolution.Outcome != ResultSettled {
 		t.Fatalf("expected result settled, got: %v",
-			resolution.Outcome)
+			settleResolution.Outcome)
 	}
 
 	// Check that settled amount is equal to the sum of values of the htlcs
@@ -798,7 +850,7 @@ func TestMppPayment(t *testing.T) {
 func TestInvoiceExpiryWithRegistry(t *testing.T) {
 	t.Parallel()
 
-	cdb, cleanup, err := newTestChannelDB()
+	cdb, cleanup, err := newTestChannelDB(clock.NewTestClock(time.Time{}))
 	defer cleanup()
 
 	if err != nil {

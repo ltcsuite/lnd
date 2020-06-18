@@ -1,11 +1,10 @@
 package routing
 
 import (
-	"github.com/ltcsuite/ltcutil"
-	"github.com/coreos/bbolt"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/routing/route"
+	"github.com/ltcsuite/ltcutil"
 )
 
 // unifiedPolicies holds all unified policies for connections towards a node.
@@ -22,13 +21,13 @@ type unifiedPolicies struct {
 
 	// outChanRestr is an optional outgoing channel restriction for the
 	// local channel to use.
-	outChanRestr *uint64
+	outChanRestr map[uint64]struct{}
 }
 
 // newUnifiedPolicies instantiates a new unifiedPolicies object. Channel
 // policies can be added to this object.
 func newUnifiedPolicies(sourceNode, toNode route.Vertex,
-	outChanRestr *uint64) *unifiedPolicies {
+	outChanRestr map[uint64]struct{}) *unifiedPolicies {
 
 	return &unifiedPolicies{
 		policies:     make(map[route.Vertex]*unifiedPolicy),
@@ -46,10 +45,10 @@ func (u *unifiedPolicies) addPolicy(fromNode route.Vertex,
 	localChan := fromNode == u.sourceNode
 
 	// Skip channels if there is an outgoing channel restriction.
-	if localChan && u.outChanRestr != nil &&
-		*u.outChanRestr != edge.ChannelID {
-
-		return
+	if localChan && u.outChanRestr != nil {
+		if _, ok := u.outChanRestr[edge.ChannelID]; !ok {
+			return
+		}
 	}
 
 	// Update the policies map.
@@ -69,10 +68,8 @@ func (u *unifiedPolicies) addPolicy(fromNode route.Vertex,
 
 // addGraphPolicies adds all policies that are known for the toNode in the
 // graph.
-func (u *unifiedPolicies) addGraphPolicies(g *channeldb.ChannelGraph,
-	tx *bbolt.Tx) error {
-
-	cb := func(_ *bbolt.Tx, edgeInfo *channeldb.ChannelEdgeInfo, _,
+func (u *unifiedPolicies) addGraphPolicies(g routingGraph) error {
+	cb := func(edgeInfo *channeldb.ChannelEdgeInfo, _,
 		inEdge *channeldb.ChannelEdgePolicy) error {
 
 		// If there is no edge policy for this candidate node, skip.
@@ -95,7 +92,7 @@ func (u *unifiedPolicies) addGraphPolicies(g *channeldb.ChannelGraph,
 	}
 
 	// Iterate over all channels of the to node.
-	return g.ForEachNodeChannel(tx, u.toNode[:], cb)
+	return g.forEachNodeChannel(u.toNode, cb)
 }
 
 // unifiedPolicyEdge is the individual channel data that is kept inside an

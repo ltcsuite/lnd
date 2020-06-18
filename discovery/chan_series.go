@@ -3,10 +3,11 @@ package discovery
 import (
 	"time"
 
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/netann"
 	"github.com/ltcsuite/lnd/routing/route"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 )
 
 // ChannelGraphTimeSeries is an interface that provides time and block based
@@ -119,7 +120,7 @@ func (c *ChanSeries) UpdatesInHorizon(chain chainhash.Hash,
 			continue
 		}
 
-		chanAnn, edge1, edge2, err := CreateChanAnnouncement(
+		chanAnn, edge1, edge2, err := netann.CreateChanAnnouncement(
 			channel.Info.AuthProof, channel.Info, channel.Policy1,
 			channel.Policy2,
 		)
@@ -258,7 +259,7 @@ func (c *ChanSeries) FetchChanAnns(chain chainhash.Hash,
 			continue
 		}
 
-		chanAnn, edge1, edge2, err := CreateChanAnnouncement(
+		chanAnn, edge1, edge2, err := netann.CreateChanAnnouncement(
 			channel.Info.AuthProof, channel.Info, channel.Policy1,
 			channel.Policy2,
 		)
@@ -323,20 +324,7 @@ func (c *ChanSeries) FetchChanUpdates(chain chainhash.Hash,
 
 	chanUpdates := make([]*lnwire.ChannelUpdate, 0, 2)
 	if e1 != nil {
-		chanUpdate := &lnwire.ChannelUpdate{
-			ChainHash:       chanInfo.ChainHash,
-			ShortChannelID:  shortChanID,
-			Timestamp:       uint32(e1.LastUpdate.Unix()),
-			MessageFlags:    e1.MessageFlags,
-			ChannelFlags:    e1.ChannelFlags,
-			TimeLockDelta:   e1.TimeLockDelta,
-			HtlcMinimumMsat: e1.MinHTLC,
-			HtlcMaximumMsat: e1.MaxHTLC,
-			BaseFee:         uint32(e1.FeeBaseMSat),
-			FeeRate:         uint32(e1.FeeProportionalMillionths),
-			ExtraOpaqueData: e1.ExtraOpaqueData,
-		}
-		chanUpdate.Signature, err = lnwire.NewSigFromRawSignature(e1.SigBytes)
+		chanUpdate, err := netann.ChannelUpdateFromEdge(chanInfo, e1)
 		if err != nil {
 			return nil, err
 		}
@@ -344,20 +332,7 @@ func (c *ChanSeries) FetchChanUpdates(chain chainhash.Hash,
 		chanUpdates = append(chanUpdates, chanUpdate)
 	}
 	if e2 != nil {
-		chanUpdate := &lnwire.ChannelUpdate{
-			ChainHash:       chanInfo.ChainHash,
-			ShortChannelID:  shortChanID,
-			Timestamp:       uint32(e2.LastUpdate.Unix()),
-			MessageFlags:    e2.MessageFlags,
-			ChannelFlags:    e2.ChannelFlags,
-			TimeLockDelta:   e2.TimeLockDelta,
-			HtlcMinimumMsat: e2.MinHTLC,
-			HtlcMaximumMsat: e2.MaxHTLC,
-			BaseFee:         uint32(e2.FeeBaseMSat),
-			FeeRate:         uint32(e2.FeeProportionalMillionths),
-			ExtraOpaqueData: e2.ExtraOpaqueData,
-		}
-		chanUpdate.Signature, err = lnwire.NewSigFromRawSignature(e2.SigBytes)
+		chanUpdate, err := netann.ChannelUpdateFromEdge(chanInfo, e2)
 		if err != nil {
 			return nil, err
 		}

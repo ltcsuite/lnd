@@ -9,7 +9,7 @@ make check
 make install
 ```
 
-The command `make check` requires `bitcoind` (almost any version should do) to
+The command `make check` requires `litecoind` (almost any version should do) to
 be available in the system's `$PATH` variable. Otherwise some of the tests will
 fail.
 
@@ -20,7 +20,7 @@ This document specifies all commands available from `lnd`'s `Makefile`.
 The commands included handle:
 - Installation of all go-related dependencies.
 - Compilation and installation of `lnd` and `lncli`.
-- Compilation and installation of `btcd` and `btcctl`.
+- Compilation and installation of `ltcd` and `ltcctl`.
 - Running unit and integration suites.
 - Testing, debugging, and flake hunting.
 - Formatting and linting.
@@ -29,7 +29,7 @@ Commands
 ========
 
 - [`all`](#scratch)
-- [`btcd`](#btcd)
+- [`ltcd`](#ltcd)
 - [`build`](#build)
 - [`check`](#check)
 - [`clean`](#clean)
@@ -54,11 +54,11 @@ Commands
 Compiles, tests, and installs `lnd` and `lncli`. Equivalent to 
 [`scratch`](#scratch) [`check`](#check) [`install`](#install).
 
-`btcd`
+`ltcd`
 ------
-Ensures that the [`github.com/btcsuite/btcd`][btcd] repository is checked out
+Ensures that the [`github.com/ltcsuite/ltcd`][ltcd] repository is checked out
 locally. Lastly, installs the version of 
-[`github.com/btcsuite/btcd`][btcd] specified in `Gopkg.toml`
+[`github.com/ltcsuite/ltcd`][ltcd] specified in `Gopkg.toml`
 
 `build`
 -------
@@ -67,7 +67,7 @@ Compiles the current source and vendor trees, creating `./lnd` and
 
 `check`
 -------
-Installs the version of [`github.com/btcsuite/btcd`][btcd] specified
+Installs the version of [`github.com/ltcsuite/ltcd`][ltcd] specified
 in `Gopkg.toml`, then runs the unit tests followed by the integration
 tests.
 
@@ -113,7 +113,7 @@ Copies the compiled `lnd` and `lncli` binaries into `$GOPATH/bin`.
 
 `itest`
 -------
-Installs the version of [`github.com/btcsuite/btcd`][btcd] specified in
+Installs the version of [`github.com/ltcsuite/ltcd`][ltcd] specified in
 `Gopkg.toml`, builds the `./lnd` and `./lncli` binaries, then runs the
 integration test suite.
 
@@ -137,7 +137,7 @@ Compiles the `lnrpc` proto files.
 `scratch`
 ---------
 Compiles all dependencies and builds the `./lnd` and `./lncli` binaries.
-Equivalent to [`lint`](#lint) [`btcd`](#btcd)
+Equivalent to [`lint`](#lint) [`ltcd`](#ltcd)
 [`unit-race`](#unit-race).
 
 `unit`
@@ -178,6 +178,6 @@ Arguments:
 
 Related: [`unit`](#unit)
 
-[btcd]: https://github.com/btcsuite/btcd (github.com/btcsuite/btcd")
+[ltcd]: https://github.com/ltcsuite/ltcd (github.com/ltcsuite/ltcd")
 [gometalinter]: https://gopkg.in/alecthomas/gometalinter.v1 (gopkg.in/alecthomas/gometalinter.v1)
 [goveralls]: https://github.com/mattn/goveralls (github.com/mattn/goveralls)

@@ -15,6 +15,39 @@ import (
 	"github.com/ltcsuite/lnd/lnwire"
 )
 
+// CommitmentType is an enum indicating the commitment type we should use for
+// the channel we are opening.
+type CommitmentType int
+
+const (
+	// CommitmentTypeLegacy is the legacy commitment format with a tweaked
+	// to_remote key.
+	CommitmentTypeLegacy = iota
+
+	// CommitmentTypeTweakless is a newer commitment format where the
+	// to_remote key is static.
+	CommitmentTypeTweakless
+
+	// CommitmentTypeAnchors is a commitment type that is tweakless, and
+	// has extra anchor ouputs in order to bump the fee of the commitment
+	// transaction.
+	CommitmentTypeAnchors
+)
+
+// String returns the name of the CommitmentType.
+func (c CommitmentType) String() string {
+	switch c {
+	case CommitmentTypeLegacy:
+		return "legacy"
+	case CommitmentTypeTweakless:
+		return "tweakless"
+	case CommitmentTypeAnchors:
+		return "anchors"
+	default:
+		return "invalid"
+	}
+}
+
 // ChannelContribution is the primary constituent of the funding workflow
 // within lnwallet. Each side first exchanges their respective contributions
 // along with channel specific parameters like the min fee/KB. Once
@@ -101,8 +134,8 @@ type ChannelReservation struct {
 	theirFundingInputScripts []*input.Script
 
 	// Our signature for their version of the commitment transaction.
-	ourCommitmentSig   []byte
-	theirCommitmentSig []byte
+	ourCommitmentSig   input.Signature
+	theirCommitmentSig input.Signature
 
 	ourContribution   *ChannelContribution
 	theirContribution *ChannelContribution
@@ -136,9 +169,9 @@ type ChannelReservation struct {
 func NewChannelReservation(capacity, localFundingAmt ltcutil.Amount,
 	commitFeePerKw chainfee.SatPerKWeight, wallet *LightningWallet,
 	id uint64, pushMSat lnwire.MilliSatoshi, chainHash *chainhash.Hash,
-	flags lnwire.FundingFlag, tweaklessCommit bool,
+	flags lnwire.FundingFlag, commitType CommitmentType,
 	fundingAssembler chanfunding.Assembler,
-	pendingChanID [32]byte) (*ChannelReservation, error) {
+	pendingChanID [32]byte, thawHeight uint32) (*ChannelReservation, error) {
 
 	var (
 		ourBalance   lnwire.MilliSatoshi
@@ -146,12 +179,25 @@ func NewChannelReservation(capacity, localFundingAmt ltcutil.Amount,
 		initiator    bool
 	)
 
-	commitFee := commitFeePerKw.FeeForWeight(input.CommitWeight)
+	// Based on the channel type, we determine the initial commit weight
+	// and fee.
+	commitWeight := int64(input.CommitWeight)
+	if commitType == CommitmentTypeAnchors {
+		commitWeight = input.AnchorCommitWeight
+	}
+	commitFee := commitFeePerKw.FeeForWeight(commitWeight)
+
 	localFundingMSat := lnwire.NewMSatFromSatoshis(localFundingAmt)
 	// TODO(halseth): make method take remote funding amount directly
 	// instead of inferring it from capacity and local amt.
 	capacityMSat := lnwire.NewMSatFromSatoshis(capacity)
+
+	// The total fee paid by the initiator will be the commitment fee in
+	// addition to the two anchor outputs.
 	feeMSat := lnwire.NewMSatFromSatoshis(commitFee)
+	if commitType == CommitmentTypeAnchors {
+		feeMSat += 2 * lnwire.NewMSatFromSatoshis(anchorSize)
+	}
 
 	// If we're the responder to a single-funder reservation, then we have
 	// no initial balance in the channel unless the remote party is pushing
@@ -213,6 +259,16 @@ func NewChannelReservation(capacity, localFundingAmt ltcutil.Amount,
 		)
 	}
 
+	// Similarly we ensure their balance is reasonable if we are not the
+	// initiator.
+	if !initiator && theirBalance.ToSatoshis() <= 2*DefaultDustLimit() {
+		return nil, ErrFunderBalanceDust(
+			int64(commitFee),
+			int64(theirBalance.ToSatoshis()),
+			int64(2*DefaultDustLimit()),
+		)
+	}
+
 	// Next we'll set the channel type based on what we can ascertain about
 	// the balances/push amount within the channel.
 	var chanType channeldb.ChannelType
@@ -221,7 +277,11 @@ func NewChannelReservation(capacity, localFundingAmt ltcutil.Amount,
 	// non-zero push amt (there's no pushing for dual funder), then this is
 	// a single-funder channel.
 	if ourBalance == 0 || theirBalance == 0 || pushMSat != 0 {
-		if tweaklessCommit {
+		// Both the tweakless type and the anchor type is tweakless,
+		// hence set the bit.
+		if commitType == CommitmentTypeTweakless ||
+			commitType == CommitmentTypeAnchors {
+
 			chanType |= channeldb.SingleFunderTweaklessBit
 		} else {
 			chanType |= channeldb.SingleFunderBit
@@ -239,6 +299,17 @@ func NewChannelReservation(capacity, localFundingAmt ltcutil.Amount,
 		// technically the "initiator"
 		initiator = false
 		chanType |= channeldb.DualFunderBit
+	}
+
+	// We are adding anchor outputs to our commitment.
+	if commitType == CommitmentTypeAnchors {
+		chanType |= channeldb.AnchorOutputsBit
+	}
+
+	// If the channel is meant to be frozen, then we'll set the frozen bit
+	// now so once the channel is open, it can be interpreted properly.
+	if thawHeight != 0 {
+		chanType |= channeldb.FrozenBit
 	}
 
 	return &ChannelReservation{
@@ -269,7 +340,8 @@ func NewChannelReservation(capacity, localFundingAmt ltcutil.Amount,
 				FeePerKw:      ltcutil.Amount(commitFeePerKw),
 				CommitFee:     commitFee,
 			},
-			Db: wallet.Cfg.Database,
+			ThawHeight: thawHeight,
+			Db:         wallet.Cfg.Database,
 		},
 		pushMSat:      pushMSat,
 		pendingChanID: pendingChanID,
@@ -399,6 +471,37 @@ func (r *ChannelReservation) ProcessContribution(theirContribution *ChannelContr
 	return <-errChan
 }
 
+// IsPsbt returns true if there is a PSBT funding intent mapped to this
+// reservation.
+func (r *ChannelReservation) IsPsbt() bool {
+	_, ok := r.fundingIntent.(*chanfunding.PsbtIntent)
+	return ok
+}
+
+// ProcessPsbt continues a previously paused funding flow that involves PSBT to
+// construct the funding transaction. This method can be called once the PSBT is
+// finalized and the signed transaction is available.
+func (r *ChannelReservation) ProcessPsbt() error {
+	errChan := make(chan error, 1)
+
+	r.wallet.msgChan <- &continueContributionMsg{
+		pendingFundingID: r.reservationID,
+		err:              errChan,
+	}
+
+	return <-errChan
+}
+
+// RemoteCanceled informs the PSBT funding state machine that the remote peer
+// has canceled the pending reservation, likely due to a timeout.
+func (r *ChannelReservation) RemoteCanceled() {
+	psbtIntent, ok := r.fundingIntent.(*chanfunding.PsbtIntent)
+	if !ok {
+		return
+	}
+	psbtIntent.RemoteCanceled()
+}
+
 // ProcessSingleContribution verifies, and records the initiator's contribution
 // to this pending single funder channel. Internally, no further action is
 // taken other than recording the initiator's contribution to the single funder
@@ -435,7 +538,9 @@ func (r *ChannelReservation) TheirContribution() *ChannelContribution {
 //
 // NOTE: These signatures will only be populated after a call to
 // .ProcessContribution()
-func (r *ChannelReservation) OurSignatures() ([]*input.Script, []byte) {
+func (r *ChannelReservation) OurSignatures() ([]*input.Script,
+	input.Signature) {
+
 	r.RLock()
 	defer r.RUnlock()
 	return r.ourFundingInputScripts, r.ourCommitmentSig
@@ -455,7 +560,7 @@ func (r *ChannelReservation) OurSignatures() ([]*input.Script, []byte) {
 // confirmations. Once the method unblocks, a LightningChannel instance is
 // returned, marking the channel available for updates.
 func (r *ChannelReservation) CompleteReservation(fundingInputScripts []*input.Script,
-	commitmentSig []byte) (*channeldb.OpenChannel, error) {
+	commitmentSig input.Signature) (*channeldb.OpenChannel, error) {
 
 	// TODO(roasbeef): add flag for watch or not?
 	errChan := make(chan error, 1)
@@ -482,7 +587,7 @@ func (r *ChannelReservation) CompleteReservation(fundingInputScripts []*input.Sc
 // called as a response to a single funder channel, only a commitment signature
 // will be populated.
 func (r *ChannelReservation) CompleteReservationSingle(fundingPoint *wire.OutPoint,
-	commitSig []byte) (*channeldb.OpenChannel, error) {
+	commitSig input.Signature) (*channeldb.OpenChannel, error) {
 
 	errChan := make(chan error, 1)
 	completeChan := make(chan *channeldb.OpenChannel, 1)
@@ -505,7 +610,9 @@ func (r *ChannelReservation) CompleteReservationSingle(fundingPoint *wire.OutPoi
 //
 // NOTE: These attributes will be unpopulated before a call to
 // .CompleteReservation().
-func (r *ChannelReservation) TheirSignatures() ([]*input.Script, []byte) {
+func (r *ChannelReservation) TheirSignatures() ([]*input.Script,
+	input.Signature) {
+
 	r.RLock()
 	defer r.RUnlock()
 	return r.theirFundingInputScripts, r.theirCommitmentSig

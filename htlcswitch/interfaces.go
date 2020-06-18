@@ -27,7 +27,7 @@ type InvoiceDatabase interface {
 	NotifyExitHopHtlc(payHash lntypes.Hash, paidAmount lnwire.MilliSatoshi,
 		expiry uint32, currentHeight int32,
 		circuitKey channeldb.CircuitKey, hodlChan chan<- interface{},
-		payload invoices.Payload) (*invoices.HtlcResolution, error)
+		payload invoices.Payload) (invoices.HtlcResolution, error)
 
 	// CancelInvoice attempts to cancel the invoice corresponding to the
 	// passed payment hash.
@@ -179,4 +179,30 @@ type TowerClient interface {
 	// up doesn't have a tweak for the remote party's output, then
 	// isTweakless should be true.
 	BackupState(*lnwire.ChannelID, *lnwallet.BreachRetribution, bool) error
+}
+
+// htlcNotifier is an interface which represents the input side of the
+// HtlcNotifier which htlc events are piped through. This interface is intended
+// to allow for mocking of the htlcNotifier in tests, so is unexported because
+// it is not needed outside of the htlcSwitch package.
+type htlcNotifier interface {
+	// NotifyForwardingEvent notifies the HtlcNotifier than a htlc has been
+	// forwarded.
+	NotifyForwardingEvent(key HtlcKey, info HtlcInfo,
+		eventType HtlcEventType)
+
+	// NotifyIncomingLinkFailEvent notifies that a htlc has failed on our
+	// incoming link. It takes an isReceive bool to differentiate between
+	// our node's receives and forwards.
+	NotifyLinkFailEvent(key HtlcKey, info HtlcInfo,
+		eventType HtlcEventType, linkErr *LinkError, incoming bool)
+
+	// NotifyForwardingFailEvent notifies the HtlcNotifier that a htlc we
+	// forwarded has failed down the line.
+	NotifyForwardingFailEvent(key HtlcKey, eventType HtlcEventType)
+
+	// NotifySettleEvent notifies the HtlcNotifier that a htlc that we
+	// committed to as part of a forward or a receive to our node has been
+	// settled.
+	NotifySettleEvent(key HtlcKey, eventType HtlcEventType)
 }

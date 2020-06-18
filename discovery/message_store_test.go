@@ -8,11 +8,11 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/coreos/bbolt"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/btcec"
 )
 
 func createTestMessageStore(t *testing.T) (*MessageStore, func()) {
@@ -236,8 +236,8 @@ func TestMessageStoreUnsupportedMessage(t *testing.T) {
 	if _, err := lnwire.WriteMessage(&rawMsg, unsupportedMsg, 0); err != nil {
 		t.Fatalf("unable to serialize message: %v", err)
 	}
-	err = msgStore.db.Update(func(tx *bbolt.Tx) error {
-		messageStore := tx.Bucket(messageStoreBucket)
+	err = kvdb.Update(msgStore.db, func(tx kvdb.RwTx) error {
+		messageStore := tx.ReadWriteBucket(messageStoreBucket)
 		return messageStore.Put(msgKey, rawMsg.Bytes())
 	})
 	if err != nil {

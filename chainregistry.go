@@ -12,17 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/rpcclient"
-	"github.com/ltcsuite/ltcutil"
-	"github.com/ltcsuite/ltcwallet/chain"
-	"github.com/ltcsuite/ltcwallet/wallet"
-	"github.com/ltcsuite/ltcwallet/walletdb"
-	"github.com/ltcsuite/neutrino"
-	"github.com/ltcsuite/neutrino/headerfs"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/chainntnfs/bitcoindnotify"
-	"github.com/ltcsuite/lnd/chainntnfs/btcdnotify"
+	ltcdnotify "github.com/ltcsuite/lnd/chainntnfs/btcdnotify"
 	"github.com/ltcsuite/lnd/chainntnfs/neutrinonotify"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/htlcswitch"
@@ -33,12 +25,20 @@ import (
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/routing/chainview"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/rpcclient"
+	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcwallet/chain"
+	"github.com/ltcsuite/ltcwallet/wallet"
+	"github.com/ltcsuite/ltcwallet/walletdb"
+	"github.com/ltcsuite/neutrino"
+	"github.com/ltcsuite/neutrino/headerfs"
 )
 
 const (
 	// defaultBitcoinMinHTLCMSat is the default smallest value htlc this
 	// node will accept. This value is proposed in the channel open sequence
-	// and cannot be changed during the life of the channel. It is zero by
+	// and cannot be changed during the life of the channel. It is 1 msat by
 	// default to allow maximum flexibility in deciding what size payments
 	// to forward.
 	//
@@ -205,7 +205,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			"unknown", registeredChains.PrimaryChain())
 	}
 
-	walletConfig := &ltcwallet.Config{
+	walletConfig := &btcwallet.Config{
 		PrivatePass:    privateWalletPw,
 		PublicPass:     publicWalletPw,
 		Birthday:       birthday,
@@ -280,9 +280,9 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			bitcoindHost = bitcoindMode.RPCHost
 		} else {
 			// The RPC ports specified in chainparams.go assume
-			// ltcd, which picks a different port so that ltcwallet
+			// ltcd, which picks a different port so that btcwallet
 			// can use the same RPC port as bitcoind. We convert
-			// this back to the ltcwallet/bitcoind port.
+			// this back to the btcwallet/bitcoind port.
 			rpcPort, err := strconv.Atoi(activeNetParams.rpcPort)
 			if err != nil {
 				return nil, err
@@ -314,7 +314,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			activeNetParams.Params, bitcoindHost,
 			bitcoindMode.RPCUser, bitcoindMode.RPCPass,
 			bitcoindMode.ZMQPubRawBlock, bitcoindMode.ZMQPubRawTx,
-			100*time.Millisecond,
+			5*time.Second,
 		)
 		if err != nil {
 			return nil, err
@@ -343,7 +343,8 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			HTTPPostMode:         true,
 		}
 		if cfg.Bitcoin.Active && !cfg.Bitcoin.RegTest {
-			ltndLog.Infof("Initializing bitcoind backed fee estimator")
+			ltndLog.Infof("Initializing bitcoind backed fee estimator in "+
+				"%s mode", bitcoindMode.EstimateMode)
 
 			// Finally, we'll re-initialize the fee estimator, as
 			// if we're using bitcoind as a backend, then we can
@@ -351,7 +352,8 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			// coded value.
 			fallBackFeeRate := chainfee.SatPerKVByte(25 * 1000)
 			cc.feeEstimator, err = chainfee.NewBitcoindEstimator(
-				*rpcConfig, fallBackFeeRate.FeePerKWeight(),
+				*rpcConfig, bitcoindMode.EstimateMode,
+				fallBackFeeRate.FeePerKWeight(),
 			)
 			if err != nil {
 				return nil, err
@@ -360,7 +362,8 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 				return nil, err
 			}
 		} else if cfg.Litecoin.Active && !cfg.Litecoin.RegTest {
-			ltndLog.Infof("Initializing litecoind backed fee estimator")
+			ltndLog.Infof("Initializing litecoind backed fee estimator in "+
+				"%s mode", bitcoindMode.EstimateMode)
 
 			// Finally, we'll re-initialize the fee estimator, as
 			// if we're using litecoind as a backend, then we can
@@ -368,7 +371,8 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			// coded value.
 			fallBackFeeRate := chainfee.SatPerKVByte(25 * 1000)
 			cc.feeEstimator, err = chainfee.NewBitcoindEstimator(
-				*rpcConfig, fallBackFeeRate.FeePerKWeight(),
+				*rpcConfig, bitcoindMode.EstimateMode,
+				fallBackFeeRate.FeePerKWeight(),
 			)
 			if err != nil {
 				return nil, err
@@ -487,7 +491,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			homeChainConfig.Node)
 	}
 
-	wc, err := ltcwallet.New(*walletConfig)
+	wc, err := btcwallet.New(*walletConfig)
 	if err != nil {
 		fmt.Printf("unable to create wallet controller: %v\n", err)
 		return nil, err
@@ -717,7 +721,7 @@ func (c *chainRegistry) NumActiveChains() uint32 {
 func initNeutrinoBackend(chainDir string) (*neutrino.ChainService, func(), error) {
 	// First we'll open the database file for neutrino, creating the
 	// database if needed. We append the normalized network name here to
-	// match the behavior of ltcwallet.
+	// match the behavior of btcwallet.
 	dbPath := filepath.Join(
 		chainDir,
 		normalizeNetwork(activeNetParams.Name),

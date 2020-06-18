@@ -31,7 +31,7 @@ $ source lnd/bin/activate
   [lnrpc/rpc.proto](https://github.com/ltcsuite/lnd/blob/master/lnrpc/rpc.proto))
   or just download it
 ```
-(lnd)$ curl -o rpc.proto -s https://raw.githubusercontent.com/lightningnetwork/lnd/master/lnrpc/rpc.proto
+(lnd)$ curl -o rpc.proto -s https://raw.githubusercontent.com/ltcsuite/lnd/master/lnrpc/rpc.proto
 ```
 * Compile the proto file
 ```

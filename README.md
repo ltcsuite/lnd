@@ -1,6 +1,6 @@
 ## Lightning Network Daemon
 
-[![Build Status](https://img.shields.io/travis/lightningnetwork/lnd.svg)](https://travis-ci.org/lightningnetwork/lnd)
+[![Build Status](https://img.shields.io/travis/lightningnetwork/lnd.svg)](https://travis-ci.org/ltcsuite/lnd)
 [![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ltcsuite/lnd/blob/master/LICENSE)
 [![Irc](https://img.shields.io/badge/chat-on%20freenode-brightgreen.svg)](https://webchat.freenode.net/?channels=lnd)
 [![Godoc](https://godoc.org/github.com/ltcsuite/lnd?status.svg)](https://godoc.org/github.com/ltcsuite/lnd)
@@ -61,7 +61,7 @@ resources including talks, articles, and example applications can be found at:
 [dev.lightning.community](https://dev.lightning.community).
 
 Finally, we also have an active
-[Slack](https://join.slack.com/t/lightningcommunity/shared_invite/enQtODY1NTI2MjY5MjAzLTQxYjBmNTcxNTA1YzZkZDQ1ZDNlYzJmZWMwYjg4MTI3OTkyZTU4ZDYzNTFjYzgyMWM0ZmZlYzVlZWI1YzhkNDI) where protocol developers, application developers, testers and users gather to
+[Slack](https://lightning.engineering/slack.html) where protocol developers, application developers, testers and users gather to
 discuss various aspects of `lnd` and also Lightning in general.
 
 ## Installation
@@ -70,14 +70,20 @@ In order to build from source, please see [the installation
 instructions](docs/INSTALL.md).
 
 ## Docker
-
-To run lnd from Docker, please see the main [Docker instructions](docs/DOCKER.md)
+  To run lnd from Docker, please see the main [Docker instructions](docs/DOCKER.md)
 
 ## IRC
 
 - irc.freenode.net
 - channel #lnd
 - [webchat](https://webchat.freenode.net/?channels=lnd)
+
+## Safety
+
+When operating a mainnet `lnd` node, please refer to our [operational safety
+guildelines](docs/safety.md). It is important to note that `lnd` is still
+**beta** software and that ignoring these operational guidelines can lead to
+loss of funds.
 
 ## Security
 

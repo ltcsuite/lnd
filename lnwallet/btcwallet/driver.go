@@ -1,10 +1,10 @@
-package ltcwallet
+package btcwallet
 
 import (
 	"fmt"
 
-	"github.com/ltcsuite/ltcwallet/chain"
 	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/ltcwallet/chain"
 )
 
 const (

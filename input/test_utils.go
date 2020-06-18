@@ -50,7 +50,9 @@ type MockSigner struct {
 
 // SignOutputRaw generates a signature for the passed transaction according to
 // the data within the passed SignDescriptor.
-func (m *MockSigner) SignOutputRaw(tx *wire.MsgTx, signDesc *SignDescriptor) ([]byte, error) {
+func (m *MockSigner) SignOutputRaw(tx *wire.MsgTx,
+	signDesc *SignDescriptor) (Signature, error) {
+
 	pubkey := signDesc.KeyDesc.PubKey
 	switch {
 	case signDesc.SingleTweak != nil:
@@ -67,12 +69,12 @@ func (m *MockSigner) SignOutputRaw(tx *wire.MsgTx, signDesc *SignDescriptor) ([]
 
 	sig, err := txscript.RawTxInWitnessSignature(tx, signDesc.SigHashes,
 		signDesc.InputIndex, signDesc.Output.Value, signDesc.WitnessScript,
-		txscript.SigHashAll, privKey)
+		signDesc.HashType, privKey)
 	if err != nil {
 		return nil, err
 	}
 
-	return sig[:len(sig)-1], nil
+	return btcec.ParseDERSignature(sig[:len(sig)-1], btcec.S256())
 }
 
 // ComputeInputScript generates a complete InputIndex for the passed transaction

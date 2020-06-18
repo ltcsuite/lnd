@@ -1,5 +1,3 @@
-// +build routerrpc
-
 package main
 
 import (
@@ -64,7 +62,7 @@ func queryProb(ctx *cli.Context) error {
 		return err
 	}
 
-	printJSON(response)
+	printRespJSON(response)
 
 	return nil
 }

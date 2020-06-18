@@ -7,19 +7,31 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
 )
+
+type dummySignature struct{}
+
+func (s *dummySignature) Serialize() []byte {
+	return []byte{}
+}
+
+func (s *dummySignature) Verify(_ []byte, _ *btcec.PublicKey) bool {
+	return true
+}
 
 type mockSigner struct {
 }
 
 func (m *mockSigner) SignOutputRaw(tx *wire.MsgTx,
-	signDesc *input.SignDescriptor) ([]byte, error) {
-	return nil, nil
+	signDesc *input.SignDescriptor) (input.Signature, error) {
+	return &dummySignature{}, nil
 }
 
 func (m *mockSigner) ComputeInputScript(tx *wire.MsgTx,
@@ -144,7 +156,8 @@ func TestHtlcTimeoutResolver(t *testing.T) {
 			timeout:      true,
 			txToBroadcast: func() (*wire.MsgTx, error) {
 				witness, err := input.SenderHtlcSpendTimeout(
-					nil, signer, fakeSignDesc, sweepTx,
+					&dummySignature{}, txscript.SigHashAll,
+					signer, fakeSignDesc, sweepTx,
 				)
 				if err != nil {
 					return nil, err
@@ -163,8 +176,9 @@ func TestHtlcTimeoutResolver(t *testing.T) {
 			timeout:      false,
 			txToBroadcast: func() (*wire.MsgTx, error) {
 				witness, err := input.ReceiverHtlcSpendRedeem(
-					nil, fakePreimageBytes, signer,
-					fakeSignDesc, sweepTx,
+					&dummySignature{}, txscript.SigHashAll,
+					fakePreimageBytes, signer, fakeSignDesc,
+					sweepTx,
 				)
 				if err != nil {
 					return nil, err

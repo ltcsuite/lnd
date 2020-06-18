@@ -176,6 +176,9 @@ func initSwitchWithDB(startingHeight uint32, db *channeldb.DB) (*Switch, error) 
 		FwdEventTicker: ticker.NewForce(DefaultFwdEventInterval),
 		LogEventTicker: ticker.NewForce(DefaultLogInterval),
 		AckEventTicker: ticker.NewForce(DefaultAckInterval),
+		HtlcNotifier:   &mockHTLCNotifier{},
+		Clock:          clock.NewDefaultClock(),
+		HTLCExpiry:     time.Hour,
 	}
 
 	return New(cfg, startingHeight)
@@ -601,9 +604,7 @@ func (s *mockServer) AddNewChannel(channel *channeldb.OpenChannel,
 	return nil
 }
 
-func (s *mockServer) WipeChannel(*wire.OutPoint) error {
-	return nil
-}
+func (s *mockServer) WipeChannel(*wire.OutPoint) {}
 
 func (s *mockServer) LocalFeatures() *lnwire.FeatureVector {
 	return nil
@@ -816,7 +817,7 @@ func (i *mockInvoiceRegistry) SettleHodlInvoice(preimage lntypes.Preimage) error
 func (i *mockInvoiceRegistry) NotifyExitHopHtlc(rhash lntypes.Hash,
 	amt lnwire.MilliSatoshi, expiry uint32, currentHeight int32,
 	circuitKey channeldb.CircuitKey, hodlChan chan<- interface{},
-	payload invoices.Payload) (*invoices.HtlcResolution, error) {
+	payload invoices.Payload) (invoices.HtlcResolution, error) {
 
 	event, err := i.registry.NotifyExitHopHtlc(
 		rhash, amt, expiry, currentHeight, circuitKey, hodlChan,
@@ -853,7 +854,9 @@ type mockSigner struct {
 	key *btcec.PrivateKey
 }
 
-func (m *mockSigner) SignOutputRaw(tx *wire.MsgTx, signDesc *input.SignDescriptor) ([]byte, error) {
+func (m *mockSigner) SignOutputRaw(tx *wire.MsgTx,
+	signDesc *input.SignDescriptor) (input.Signature, error) {
+
 	amt := signDesc.Output.Value
 	witnessScript := signDesc.WitnessScript
 	privKey := m.key
@@ -878,7 +881,7 @@ func (m *mockSigner) SignOutputRaw(tx *wire.MsgTx, signDesc *input.SignDescripto
 		return nil, err
 	}
 
-	return sig[:len(sig)-1], nil
+	return btcec.ParseDERSignature(sig[:len(sig)-1], btcec.S256())
 }
 func (m *mockSigner) ComputeInputScript(tx *wire.MsgTx, signDesc *input.SignDescriptor) (*input.Script, error) {
 
@@ -926,6 +929,10 @@ func (m *mockNotifier) RegisterBlockEpochNtfn(
 
 func (m *mockNotifier) Start() error {
 	return nil
+}
+
+func (m *mockNotifier) Started() bool {
+	return true
 }
 
 func (m *mockNotifier) Stop() error {
@@ -1008,4 +1015,23 @@ func (m *mockOnionErrorDecryptor) DecryptError(encryptedData []byte) (
 		SenderIdx: m.sourceIdx,
 		Message:   m.message,
 	}, m.err
+}
+
+var _ htlcNotifier = (*mockHTLCNotifier)(nil)
+
+type mockHTLCNotifier struct{}
+
+func (h *mockHTLCNotifier) NotifyForwardingEvent(key HtlcKey, info HtlcInfo,
+	eventType HtlcEventType) {
+}
+
+func (h *mockHTLCNotifier) NotifyLinkFailEvent(key HtlcKey, info HtlcInfo,
+	eventType HtlcEventType, linkErr *LinkError, incoming bool) {
+}
+
+func (h *mockHTLCNotifier) NotifyForwardingFailEvent(key HtlcKey,
+	eventType HtlcEventType) {
+}
+
+func (h *mockHTLCNotifier) NotifySettleEvent(key HtlcKey, eventType HtlcEventType) {
 }

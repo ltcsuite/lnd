@@ -34,6 +34,10 @@ var (
 	// record to an intermediate hop, only final hops can receive MPP
 	// records.
 	ErrIntermediateMPPHop = errors.New("cannot send MPP to intermediate")
+
+	// ErrAMPMissingMPP is returned when the caller tries to attach an AMP
+	// record but no MPP record is presented for the final hop.
+	ErrAMPMissingMPP = errors.New("cannot send AMP without MPP record")
 )
 
 // Vertex is a simple alias for the serialization of a compressed Bitcoin
@@ -111,6 +115,10 @@ type Hop struct {
 	// only be set for the final hop.
 	MPP *record.MPP
 
+	// AMP encapsulates the data required for option_amp. This field should
+	// only be set for the final hop.
+	AMP *record.AMP
+
 	// CustomRecords if non-nil are a set of additional TLV records that
 	// should be included in the forwarding instructions for this node.
 	CustomRecords record.CustomSet
@@ -119,6 +127,23 @@ type Hop struct {
 	// understand the new TLV payload, so we must instead use the legacy
 	// payload.
 	LegacyPayload bool
+}
+
+// Copy returns a deep copy of the Hop.
+func (h *Hop) Copy() *Hop {
+	c := *h
+
+	if h.MPP != nil {
+		m := *h.MPP
+		c.MPP = &m
+	}
+
+	if h.AMP != nil {
+		a := *h.AMP
+		c.AMP = &a
+	}
+
+	return &c
 }
 
 // PackHopPayload writes to the passed io.Writer, the series of byes that can
@@ -165,6 +190,18 @@ func (h *Hop) PackHopPayload(w io.Writer, nextChanID uint64) error {
 			records = append(records, h.MPP.Record())
 		} else {
 			return ErrIntermediateMPPHop
+		}
+	}
+
+	// If an AMP record is destined for this hop, ensure that we only ever
+	// attach it if we also have an MPP record. We can infer that this is
+	// already a final hop if MPP is non-nil otherwise we would have exited
+	// above.
+	if h.AMP != nil {
+		if h.MPP != nil {
+			records = append(records, h.AMP.Record())
+		} else {
+			return ErrAMPMissingMPP
 		}
 	}
 
@@ -217,6 +254,11 @@ func (h *Hop) PayloadSize(nextChanID uint64) uint64 {
 		addRecord(record.MPPOnionType, h.MPP.PayloadSize())
 	}
 
+	// Add amp if present.
+	if h.AMP != nil {
+		addRecord(record.AMPOnionType, h.AMP.PayloadSize())
+	}
+
 	// Add custom records.
 	for k, v := range h.CustomRecords {
 		addRecord(tlv.Type(k), uint64(len(v)))
@@ -262,6 +304,18 @@ type Route struct {
 	Hops []*Hop
 }
 
+// Copy returns a deep copy of the Route.
+func (r *Route) Copy() *Route {
+	c := *r
+
+	c.Hops = make([]*Hop, len(r.Hops))
+	for i := range r.Hops {
+		c.Hops[i] = r.Hops[i].Copy()
+	}
+
+	return &c
+}
+
 // HopFee returns the fee charged by the route hop indicated by hopIndex.
 func (r *Route) HopFee(hopIndex int) lnwire.MilliSatoshi {
 	var incomingAmt lnwire.MilliSatoshi
@@ -283,7 +337,25 @@ func (r *Route) TotalFees() lnwire.MilliSatoshi {
 		return 0
 	}
 
-	return r.TotalAmount - r.Hops[len(r.Hops)-1].AmtToForward
+	return r.TotalAmount - r.ReceiverAmt()
+}
+
+// ReceiverAmt is the amount received by the final hop of this route.
+func (r *Route) ReceiverAmt() lnwire.MilliSatoshi {
+	if len(r.Hops) == 0 {
+		return 0
+	}
+
+	return r.Hops[len(r.Hops)-1].AmtToForward
+}
+
+// FinalHop returns the last hop of the route, or nil if the route is empty.
+func (r *Route) FinalHop() *Hop {
+	if len(r.Hops) == 0 {
+		return nil
+	}
+
+	return r.Hops[len(r.Hops)-1]
 }
 
 // NewRouteFromHops creates a new Route structure from the minimally required

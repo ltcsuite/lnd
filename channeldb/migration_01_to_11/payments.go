@@ -9,12 +9,12 @@ import (
 	"sort"
 	"time"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/coreos/bbolt"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/tlv"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 var (
@@ -254,14 +254,14 @@ type Payment struct {
 func (db *DB) FetchPayments() ([]*Payment, error) {
 	var payments []*Payment
 
-	err := db.View(func(tx *bbolt.Tx) error {
-		paymentsBucket := tx.Bucket(paymentsRootBucket)
+	err := kvdb.View(db, func(tx kvdb.ReadTx) error {
+		paymentsBucket := tx.ReadBucket(paymentsRootBucket)
 		if paymentsBucket == nil {
 			return nil
 		}
 
 		return paymentsBucket.ForEach(func(k, v []byte) error {
-			bucket := paymentsBucket.Bucket(k)
+			bucket := paymentsBucket.NestedReadBucket(k)
 			if bucket == nil {
 				// We only expect sub-buckets to be found in
 				// this top-level bucket.
@@ -280,13 +280,13 @@ func (db *DB) FetchPayments() ([]*Payment, error) {
 			// payment has was possible. These will be found in a
 			// sub-bucket indexed by their sequence number if
 			// available.
-			dup := bucket.Bucket(paymentDuplicateBucket)
+			dup := bucket.NestedReadBucket(paymentDuplicateBucket)
 			if dup == nil {
 				return nil
 			}
 
 			return dup.ForEach(func(k, v []byte) error {
-				subBucket := dup.Bucket(k)
+				subBucket := dup.NestedReadBucket(k)
 				if subBucket == nil {
 					// We one bucket for each duplicate to
 					// be found.
@@ -316,7 +316,7 @@ func (db *DB) FetchPayments() ([]*Payment, error) {
 	return payments, nil
 }
 
-func fetchPayment(bucket *bbolt.Bucket) (*Payment, error) {
+func fetchPayment(bucket kvdb.ReadBucket) (*Payment, error) {
 	var (
 		err error
 		p   = &Payment{}

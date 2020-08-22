@@ -1,20 +1,25 @@
-## Lightning Network Daemon
+## Lightning Network Daemon for Litecoin
 
 [![Build Status](https://img.shields.io/travis/lightningnetwork/lnd.svg)](https://travis-ci.org/ltcsuite/lnd)
 [![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ltcsuite/lnd/blob/master/LICENSE)
 [![Irc](https://img.shields.io/badge/chat-on%20freenode-brightgreen.svg)](https://webchat.freenode.net/?channels=lnd)
 [![Godoc](https://godoc.org/github.com/ltcsuite/lnd?status.svg)](https://godoc.org/github.com/ltcsuite/lnd)
 
-<img src="logo.png">
+The Lightning Network Daemon for Litecoin (`lndltc`) - is a complete implementation of a
+[Lightning Network](https://lightning.network) node. 
 
-The Lightning Network Daemon (`lnd`) - is a complete implementation of a
-[Lightning Network](https://lightning.network) node. `lnd` has several pluggable back-end
-chain services including [`btcd`](https://github.com/btcsuite/btcd) (a
-full-node), [`bitcoind`](https://github.com/bitcoin/bitcoin), and
-[`neutrino`](https://github.com/lightninglabs/neutrino) (a new experimental light client). The project's codebase uses the
-[btcsuite](https://github.com/btcsuite/) set of Bitcoin libraries, and also
+It is adapted from the
+[`lnd`](https://github.com/lightningnetwork/lnd) project by Lightning Labs. This fork
+focuses on maintaining complete support and bugfixes related to Litecoin. Users should create issues in this repo if
+they are to find issues specific to Litecoin.
+
+`lndltc` has several pluggable back-end
+chain services including [`ltcd`](https://github.com/ltcsuite/ltcd) (a
+full-node), [`litecoind`](https://github.com/litecoin-project/litecoin), and
+[`neutrino`](https://github.com/ltcsuite/neutrino) (a new experimental light client). The project's codebase uses the
+[ltcsuite](https://github.com/ltcsuite/) set of Litecoin libraries, and also
 exports a large set of isolated re-usable Lightning Network related libraries
-within it. In the current state `lnd` is capable of:
+within it. In the current state `lndltc` is capable of:
 
 - Creating channels.
 - Closing channels.
@@ -28,13 +33,13 @@ within it. In the current state `lnd` is capable of:
 
 ## Lightning Network Specification Compliance
 
-`lnd` _fully_ conforms to the [Lightning Network specification
+`lndltc` _fully_ conforms to the [Lightning Network specification
 (BOLTs)](https://github.com/lightningnetwork/lightning-rfc). BOLT stands for:
 Basis of Lightning Technology. The specifications are currently being drafted
 by several groups of implementers based around the world including the
-developers of `lnd`. The set of specification documents as well as our
+developers of `lndltc`. The set of specification documents as well as our
 implementation of the specification are still a work-in-progress. With that
-said, the current status of `lnd`'s BOLT compliance is:
+said, the current status of `lndltc`'s BOLT compliance is:
 
 - [x] BOLT 1: Base Protocol
 - [x] BOLT 2: Peer Protocol for Channel Management
@@ -50,7 +55,7 @@ said, the current status of `lnd`'s BOLT compliance is:
 ## Developer Resources
 
 The daemon has been designed to be as developer friendly as possible in order
-to facilitate application development on top of `lnd`. Two primary RPC
+to facilitate application development on top of `lndltc`. Two primary RPC
 interfaces are exported: an HTTP REST API, and a [gRPC](https://grpc.io/)
 service. The exported API's are not yet stable, so be warned: they may change
 drastically in the near future.
@@ -62,7 +67,8 @@ resources including talks, articles, and example applications can be found at:
 
 Finally, we also have an active
 [Slack](https://lightning.engineering/slack.html) where protocol developers, application developers, testers and users gather to
-discuss various aspects of `lnd` and also Lightning in general.
+discuss various aspects of `lndltc` and also Lightning in general. Discussions specific to the development of `lndltc` is done
+in the #ltc channel.
 
 ## Installation
 
@@ -75,24 +81,24 @@ instructions](docs/INSTALL.md).
 ## IRC
 
 - irc.freenode.net
-- channel #lnd
-- [webchat](https://webchat.freenode.net/?channels=lnd)
+- channel #litecoin-dev
+- [webchat](https://webchat.freenode.net/?channels=litecoin-dev)
 
 ## Safety
 
-When operating a mainnet `lnd` node, please refer to our [operational safety
-guildelines](docs/safety.md). It is important to note that `lnd` is still
+When operating a mainnet `lndltc` node, please refer to our [operational safety
+guildelines](docs/safety.md). It is important to note that `lndltc` is still
 **beta** software and that ignoring these operational guidelines can lead to
 loss of funds.
 
 ## Security
 
-The developers of `lnd` take security _very_ seriously. The disclosure of
-security vulnerabilities helps us secure the health of `lnd`, privacy of our
+The developers of `lnd` and `lndltc` take security _very_ seriously. The disclosure of
+security vulnerabilities helps us secure the health of `lndltc`, privacy of our
 users, and also the health of the Lightning Network as a whole. If you find
 any issues regarding security or privacy, please disclose the information
 responsibly by sending an email to security at lightning dot engineering,
-preferably [encrypted using our designated PGP key
+preferably [encrypted using Lightning Labs designated PGP key
 (`91FE464CD75101DA6B6BAB60555C6465E5BCB3AF`) which can be found
 [here](https://gist.githubusercontent.com/Roasbeef/6fb5b52886183239e4aa558f83d085d3/raw/5ef96c426e3cf20a2443dc9d3c7d6877576da9ca/security@lightning.engineering).
 

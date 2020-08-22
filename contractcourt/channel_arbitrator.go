@@ -11,11 +11,13 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/sweep"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
 )
@@ -143,6 +145,12 @@ type ChannelArbitratorConfig struct {
 	// TODO(roasbeef): need RPC's to combine for pendingchannels RPC
 	MarkChannelResolved func() error
 
+	// PutResolverReport records a resolver report for the channel. If the
+	// transaction provided is nil, the function should write the report
+	// in a new transaction.
+	PutResolverReport func(tx kvdb.RwTx,
+		report *channeldb.ResolverReport) error
+
 	ChainArbitratorConfig
 }
 
@@ -195,6 +203,21 @@ type ContractReport struct {
 	// RecoveredBalance is the total value that has been successfully swept
 	// back to the user's wallet.
 	RecoveredBalance ltcutil.Amount
+}
+
+// resolverReport creates a resolve report using some of the information in the
+// contract report.
+func (c *ContractReport) resolverReport(spendTx *chainhash.Hash,
+	resolverType channeldb.ResolverType,
+	outcome channeldb.ResolverOutcome) *channeldb.ResolverReport {
+
+	return &channeldb.ResolverReport{
+		OutPoint:        c.Outpoint,
+		Amount:          c.Amount,
+		ResolverType:    resolverType,
+		ResolverOutcome: outcome,
+		SpendTxID:       spendTx,
+	}
 }
 
 // htlcSet represents the set of active HTLCs on a given commitment
@@ -851,7 +874,7 @@ func (c *ChannelArbitrator) stateStep(
 
 		// At this point, we'll now broadcast the commitment
 		// transaction itself.
-		if err := c.cfg.PublishTx(closeTx); err != nil {
+		if err := c.cfg.PublishTx(closeTx, ""); err != nil {
 			log.Errorf("ChannelArbitrator(%v): unable to broadcast "+
 				"close tx: %v", c.cfg.ChanPoint, err)
 			if err != lnwallet.ErrDoubleSpend {
@@ -969,7 +992,7 @@ func (c *ChannelArbitrator) stateStep(
 		log.Debugf("ChannelArbitrator(%v): inserting %v contract "+
 			"resolvers", c.cfg.ChanPoint, len(htlcResolvers))
 
-		err = c.log.InsertUnresolvedContracts(htlcResolvers...)
+		err = c.log.InsertUnresolvedContracts(nil, htlcResolvers...)
 		if err != nil {
 			return StateError, closeTx, err
 		}
@@ -1457,8 +1480,7 @@ func (c *ChannelArbitrator) isPreimageAvailable(hash lntypes.Hash) (bool,
 		return false, err
 	}
 
-	preimageAvailable = invoice.Terms.PaymentPreimage !=
-		channeldb.UnknownPreimage
+	preimageAvailable = invoice.Terms.PaymentPreimage != nil
 
 	return preimageAvailable, nil
 }
@@ -1738,8 +1760,10 @@ func (c *ChannelArbitrator) prepContractResolutions(
 	// resolver so they each can do their duty.
 	resolverCfg := ResolverConfig{
 		ChannelArbitratorConfig: c.cfg,
-		Checkpoint: func(res ContractResolver) error {
-			return c.log.InsertUnresolvedContracts(res)
+		Checkpoint: func(res ContractResolver,
+			reports ...*channeldb.ResolverReport) error {
+
+			return c.log.InsertUnresolvedContracts(reports, res)
 		},
 	}
 
@@ -1963,7 +1987,7 @@ func (c *ChannelArbitrator) resolveContract(currentContract ContractResolver) {
 			switch {
 			// If this contract produced another, then this means
 			// the current contract was only able to be partially
-			// resolved in this step. So we'll not a contract swap
+			// resolved in this step. So we'll do a contract swap
 			// within our logs: the new contract will take the
 			// place of the old one.
 			case nextContract != nil:
@@ -2058,7 +2082,7 @@ func (c *ChannelArbitrator) UpdateContractSignals(newSignals *ContractSignals) {
 
 // channelAttendant is the primary goroutine that acts at the judicial
 // arbitrator between our channel state, the remote channel peer, and the
-// blockchain Our judge). This goroutine will ensure that we faithfully execute
+// blockchain (Our judge). This goroutine will ensure that we faithfully execute
 // all clauses of our contract in the case that we need to go on-chain for a
 // dispute. Currently, two such conditions warrant our intervention: when an
 // outgoing HTLC is about to timeout, and when we know the pre-image for an
@@ -2154,6 +2178,7 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 
 			err := c.cfg.MarkChannelClosed(
 				closeInfo.ChannelCloseSummary,
+				channeldb.ChanStatusCoopBroadcasted,
 			)
 			if err != nil {
 				log.Errorf("Unable to mark channel closed: "+
@@ -2224,6 +2249,7 @@ func (c *ChannelArbitrator) channelAttendant(bestHeight int32) {
 			// close status of the channel.
 			err = c.cfg.MarkChannelClosed(
 				closeInfo.ChannelCloseSummary,
+				channeldb.ChanStatusLocalCloseInitiator,
 			)
 			if err != nil {
 				log.Errorf("Unable to mark "+

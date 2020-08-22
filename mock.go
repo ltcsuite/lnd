@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/ltcd/chaincfg"
@@ -13,6 +14,7 @@ import (
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
+	"github.com/ltcsuite/ltcwallet/wtxmgr"
 
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/input"
@@ -281,7 +283,7 @@ func (*mockWalletController) IsOurAddress(a ltcutil.Address) bool {
 }
 
 func (*mockWalletController) SendOutputs(outputs []*wire.TxOut,
-	_ chainfee.SatPerKWeight) (*wire.MsgTx, error) {
+	_ chainfee.SatPerKWeight, _ string) (*wire.MsgTx, error) {
 
 	return nil, nil
 }
@@ -317,20 +319,38 @@ func (m *mockWalletController) ListUnspentWitness(minconfirms,
 	ret = append(ret, utxo)
 	return ret, nil
 }
-func (*mockWalletController) ListTransactionDetails() ([]*lnwallet.TransactionDetail, error) {
+func (*mockWalletController) ListTransactionDetails(_, _ int32) ([]*lnwallet.TransactionDetail, error) {
 	return nil, nil
 }
 func (*mockWalletController) LockOutpoint(o wire.OutPoint)   {}
 func (*mockWalletController) UnlockOutpoint(o wire.OutPoint) {}
-func (m *mockWalletController) PublishTransaction(tx *wire.MsgTx) error {
+
+func (*mockWalletController) LeaseOutput(wtxmgr.LockID, wire.OutPoint) (time.Time, error) {
+	return time.Now(), nil
+}
+func (*mockWalletController) ReleaseOutput(wtxmgr.LockID, wire.OutPoint) error {
+	return nil
+}
+
+func (m *mockWalletController) PublishTransaction(tx *wire.MsgTx, _ string) error {
 	m.publishedTransactions <- tx
 	return nil
 }
+
+func (m *mockWalletController) LabelTransaction(_ chainhash.Hash, _ string,
+	_ bool) error {
+
+	return nil
+}
+
 func (*mockWalletController) SubscribeTransactions() (lnwallet.TransactionSubscription, error) {
 	return nil, nil
 }
 func (*mockWalletController) IsSynced() (bool, int64, error) {
 	return true, int64(0), nil
+}
+func (*mockWalletController) GetRecoveryInfo() (bool, float64, error) {
+	return true, float64(1), nil
 }
 func (*mockWalletController) Start() error {
 	return nil
@@ -359,7 +379,22 @@ func (m *mockSecretKeyRing) DerivePrivKey(keyDesc keychain.KeyDescriptor) (*btce
 	return m.rootKey, nil
 }
 
-func (m *mockSecretKeyRing) ScalarMult(keyDesc keychain.KeyDescriptor,
-	pubKey *btcec.PublicKey) ([]byte, error) {
-	return nil, nil
+func (m *mockSecretKeyRing) ECDH(_ keychain.KeyDescriptor,
+	pubKey *btcec.PublicKey) ([32]byte, error) {
+
+	return [32]byte{}, nil
 }
+
+func (m *mockSecretKeyRing) SignDigest(_ keychain.KeyDescriptor,
+	digest [32]byte) (*btcec.Signature, error) {
+
+	return m.rootKey.Sign(digest[:])
+}
+
+func (m *mockSecretKeyRing) SignDigestCompact(_ keychain.KeyDescriptor,
+	digest [32]byte) ([]byte, error) {
+
+	return btcec.SignCompact(btcec.S256(), m.rootKey, digest[:], true)
+}
+
+var _ keychain.SecretKeyRing = (*mockSecretKeyRing)(nil)

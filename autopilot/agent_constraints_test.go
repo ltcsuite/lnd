@@ -6,8 +6,8 @@ import (
 
 	prand "math/rand"
 
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/ltcutil"
 )
 
 func TestConstraintsChannelBudget(t *testing.T) {

@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/queue"
 	"github.com/ltcsuite/ltcd/btcjson"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/rpcclient"
@@ -17,8 +19,6 @@ import (
 	"github.com/ltcsuite/ltcutil/gcs/builder"
 	"github.com/ltcsuite/neutrino"
 	"github.com/ltcsuite/neutrino/headerfs"
-	"github.com/ltcsuite/lnd/chainntnfs"
-	"github.com/ltcsuite/lnd/queue"
 )
 
 const (

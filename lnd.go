@@ -28,7 +28,6 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	proxy "github.com/grpc-ecosystem/grpc-gateway/runtime"
-	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/ltcwallet/wallet"
 	"github.com/ltcsuite/neutrino"
@@ -51,22 +50,12 @@ import (
 	"github.com/ltcsuite/lnd/watchtower/wtdb"
 )
 
-var (
-	cfg              *config
-	registeredChains = newChainRegistry()
-
-	// networkDir is the path to the directory of the currently active
-	// network. This path will hold the files related to each different
-	// network.
-	networkDir string
-)
-
 // WalletUnlockerAuthOptions returns a list of DialOptions that can be used to
 // authenticate with the wallet unlocker service.
 //
 // NOTE: This should only be called after the WalletUnlocker listener has
 // signaled it is ready.
-func WalletUnlockerAuthOptions() ([]grpc.DialOption, error) {
+func WalletUnlockerAuthOptions(cfg *Config) ([]grpc.DialOption, error) {
 	creds, err := credentials.NewClientTLSFromFile(cfg.TLSCertPath, "")
 	if err != nil {
 		return nil, fmt.Errorf("unable to read TLS cert: %v", err)
@@ -85,7 +74,7 @@ func WalletUnlockerAuthOptions() ([]grpc.DialOption, error) {
 //
 // NOTE: This should only be called after the RPCListener has signaled it is
 // ready.
-func AdminAuthOptions() ([]grpc.DialOption, error) {
+func AdminAuthOptions(cfg *Config) ([]grpc.DialOption, error) {
 	creds, err := credentials.NewClientTLSFromFile(cfg.TLSCertPath, "")
 	if err != nil {
 		return nil, fmt.Errorf("unable to read TLS cert: %v", err)
@@ -119,6 +108,45 @@ func AdminAuthOptions() ([]grpc.DialOption, error) {
 	return opts, nil
 }
 
+// GrpcRegistrar is an interface that must be satisfied by an external subserver
+// that wants to be able to register its own gRPC server onto lnd's main
+// grpc.Server instance.
+type GrpcRegistrar interface {
+	// RegisterGrpcSubserver is called for each net.Listener on which lnd
+	// creates a grpc.Server instance. External subservers implementing this
+	// method can then register their own gRPC server structs to the main
+	// server instance.
+	RegisterGrpcSubserver(*grpc.Server) error
+}
+
+// RestRegistrar is an interface that must be satisfied by an external subserver
+// that wants to be able to register its own REST mux onto lnd's main
+// proxy.ServeMux instance.
+type RestRegistrar interface {
+	// RegisterRestSubserver is called after lnd creates the main
+	// proxy.ServeMux instance. External subservers implementing this method
+	// can then register their own REST proxy stubs to the main server
+	// instance.
+	RegisterRestSubserver(context.Context, *proxy.ServeMux, string,
+		[]grpc.DialOption) error
+}
+
+// RPCSubserverConfig is a struct that can be used to register an external
+// subserver with the custom permissions that map to the gRPC server that is
+// going to be registered with the GrpcRegistrar.
+type RPCSubserverConfig struct {
+	// Registrar is a callback that is invoked for each net.Listener on
+	// which lnd creates a grpc.Server instance.
+	Registrar GrpcRegistrar
+
+	// Permissions is the permissions required for the external subserver.
+	// It is a map between the full HTTP URI of each RPC and its required
+	// macaroon permissions. If multiple action/entity tuples are specified
+	// per URI, they are all required. See rpcserver.go for a list of valid
+	// action and entity values.
+	Permissions map[string][]bakery.Op
+}
+
 // ListenerWithSignal is a net.Listener that has an additional Ready channel that
 // will be closed when a server starts listening.
 type ListenerWithSignal struct {
@@ -126,6 +154,14 @@ type ListenerWithSignal struct {
 
 	// Ready will be closed by the server listening on Listener.
 	Ready chan struct{}
+
+	// ExternalRPCSubserverCfg is optional and specifies the registration
+	// callback and permissions to register external gRPC subservers.
+	ExternalRPCSubserverCfg *RPCSubserverConfig
+
+	// ExternalRestRegistrar is optional and specifies the registration
+	// callback to register external REST subservers.
+	ExternalRestRegistrar RestRegistrar
 }
 
 // ListenerCfg is a wrapper around custom listeners that can be passed to lnd
@@ -147,23 +183,14 @@ type ListenerCfg struct {
 // listeners.
 type rpcListeners func() ([]*ListenerWithSignal, func(), error)
 
-// Main is the true entry point for lnd. This function is required since defers
-// created in the top-level scope of a main method aren't executed if os.Exit()
-// is called.
-func Main(lisCfg ListenerCfg) error {
-	// Hook interceptor for os signals.
-	signal.Intercept()
-
-	// Load the configuration, and parse any command line options. This
-	// function will also set up logging properly.
-	loadedConfig, err := loadConfig()
-	if err != nil {
-		return err
-	}
-	cfg = loadedConfig
+// Main is the true entry point for lnd. It accepts a fully populated and
+// validated main configuration struct and an optional listener config struct.
+// This function starts all main system components then blocks until a signal
+// is received on the shutdownChan at which point everything is shut down again.
+func Main(cfg *Config, lisCfg ListenerCfg, shutdownChan <-chan struct{}) error {
 	defer func() {
 		ltndLog.Info("Shutdown complete")
-		err := logWriter.Close()
+		err := cfg.LogWriter.Close()
 		if err != nil {
 			ltndLog.Errorf("Could not close log rotator: %v", err)
 		}
@@ -190,7 +217,7 @@ func Main(lisCfg ListenerCfg) error {
 	}
 
 	ltndLog.Infof("Active chain: %v (network=%v)",
-		strings.Title(registeredChains.PrimaryChain().String()),
+		strings.Title(cfg.registeredChains.PrimaryChain().String()),
 		network,
 	)
 
@@ -209,7 +236,7 @@ func Main(lisCfg ListenerCfg) error {
 	if cfg.CPUProfile != "" {
 		f, err := os.Create(cfg.CPUProfile)
 		if err != nil {
-			err := fmt.Errorf("Unable to create CPU profile: %v",
+			err := fmt.Errorf("unable to create CPU profile: %v",
 				err)
 			ltndLog.Error(err)
 			return err
@@ -219,49 +246,25 @@ func Main(lisCfg ListenerCfg) error {
 		defer pprof.StopCPUProfile()
 	}
 
-	// Create the network-segmented directory for the channel database.
-	graphDir := filepath.Join(cfg.DataDir,
-		defaultGraphSubDirname,
-		normalizeNetwork(activeNetParams.Name))
-
-	ltndLog.Infof("Opening the main database, this might take a few " +
-		"minutes...")
-
-	// Open the channeldb, which is dedicated to storing channel, and
-	// network related metadata.
-	startOpenTime := time.Now()
-	chanDB, err := channeldb.Open(
-		graphDir,
-		channeldb.OptionSetRejectCacheSize(cfg.Caches.RejectCacheSize),
-		channeldb.OptionSetChannelCacheSize(cfg.Caches.ChannelCacheSize),
-		channeldb.OptionSetSyncFreelist(cfg.SyncFreelist),
-		channeldb.OptionDryRunMigration(cfg.DryRunMigration),
-	)
-	switch {
-	case err == channeldb.ErrDryRunMigrationOK:
-		ltndLog.Infof("%v, exiting", err)
-		return nil
-
-	case err != nil:
-		ltndLog.Errorf("Unable to open channeldb: %v", err)
-		return err
-	}
-	defer chanDB.Close()
-
-	openTime := time.Since(startOpenTime)
-	ltndLog.Infof("Database now open (time_to_open=%v)!", openTime)
-
-	// Only process macaroons if --no-macaroons isn't set.
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	tlsCfg, restCreds, restProxyDest, err := getTLSConfig(
-		cfg.TLSCertPath, cfg.TLSKeyPath, cfg.TLSExtraIPs,
-		cfg.TLSExtraDomains, cfg.RPCListeners,
-	)
+	localChanDB, remoteChanDB, cleanUp, err := initializeDatabases(ctx, cfg)
+	switch {
+	case err == channeldb.ErrDryRunMigrationOK:
+		ltndLog.Infof("%v, exiting", err)
+		return nil
+	case err != nil:
+		return fmt.Errorf("unable to open databases: %v", err)
+	}
+
+	defer cleanUp()
+
+	// Only process macaroons if --no-macaroons isn't set.
+	tlsCfg, restCreds, restProxyDest, err := getTLSConfig(cfg)
 	if err != nil {
-		err := fmt.Errorf("Unable to load TLS credentials: %v", err)
+		err := fmt.Errorf("unable to load TLS credentials: %v", err)
 		ltndLog.Error(err)
 		return err
 	}
@@ -285,16 +288,16 @@ func Main(lisCfg ListenerCfg) error {
 	// light client instance, if enabled, in order to allow it to sync
 	// while the rest of the daemon continues startup.
 	mainChain := cfg.Bitcoin
-	if registeredChains.PrimaryChain() == litecoinChain {
+	if cfg.registeredChains.PrimaryChain() == litecoinChain {
 		mainChain = cfg.Litecoin
 	}
 	var neutrinoCS *neutrino.ChainService
 	if mainChain.Node == "neutrino" {
 		neutrinoBackend, neutrinoCleanUp, err := initNeutrinoBackend(
-			mainChain.ChainDir,
+			cfg, mainChain.ChainDir,
 		)
 		if err != nil {
-			err := fmt.Errorf("Unable to initialize neutrino "+
+			err := fmt.Errorf("unable to initialize neutrino "+
 				"backend: %v", err)
 			ltndLog.Error(err)
 			return err
@@ -365,11 +368,11 @@ func Main(lisCfg ListenerCfg) error {
 	// for wallet encryption.
 	if !cfg.NoSeedBackup {
 		params, err := waitForWalletPassword(
-			cfg.RESTListeners, serverOpts, restDialOpts,
+			cfg, cfg.RESTListeners, serverOpts, restDialOpts,
 			restProxyDest, tlsCfg, walletUnlockerListeners,
 		)
 		if err != nil {
-			err := fmt.Errorf("Unable to set up wallet password "+
+			err := fmt.Errorf("unable to set up wallet password "+
 				"listeners: %v", err)
 			ltndLog.Error(err)
 			return err
@@ -390,10 +393,10 @@ func Main(lisCfg ListenerCfg) error {
 	if !cfg.NoMacaroons {
 		// Create the macaroon authentication/authorization service.
 		macaroonService, err = macaroons.NewService(
-			networkDir, macaroons.IPLockChecker,
+			cfg.networkDir, macaroons.IPLockChecker,
 		)
 		if err != nil {
-			err := fmt.Errorf("Unable to set up macaroon "+
+			err := fmt.Errorf("unable to set up macaroon "+
 				"authentication: %v", err)
 			ltndLog.Error(err)
 			return err
@@ -403,7 +406,7 @@ func Main(lisCfg ListenerCfg) error {
 		// Try to unlock the macaroon store with the private password.
 		err = macaroonService.CreateUnlock(&privateWalletPw)
 		if err != nil {
-			err := fmt.Errorf("Unable to unlock macaroons: %v", err)
+			err := fmt.Errorf("unable to unlock macaroons: %v", err)
 			ltndLog.Error(err)
 			return err
 		}
@@ -417,7 +420,7 @@ func Main(lisCfg ListenerCfg) error {
 				cfg.ReadMacPath, cfg.InvoiceMacPath,
 			)
 			if err != nil {
-				err := fmt.Errorf("Unable to create macaroons "+
+				err := fmt.Errorf("unable to create macaroons "+
 					"%v", err)
 				ltndLog.Error(err)
 				return err
@@ -428,13 +431,17 @@ func Main(lisCfg ListenerCfg) error {
 	// With the information parsed from the configuration, create valid
 	// instances of the pertinent interfaces required to operate the
 	// Lightning Network Daemon.
+	//
+	// When we create the chain control, we need storage for the height
+	// hints and also the wallet itself, for these two we want them to be
+	// replicated, so we'll pass in the remote channel DB instance.
 	activeChainControl, err := newChainControlFromConfig(
-		cfg, chanDB, privateWalletPw, publicWalletPw,
+		cfg, localChanDB, remoteChanDB, privateWalletPw, publicWalletPw,
 		walletInitParams.Birthday, walletInitParams.RecoveryWindow,
 		walletInitParams.Wallet, neutrinoCS,
 	)
 	if err != nil {
-		err := fmt.Errorf("Unable to create chain control: %v", err)
+		err := fmt.Errorf("unable to create chain control: %v", err)
 		ltndLog.Error(err)
 		return err
 	}
@@ -442,22 +449,21 @@ func Main(lisCfg ListenerCfg) error {
 	// Finally before we start the server, we'll register the "holy
 	// trinity" of interface for our current "home chain" with the active
 	// chainRegistry interface.
-	primaryChain := registeredChains.PrimaryChain()
-	registeredChains.RegisterChain(primaryChain, activeChainControl)
+	primaryChain := cfg.registeredChains.PrimaryChain()
+	cfg.registeredChains.RegisterChain(primaryChain, activeChainControl)
 
 	// TODO(roasbeef): add rotation
-	idPrivKey, err := activeChainControl.wallet.DerivePrivKey(keychain.KeyDescriptor{
-		KeyLocator: keychain.KeyLocator{
+	idKeyDesc, err := activeChainControl.keyRing.DeriveKey(
+		keychain.KeyLocator{
 			Family: keychain.KeyFamilyNodeKey,
 			Index:  0,
 		},
-	})
+	)
 	if err != nil {
-		err := fmt.Errorf("Unable to derive node private key: %v", err)
+		err := fmt.Errorf("error deriving node key: %v", err)
 		ltndLog.Error(err)
 		return err
 	}
-	idPrivKey.Curve = btcec.S256()
 
 	if cfg.Tor.Active {
 		srvrLog.Infof("Proxying all network traffic via Tor "+
@@ -470,9 +476,9 @@ func Main(lisCfg ListenerCfg) error {
 	var towerClientDB *wtdb.ClientDB
 	if cfg.WtClient.Active {
 		var err error
-		towerClientDB, err = wtdb.OpenClientDB(graphDir)
+		towerClientDB, err = wtdb.OpenClientDB(cfg.localDatabaseDir())
 		if err != nil {
-			err := fmt.Errorf("Unable to open watchtower client "+
+			err := fmt.Errorf("unable to open watchtower client "+
 				"database: %v", err)
 			ltndLog.Error(err)
 			return err
@@ -507,30 +513,27 @@ func Main(lisCfg ListenerCfg) error {
 		// Segment the watchtower directory by chain and network.
 		towerDBDir := filepath.Join(
 			cfg.Watchtower.TowerDir,
-			registeredChains.PrimaryChain().String(),
+			cfg.registeredChains.PrimaryChain().String(),
 			normalizeNetwork(activeNetParams.Name),
 		)
 
 		towerDB, err := wtdb.OpenTowerDB(towerDBDir)
 		if err != nil {
-			err := fmt.Errorf("Unable to open watchtower "+
+			err := fmt.Errorf("unable to open watchtower "+
 				"database: %v", err)
 			ltndLog.Error(err)
 			return err
 		}
 		defer towerDB.Close()
 
-		towerPrivKey, err := activeChainControl.wallet.DerivePrivKey(
-			keychain.KeyDescriptor{
-				KeyLocator: keychain.KeyLocator{
-					Family: keychain.KeyFamilyTowerID,
-					Index:  0,
-				},
+		towerKeyDesc, err := activeChainControl.keyRing.DeriveKey(
+			keychain.KeyLocator{
+				Family: keychain.KeyFamilyTowerID,
+				Index:  0,
 			},
 		)
 		if err != nil {
-			err := fmt.Errorf("Unable to derive watchtower "+
-				"private key: %v", err)
+			err := fmt.Errorf("error deriving tower key: %v", err)
 			ltndLog.Error(err)
 			return err
 		}
@@ -545,9 +548,11 @@ func Main(lisCfg ListenerCfg) error {
 					lnwallet.WitnessPubKey, false,
 				)
 			},
-			NodePrivKey: towerPrivKey,
-			PublishTx:   activeChainControl.wallet.PublishTransaction,
-			ChainHash:   *activeNetParams.GenesisHash,
+			NodeKeyECDH: keychain.NewPubKeyECDH(
+				towerKeyDesc, activeChainControl.keyRing,
+			),
+			PublishTx: activeChainControl.wallet.PublishTransaction,
+			ChainHash: *activeNetParams.GenesisHash,
 		}
 
 		// If there is a tor controller (user wants auto hidden services), then
@@ -566,7 +571,7 @@ func Main(lisCfg ListenerCfg) error {
 
 		wtConfig, err := cfg.Watchtower.Apply(wtCfg, lncfg.NormalizeAddresses)
 		if err != nil {
-			err := fmt.Errorf("Unable to configure watchtower: %v",
+			err := fmt.Errorf("unable to configure watchtower: %v",
 				err)
 			ltndLog.Error(err)
 			return err
@@ -574,7 +579,7 @@ func Main(lisCfg ListenerCfg) error {
 
 		tower, err = watchtower.New(wtConfig)
 		if err != nil {
-			err := fmt.Errorf("Unable to create watchtower: %v", err)
+			err := fmt.Errorf("unable to create watchtower: %v", err)
 			ltndLog.Error(err)
 			return err
 		}
@@ -586,12 +591,12 @@ func Main(lisCfg ListenerCfg) error {
 	// Set up the core server which will listen for incoming peer
 	// connections.
 	server, err := newServer(
-		cfg.Listeners, chanDB, towerClientDB, activeChainControl,
-		idPrivKey, walletInitParams.ChansToRestore, chainedAcceptor,
-		torController,
+		cfg, cfg.Listeners, localChanDB, remoteChanDB, towerClientDB,
+		activeChainControl, &idKeyDesc, walletInitParams.ChansToRestore,
+		chainedAcceptor, torController,
 	)
 	if err != nil {
-		err := fmt.Errorf("Unable to create server: %v", err)
+		err := fmt.Errorf("unable to create server: %v", err)
 		ltndLog.Error(err)
 		return err
 	}
@@ -601,19 +606,19 @@ func Main(lisCfg ListenerCfg) error {
 	// it at will.
 	atplCfg, err := initAutoPilot(server, cfg.Autopilot, mainChain)
 	if err != nil {
-		err := fmt.Errorf("Unable to initialize autopilot: %v", err)
+		err := fmt.Errorf("unable to initialize autopilot: %v", err)
 		ltndLog.Error(err)
 		return err
 	}
 
 	atplManager, err := autopilot.NewManager(atplCfg)
 	if err != nil {
-		err := fmt.Errorf("Unable to create autopilot manager: %v", err)
+		err := fmt.Errorf("unable to create autopilot manager: %v", err)
 		ltndLog.Error(err)
 		return err
 	}
 	if err := atplManager.Start(); err != nil {
-		err := fmt.Errorf("Unable to start autopilot manager: %v", err)
+		err := fmt.Errorf("unable to start autopilot manager: %v", err)
 		ltndLog.Error(err)
 		return err
 	}
@@ -636,17 +641,17 @@ func Main(lisCfg ListenerCfg) error {
 	// Initialize, and register our implementation of the gRPC interface
 	// exported by the rpcServer.
 	rpcServer, err := newRPCServer(
-		server, macaroonService, cfg.SubRPCServers, serverOpts,
+		cfg, server, macaroonService, cfg.SubRPCServers, serverOpts,
 		restDialOpts, restProxyDest, atplManager, server.invoices,
 		tower, tlsCfg, rpcListeners, chainedAcceptor,
 	)
 	if err != nil {
-		err := fmt.Errorf("Unable to create RPC server: %v", err)
+		err := fmt.Errorf("unable to create RPC server: %v", err)
 		ltndLog.Error(err)
 		return err
 	}
 	if err := rpcServer.Start(); err != nil {
-		err := fmt.Errorf("Unable to start RPC server: %v", err)
+		err := fmt.Errorf("unable to start RPC server: %v", err)
 		ltndLog.Error(err)
 		return err
 	}
@@ -661,7 +666,7 @@ func Main(lisCfg ListenerCfg) error {
 
 		_, bestHeight, err := activeChainControl.chainIO.GetBestBlock()
 		if err != nil {
-			err := fmt.Errorf("Unable to determine chain tip: %v",
+			err := fmt.Errorf("unable to determine chain tip: %v",
 				err)
 			ltndLog.Error(err)
 			return err
@@ -677,7 +682,7 @@ func Main(lisCfg ListenerCfg) error {
 
 			synced, _, err := activeChainControl.wallet.IsSynced()
 			if err != nil {
-				err := fmt.Errorf("Unable to determine if "+
+				err := fmt.Errorf("unable to determine if "+
 					"wallet is synced: %v", err)
 				ltndLog.Error(err)
 				return err
@@ -692,7 +697,7 @@ func Main(lisCfg ListenerCfg) error {
 
 		_, bestHeight, err = activeChainControl.chainIO.GetBestBlock()
 		if err != nil {
-			err := fmt.Errorf("Unable to determine chain tip: %v",
+			err := fmt.Errorf("unable to determine chain tip: %v",
 				err)
 			ltndLog.Error(err)
 			return err
@@ -705,7 +710,7 @@ func Main(lisCfg ListenerCfg) error {
 	// With all the relevant chains initialized, we can finally start the
 	// server itself.
 	if err := server.Start(); err != nil {
-		err := fmt.Errorf("Unable to start server: %v", err)
+		err := fmt.Errorf("unable to start server: %v", err)
 		ltndLog.Error(err)
 		return err
 	}
@@ -716,7 +721,7 @@ func Main(lisCfg ListenerCfg) error {
 	// stopped together with the autopilot service.
 	if cfg.Autopilot.Active {
 		if err := atplManager.StartAgent(); err != nil {
-			err := fmt.Errorf("Unable to start autopilot agent: %v",
+			err := fmt.Errorf("unable to start autopilot agent: %v",
 				err)
 			ltndLog.Error(err)
 			return err
@@ -725,7 +730,7 @@ func Main(lisCfg ListenerCfg) error {
 
 	if cfg.Watchtower.Active {
 		if err := tower.Start(); err != nil {
-			err := fmt.Errorf("Unable to start watchtower: %v", err)
+			err := fmt.Errorf("unable to start watchtower: %v", err)
 			ltndLog.Error(err)
 			return err
 		}
@@ -734,22 +739,21 @@ func Main(lisCfg ListenerCfg) error {
 
 	// Wait for shutdown signal from either a graceful server stop or from
 	// the interrupt handler.
-	<-signal.ShutdownChannel()
+	<-shutdownChan
 	return nil
 }
 
 // getTLSConfig returns a TLS configuration for the gRPC server and credentials
 // and a proxy destination for the REST reverse proxy.
-func getTLSConfig(tlsCertPath string, tlsKeyPath string, tlsExtraIPs,
-	tlsExtraDomains []string, rpcListeners []net.Addr) (*tls.Config,
-	*credentials.TransportCredentials, string, error) {
+func getTLSConfig(cfg *Config) (*tls.Config, *credentials.TransportCredentials,
+	string, error) {
 
 	// Ensure we create TLS key and certificate if they don't exist.
-	if !fileExists(tlsCertPath) && !fileExists(tlsKeyPath) {
+	if !fileExists(cfg.TLSCertPath) && !fileExists(cfg.TLSKeyPath) {
 		rpcsLog.Infof("Generating TLS certificates...")
 		err := cert.GenCertPair(
-			"lnd autogenerated cert", tlsCertPath, tlsKeyPath,
-			tlsExtraIPs, tlsExtraDomains,
+			"lnd autogenerated cert", cfg.TLSCertPath,
+			cfg.TLSKeyPath, cfg.TLSExtraIPs, cfg.TLSExtraDomains,
 			cert.DefaultAutogenValidity,
 		)
 		if err != nil {
@@ -758,7 +762,9 @@ func getTLSConfig(tlsCertPath string, tlsKeyPath string, tlsExtraIPs,
 		rpcsLog.Infof("Done generating TLS certificates")
 	}
 
-	certData, parsedCert, err := cert.LoadCert(tlsCertPath, tlsKeyPath)
+	certData, parsedCert, err := cert.LoadCert(
+		cfg.TLSCertPath, cfg.TLSKeyPath,
+	)
 	if err != nil {
 		return nil, nil, "", err
 	}
@@ -770,7 +776,7 @@ func getTLSConfig(tlsCertPath string, tlsKeyPath string, tlsExtraIPs,
 	refresh := false
 	if cfg.TLSAutoRefresh {
 		refresh, err = cert.IsOutdated(
-			parsedCert, tlsExtraIPs, tlsExtraDomains,
+			parsedCert, cfg.TLSExtraIPs, cfg.TLSExtraDomains,
 		)
 		if err != nil {
 			return nil, nil, "", err
@@ -783,20 +789,20 @@ func getTLSConfig(tlsCertPath string, tlsKeyPath string, tlsExtraIPs,
 		ltndLog.Info("TLS certificate is expired or outdated, " +
 			"generating a new one")
 
-		err := os.Remove(tlsCertPath)
+		err := os.Remove(cfg.TLSCertPath)
 		if err != nil {
 			return nil, nil, "", err
 		}
 
-		err = os.Remove(tlsKeyPath)
+		err = os.Remove(cfg.TLSKeyPath)
 		if err != nil {
 			return nil, nil, "", err
 		}
 
 		rpcsLog.Infof("Renewing TLS certificates...")
 		err = cert.GenCertPair(
-			"lnd autogenerated cert", tlsCertPath, tlsKeyPath,
-			tlsExtraIPs, tlsExtraDomains,
+			"lnd autogenerated cert", cfg.TLSCertPath,
+			cfg.TLSKeyPath, cfg.TLSExtraIPs, cfg.TLSExtraDomains,
 			cert.DefaultAutogenValidity,
 		)
 		if err != nil {
@@ -805,19 +811,21 @@ func getTLSConfig(tlsCertPath string, tlsKeyPath string, tlsExtraIPs,
 		rpcsLog.Infof("Done renewing TLS certificates")
 
 		// Reload the certificate data.
-		certData, _, err = cert.LoadCert(tlsCertPath, tlsKeyPath)
+		certData, _, err = cert.LoadCert(
+			cfg.TLSCertPath, cfg.TLSKeyPath,
+		)
 		if err != nil {
 			return nil, nil, "", err
 		}
 	}
 
 	tlsCfg := cert.TLSConfFromCert(certData)
-	restCreds, err := credentials.NewClientTLSFromFile(tlsCertPath, "")
+	restCreds, err := credentials.NewClientTLSFromFile(cfg.TLSCertPath, "")
 	if err != nil {
 		return nil, nil, "", err
 	}
 
-	restProxyDest := rpcListeners[0].String()
+	restProxyDest := cfg.RPCListeners[0].String()
 	switch {
 	case strings.Contains(restProxyDest, "0.0.0.0"):
 		restProxyDest = strings.Replace(
@@ -934,7 +942,7 @@ type WalletUnlockParams struct {
 // waitForWalletPassword will spin up gRPC and REST endpoints for the
 // WalletUnlocker server, and block until a password is provided by
 // the user to this RPC server.
-func waitForWalletPassword(restEndpoints []net.Addr,
+func waitForWalletPassword(cfg *Config, restEndpoints []net.Addr,
 	serverOpts []grpc.ServerOption, restDialOpts []grpc.DialOption,
 	restProxyDest string, tlsConf *tls.Config,
 	getListeners rpcListeners) (*WalletUnlockParams, error) {
@@ -953,7 +961,7 @@ func waitForWalletPassword(restEndpoints []net.Addr,
 	defer grpcServer.GracefulStop()
 
 	chainConfig := cfg.Bitcoin
-	if registeredChains.PrimaryChain() == litecoinChain {
+	if cfg.registeredChains.PrimaryChain() == litecoinChain {
 		chainConfig = cfg.Litecoin
 	}
 
@@ -962,7 +970,7 @@ func waitForWalletPassword(restEndpoints []net.Addr,
 	// deleted within it and recreated when successfully changing the
 	// wallet's password.
 	macaroonFiles := []string{
-		filepath.Join(networkDir, macaroons.DBFilename),
+		filepath.Join(cfg.networkDir, macaroons.DBFilename),
 		cfg.AdminMacPath, cfg.ReadMacPath, cfg.InvoiceMacPath,
 	}
 	pwService := walletunlocker.New(
@@ -1105,4 +1113,126 @@ func waitForWalletPassword(restEndpoints []net.Addr,
 	case <-signal.ShutdownChannel():
 		return nil, fmt.Errorf("shutting down")
 	}
+}
+
+// initializeDatabases extracts the current databases that we'll use for normal
+// operation in the daemon. Two databases are returned: one remote and one
+// local. However, only if the replicated database is active will the remote
+// database point to a unique database. Otherwise, the local and remote DB will
+// both point to the same local database. A function closure that closes all
+// opened databases is also returned.
+func initializeDatabases(ctx context.Context,
+	cfg *Config) (*channeldb.DB, *channeldb.DB, func(), error) {
+
+	ltndLog.Infof("Opening the main database, this might take a few " +
+		"minutes...")
+
+	if cfg.DB.Backend == lncfg.BoltBackend {
+		ltndLog.Infof("Opening bbolt database, sync_freelist=%v",
+			cfg.DB.Bolt.SyncFreelist)
+	}
+
+	startOpenTime := time.Now()
+
+	databaseBackends, err := cfg.DB.GetBackends(
+		ctx, cfg.localDatabaseDir(), cfg.networkName(),
+	)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("unable to obtain database "+
+			"backends: %v", err)
+	}
+
+	// If the remoteDB is nil, then we'll just open a local DB as normal,
+	// having the remote and local pointer be the exact same instance.
+	var (
+		localChanDB, remoteChanDB *channeldb.DB
+		closeFuncs                []func()
+	)
+	if databaseBackends.RemoteDB == nil {
+		// Open the channeldb, which is dedicated to storing channel,
+		// and network related metadata.
+		localChanDB, err = channeldb.CreateWithBackend(
+			databaseBackends.LocalDB,
+			channeldb.OptionSetRejectCacheSize(cfg.Caches.RejectCacheSize),
+			channeldb.OptionSetChannelCacheSize(cfg.Caches.ChannelCacheSize),
+			channeldb.OptionDryRunMigration(cfg.DryRunMigration),
+		)
+		switch {
+		case err == channeldb.ErrDryRunMigrationOK:
+			return nil, nil, nil, err
+
+		case err != nil:
+			err := fmt.Errorf("unable to open local channeldb: %v", err)
+			ltndLog.Error(err)
+			return nil, nil, nil, err
+		}
+
+		closeFuncs = append(closeFuncs, func() {
+			localChanDB.Close()
+		})
+
+		remoteChanDB = localChanDB
+	} else {
+		ltndLog.Infof("Database replication is available! Creating " +
+			"local and remote channeldb instances")
+
+		// Otherwise, we'll open two instances, one for the state we
+		// only need locally, and the other for things we want to
+		// ensure are replicated.
+		localChanDB, err = channeldb.CreateWithBackend(
+			databaseBackends.LocalDB,
+			channeldb.OptionSetRejectCacheSize(cfg.Caches.RejectCacheSize),
+			channeldb.OptionSetChannelCacheSize(cfg.Caches.ChannelCacheSize),
+			channeldb.OptionDryRunMigration(cfg.DryRunMigration),
+		)
+		switch {
+		// As we want to allow both versions to get thru the dry run
+		// migration, we'll only exit the second time here once the
+		// remote instance has had a time to migrate as well.
+		case err == channeldb.ErrDryRunMigrationOK:
+			ltndLog.Infof("Local DB dry run migration successful")
+
+		case err != nil:
+			err := fmt.Errorf("unable to open local channeldb: %v", err)
+			ltndLog.Error(err)
+			return nil, nil, nil, err
+		}
+
+		closeFuncs = append(closeFuncs, func() {
+			localChanDB.Close()
+		})
+
+		ltndLog.Infof("Opening replicated database instance...")
+
+		remoteChanDB, err = channeldb.CreateWithBackend(
+			databaseBackends.RemoteDB,
+			channeldb.OptionDryRunMigration(cfg.DryRunMigration),
+		)
+		switch {
+		case err == channeldb.ErrDryRunMigrationOK:
+			return nil, nil, nil, err
+
+		case err != nil:
+			localChanDB.Close()
+
+			err := fmt.Errorf("unable to open remote channeldb: %v", err)
+			ltndLog.Error(err)
+			return nil, nil, nil, err
+		}
+
+		closeFuncs = append(closeFuncs, func() {
+			remoteChanDB.Close()
+		})
+	}
+
+	openTime := time.Since(startOpenTime)
+	ltndLog.Infof("Database now open (time_to_open=%v)!", openTime)
+
+	cleanUp := func() {
+		for _, closeFunc := range closeFuncs {
+			closeFunc()
+		}
+	}
+
+	return localChanDB, remoteChanDB, cleanUp, nil
 }

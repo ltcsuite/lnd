@@ -6,11 +6,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/lnd/lnpeer"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/routing/route"
 	"github.com/ltcsuite/lnd/ticker"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 )
 
 const (

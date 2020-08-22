@@ -1,4 +1,4 @@
-FROM golang:1.13-alpine as builder
+FROM golang:1.14.5-alpine as builder
 
 # Force Go to use the cgo based DNS resolver. This is required to ensure DNS
 # queries required to connect to linked containers succeed.
@@ -26,9 +26,10 @@ FROM alpine as final
 # Define a root volume for data persistence.
 VOLUME /root/.lnd
 
-# Add bash and ca-certs, for quality of life and SSL-related reasons.
+# Add bash, jq and ca-certs, for quality of life and SSL-related reasons.
 RUN apk --no-cache add \
     bash \
+    jq \
     ca-certificates
 
 # Copy the binaries from the builder image.

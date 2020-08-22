@@ -5,9 +5,9 @@ import (
 	"net"
 	"testing"
 
+	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/lnd/channeldb"
 )
 
 type mockChannelSource struct {

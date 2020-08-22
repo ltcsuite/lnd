@@ -5,7 +5,6 @@ import (
 	"container/list"
 	"crypto/sha256"
 	"fmt"
-
 	"reflect"
 	"runtime"
 	"testing"
@@ -22,6 +21,7 @@ import (
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
+	"github.com/stretchr/testify/require"
 )
 
 // createHTLC is a utility function for generating an HTLC with a given
@@ -364,6 +364,106 @@ func TestSimpleAddSettleWorkflow(t *testing.T) {
 			testAddSettleWorkflow(t, tweakless)
 		})
 	}
+}
+
+// TestChannelZeroAddLocalHeight tests that we properly set the addCommitHeightLocal
+// field during state log restoration.
+//
+// The full state transition of this test is:
+//
+// Alice                   Bob
+//        -----add------>
+//        -----sig------>
+//        <----rev-------
+//        <----sig-------
+//        -----rev------>
+//        <---settle-----
+//        <----sig-------
+//        -----rev------>
+//          *alice dies*
+//        <----add-------
+//        x----sig-------
+//
+// The last sig will be rejected if addCommitHeightLocal is not set for the
+// initial add that Alice sent. This test checks that this behavior does
+// not occur and that we properly set the addCommitHeightLocal field.
+func TestChannelZeroAddLocalHeight(t *testing.T) {
+	t.Parallel()
+
+	// Create a test channel so that we can test the buggy behavior.
+	aliceChannel, bobChannel, cleanUp, err := CreateTestChannels(
+		channeldb.SingleFunderTweaklessBit,
+	)
+	require.NoError(t, err)
+	defer cleanUp()
+
+	// First we create an HTLC that Alice sends to Bob.
+	htlc, _ := createHTLC(0, lnwire.MilliSatoshi(500000))
+
+	// -----add----->
+	_, err = aliceChannel.AddHTLC(htlc, nil)
+	require.NoError(t, err)
+	_, err = bobChannel.ReceiveHTLC(htlc)
+	require.NoError(t, err)
+
+	// Force a state transition to lock in this add on both commitments.
+	// -----sig----->
+	// <----rev------
+	// <----sig------
+	// -----rev----->
+	err = ForceStateTransition(aliceChannel, bobChannel)
+	require.NoError(t, err)
+
+	// Now Bob should fail the htlc back to Alice.
+	// <----fail-----
+	err = bobChannel.FailHTLC(0, []byte("failreason"), nil, nil, nil)
+	require.NoError(t, err)
+	err = aliceChannel.ReceiveFailHTLC(0, []byte("bad"))
+	require.NoError(t, err)
+
+	// Bob should send a commitment signature to Alice.
+	// <----sig------
+	bobSig, bobHtlcSigs, _, err := bobChannel.SignNextCommitment()
+	require.NoError(t, err)
+
+	err = aliceChannel.ReceiveNewCommitment(bobSig, bobHtlcSigs)
+	require.NoError(t, err)
+
+	// Alice should reply with a revocation.
+	// -----rev----->
+	aliceRevocation, _, err := aliceChannel.RevokeCurrentCommitment()
+	require.NoError(t, err)
+
+	_, _, _, _, err = bobChannel.ReceiveRevocation(aliceRevocation)
+	require.NoError(t, err)
+
+	// We now restore Alice's channel as this was the point at which
+	// the addCommitHeightLocal field wouldn't be set, causing a force
+	// close.
+	newAliceChannel, err := NewLightningChannel(
+		aliceChannel.Signer, aliceChannel.channelState,
+		aliceChannel.sigPool,
+	)
+	require.NoError(t, err)
+
+	// Bob now sends an htlc to Alice
+	htlc2, _ := createHTLC(0, lnwire.MilliSatoshi(500000))
+
+	// <----add-----
+	_, err = bobChannel.AddHTLC(htlc2, nil)
+	require.NoError(t, err)
+	_, err = newAliceChannel.ReceiveHTLC(htlc2)
+	require.NoError(t, err)
+
+	// Bob should now send a commitment signature to Alice.
+	// <----sig-----
+	bobSig, bobHtlcSigs, _, err = bobChannel.SignNextCommitment()
+	require.NoError(t, err)
+
+	// Alice should accept the commitment. Previously she would
+	// force close here.
+	err = newAliceChannel.ReceiveNewCommitment(bobSig, bobHtlcSigs)
+	require.NoError(t, err)
 }
 
 // TestCheckCommitTxSize checks that estimation size of commitment
@@ -7019,7 +7119,7 @@ func restoreAndAssert(t *testing.T, channel *LightningChannel, numAddsLocal,
 	assertInLog(t, newChannel.remoteUpdateLog, numAddsRemote, numFailsRemote)
 }
 
-// TesstChannelRestoreUpdateLogsFailedHTLC runs through a scenario where an
+// TestChannelRestoreUpdateLogsFailedHTLC runs through a scenario where an
 // HTLC is added and failed, and asserts along the way that we would restore
 // the update logs of the channel to the expected state at any point.
 func TestChannelRestoreUpdateLogsFailedHTLC(t *testing.T) {
@@ -7124,10 +7224,10 @@ func TestChannelRestoreUpdateLogsFailedHTLC(t *testing.T) {
 	}
 
 	// When sending a new commitment, Alice will add a pending commit to
-	// here remote chain. In this case it doesn't contain any new updates,
-	// so it won't affect the restoration.
+	// her remote chain. Since the unsigned acked updates aren't deleted
+	// until we receive a revocation, the fail should still be present.
 	assertInLogs(t, aliceChannel, 1, 0, 0, 1)
-	restoreAndAssert(t, aliceChannel, 1, 0, 0, 0)
+	restoreAndAssert(t, aliceChannel, 1, 0, 0, 1)
 
 	// When Alice receives Bob's revocation, the Fail is irrevocably locked
 	// in on both sides. She should compact the logs, removing the HTLC and
@@ -7380,8 +7480,9 @@ func TestChannelRestoreCommitHeight(t *testing.T) {
 
 	// The HTLC should only be on the pending remote commitment, so the
 	// only the remote add height should be set during a restore.
-	aliceChannel = restoreAndAssertCommitHeights(t, aliceChannel, false,
-		0, 0, 1)
+	aliceChannel = restoreAndAssertCommitHeights(
+		t, aliceChannel, false, 0, 0, 1,
+	)
 
 	// Bob receives this commitment signature, and revokes his old state.
 	err = bobChannel.ReceiveNewCommitment(aliceSig, aliceHtlcSigs)
@@ -7406,8 +7507,9 @@ func TestChannelRestoreCommitHeight(t *testing.T) {
 
 	// However, the HTLC is still not locked into her local commitment, so
 	// the local add height should still be 0 after a restoration.
-	aliceChannel = restoreAndAssertCommitHeights(t, aliceChannel, false,
-		0, 0, 1)
+	aliceChannel = restoreAndAssertCommitHeights(
+		t, aliceChannel, false, 0, 0, 1,
+	)
 
 	// Now let Bob send the commitment signature making the HTLC lock in on
 	// Alice's commitment.
@@ -7431,8 +7533,9 @@ func TestChannelRestoreCommitHeight(t *testing.T) {
 	}
 
 	// Now both the local and remote add heights should be properly set.
-	aliceChannel = restoreAndAssertCommitHeights(t, aliceChannel, false,
-		0, 1, 1)
+	aliceChannel = restoreAndAssertCommitHeights(
+		t, aliceChannel, false, 0, 1, 1,
+	)
 
 	_, _, _, _, err = bobChannel.ReceiveRevocation(aliceRevocation)
 	if err != nil {
@@ -7463,10 +7566,12 @@ func TestChannelRestoreCommitHeight(t *testing.T) {
 
 	// A restoration should keep the add heights iof the first HTLC, and
 	// the new HTLC should have a remote add height 2.
-	aliceChannel = restoreAndAssertCommitHeights(t, aliceChannel, false,
-		0, 1, 1)
-	aliceChannel = restoreAndAssertCommitHeights(t, aliceChannel, false,
-		1, 0, 2)
+	aliceChannel = restoreAndAssertCommitHeights(
+		t, aliceChannel, false, 0, 1, 1,
+	)
+	aliceChannel = restoreAndAssertCommitHeights(
+		t, aliceChannel, false, 1, 0, 2,
+	)
 
 	err = bobChannel.ReceiveNewCommitment(aliceSig, aliceHtlcSigs)
 	if err != nil {
@@ -7484,6 +7589,21 @@ func TestChannelRestoreCommitHeight(t *testing.T) {
 	bobChannel = restoreAndAssertCommitHeights(t, bobChannel, true, 0, 2, 1)
 	bobChannel = restoreAndAssertCommitHeights(t, bobChannel, true, 1, 2, 0)
 
+	// Alice receives the revocation, ACKing her pending commitment for Bob.
+	_, _, _, _, err = aliceChannel.ReceiveRevocation(bobRevocation)
+	if err != nil {
+		t.Fatalf("unable to receive revocation: %v", err)
+	}
+
+	// Alice receiving Bob's revocation should bump both addCommitHeightRemote
+	// heights to 2.
+	aliceChannel = restoreAndAssertCommitHeights(
+		t, aliceChannel, false, 0, 1, 2,
+	)
+	aliceChannel = restoreAndAssertCommitHeights(
+		t, aliceChannel, false, 1, 0, 2,
+	)
+
 	// Sign a new state for Alice, making Bob have a pending remote
 	// commitment.
 	bobSig, bobHtlcSigs, _, err = bobChannel.SignNextCommitment()
@@ -7495,6 +7615,70 @@ func TestChannelRestoreCommitHeight(t *testing.T) {
 	// HTLC an add height.
 	bobChannel = restoreAndAssertCommitHeights(t, bobChannel, true, 0, 2, 1)
 	bobChannel = restoreAndAssertCommitHeights(t, bobChannel, true, 1, 2, 2)
+
+	// Alice should receive the commitment and send over a revocation.
+	err = aliceChannel.ReceiveNewCommitment(bobSig, bobHtlcSigs)
+	if err != nil {
+		t.Fatalf("unable to receive commitment: %v", err)
+	}
+	aliceRevocation, _, err = aliceChannel.RevokeCurrentCommitment()
+	if err != nil {
+		t.Fatalf("unable to revoke commitment: %v", err)
+	}
+
+	// Both heights should be 2 and they are on both commitments.
+	aliceChannel = restoreAndAssertCommitHeights(
+		t, aliceChannel, false, 0, 2, 2,
+	)
+	aliceChannel = restoreAndAssertCommitHeights(
+		t, aliceChannel, false, 1, 2, 2,
+	)
+
+	// Bob receives the revocation, which should set both addCommitHeightRemote
+	// fields to 2.
+	_, _, _, _, err = bobChannel.ReceiveRevocation(aliceRevocation)
+	if err != nil {
+		t.Fatalf("unable to receive revocation: %v", err)
+	}
+
+	bobChannel = restoreAndAssertCommitHeights(t, bobChannel, true, 0, 2, 2)
+	bobChannel = restoreAndAssertCommitHeights(t, bobChannel, true, 1, 2, 2)
+
+	// Bob now fails back the htlc that was just locked in.
+	err = bobChannel.FailHTLC(0, []byte("failreason"), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("unable to cancel HTLC: %v", err)
+	}
+	err = aliceChannel.ReceiveFailHTLC(0, []byte("bad"))
+	if err != nil {
+		t.Fatalf("unable to recv htlc cancel: %v", err)
+	}
+
+	// Now Bob signs for the fail update.
+	bobSig, bobHtlcSigs, _, err = bobChannel.SignNextCommitment()
+	if err != nil {
+		t.Fatalf("unable to sign commitment: %v", err)
+	}
+
+	// Bob has a pending commitment for Alice, it shouldn't affect the add
+	// commit heights though.
+	bobChannel = restoreAndAssertCommitHeights(t, bobChannel, true, 0, 2, 2)
+	_ = restoreAndAssertCommitHeights(t, bobChannel, true, 1, 2, 2)
+
+	// Alice receives commitment, sends revocation.
+	err = aliceChannel.ReceiveNewCommitment(bobSig, bobHtlcSigs)
+	if err != nil {
+		t.Fatalf("unable to receive commitment: %v", err)
+	}
+	_, _, err = aliceChannel.RevokeCurrentCommitment()
+	if err != nil {
+		t.Fatalf("unable to revoke commitment: %v", err)
+	}
+
+	aliceChannel = restoreAndAssertCommitHeights(
+		t, aliceChannel, false, 0, 3, 2,
+	)
+	_ = restoreAndAssertCommitHeights(t, aliceChannel, false, 1, 3, 2)
 }
 
 // TestForceCloseFailLocalDataLoss tests that we don't allow a force close of a
@@ -7675,4 +7859,1441 @@ func TestChannelFeeRateFloor(t *testing.T) {
 		t.Fatalf("bob unable to process alice's new commitment: %v",
 			err)
 	}
+}
+
+// TestFetchParent tests lookup of an entry's parent in the appropriate log.
+func TestFetchParent(t *testing.T) {
+	tests := []struct {
+		name          string
+		remoteChain   bool
+		remoteLog     bool
+		localEntries  []*PaymentDescriptor
+		remoteEntries []*PaymentDescriptor
+
+		// parentIndex is the parent index of the entry that we will
+		// lookup with fetch parent.
+		parentIndex uint64
+
+		// expectErr indicates that we expect fetch parent to fail.
+		expectErr bool
+
+		// expectedIndex is the htlc index that we expect the parent
+		// to have.
+		expectedIndex uint64
+	}{
+		{
+			name:          "not found in remote log",
+			localEntries:  nil,
+			remoteEntries: nil,
+			remoteChain:   true,
+			remoteLog:     true,
+			parentIndex:   0,
+			expectErr:     true,
+		},
+		{
+			name:          "not found in local log",
+			localEntries:  nil,
+			remoteEntries: nil,
+			remoteChain:   false,
+			remoteLog:     false,
+			parentIndex:   0,
+			expectErr:     true,
+		},
+		{
+			name:         "remote log + chain, remote add height 0",
+			localEntries: nil,
+			remoteEntries: []*PaymentDescriptor{
+				// This entry will be added at log index =0.
+				{
+					HtlcIndex:             1,
+					addCommitHeightLocal:  100,
+					addCommitHeightRemote: 100,
+				},
+				// This entry will be added at log index =1, it
+				// is the parent entry we are looking for.
+				{
+					HtlcIndex:             2,
+					addCommitHeightLocal:  100,
+					addCommitHeightRemote: 0,
+				},
+			},
+			remoteChain: true,
+			remoteLog:   true,
+			parentIndex: 1,
+			expectErr:   true,
+		},
+		{
+			name: "remote log, local chain, local add height 0",
+			remoteEntries: []*PaymentDescriptor{
+				// This entry will be added at log index =0.
+				{
+					HtlcIndex:             1,
+					addCommitHeightLocal:  100,
+					addCommitHeightRemote: 100,
+				},
+				// This entry will be added at log index =1, it
+				// is the parent entry we are looking for.
+				{
+					HtlcIndex:             2,
+					addCommitHeightLocal:  0,
+					addCommitHeightRemote: 100,
+				},
+			},
+			localEntries: nil,
+			remoteChain:  false,
+			remoteLog:    true,
+			parentIndex:  1,
+			expectErr:    true,
+		},
+		{
+			name: "local log + chain, local add height 0",
+			localEntries: []*PaymentDescriptor{
+				// This entry will be added at log index =0.
+				{
+					HtlcIndex:             1,
+					addCommitHeightLocal:  100,
+					addCommitHeightRemote: 100,
+				},
+				// This entry will be added at log index =1, it
+				// is the parent entry we are looking for.
+				{
+					HtlcIndex:             2,
+					addCommitHeightLocal:  0,
+					addCommitHeightRemote: 100,
+				},
+			},
+			remoteEntries: nil,
+			remoteChain:   false,
+			remoteLog:     false,
+			parentIndex:   1,
+			expectErr:     true,
+		},
+
+		{
+			name: "local log + remote chain, remote add height 0",
+			localEntries: []*PaymentDescriptor{
+				// This entry will be added at log index =0.
+				{
+					HtlcIndex:             1,
+					addCommitHeightLocal:  100,
+					addCommitHeightRemote: 100,
+				},
+				// This entry will be added at log index =1, it
+				// is the parent entry we are looking for.
+				{
+					HtlcIndex:             2,
+					addCommitHeightLocal:  100,
+					addCommitHeightRemote: 0,
+				},
+			},
+			remoteEntries: nil,
+			remoteChain:   true,
+			remoteLog:     false,
+			parentIndex:   1,
+			expectErr:     true,
+		},
+		{
+			name:         "remote log found",
+			localEntries: nil,
+			remoteEntries: []*PaymentDescriptor{
+				// This entry will be added at log index =0.
+				{
+					HtlcIndex:             1,
+					addCommitHeightLocal:  100,
+					addCommitHeightRemote: 0,
+				},
+				// This entry will be added at log index =1, it
+				// is the parent entry we are looking for.
+				{
+					HtlcIndex:             2,
+					addCommitHeightLocal:  100,
+					addCommitHeightRemote: 100,
+				},
+			},
+			remoteChain:   true,
+			remoteLog:     true,
+			parentIndex:   1,
+			expectErr:     false,
+			expectedIndex: 2,
+		},
+		{
+			name: "local log found",
+			localEntries: []*PaymentDescriptor{
+				// This entry will be added at log index =0.
+				{
+					HtlcIndex:             1,
+					addCommitHeightLocal:  0,
+					addCommitHeightRemote: 100,
+				},
+				// This entry will be added at log index =1, it
+				// is the parent entry we are looking for.
+				{
+					HtlcIndex:             2,
+					addCommitHeightLocal:  100,
+					addCommitHeightRemote: 100,
+				},
+			},
+			remoteEntries: nil,
+			remoteChain:   false,
+			remoteLog:     false,
+			parentIndex:   1,
+			expectErr:     false,
+			expectedIndex: 2,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			// Create a lightning channel with newly initialized
+			// local and remote logs.
+			lc := LightningChannel{
+				localUpdateLog:  newUpdateLog(0, 0),
+				remoteUpdateLog: newUpdateLog(0, 0),
+			}
+
+			// Add the local and remote entries to update logs.
+			for _, entry := range test.localEntries {
+				lc.localUpdateLog.appendHtlc(entry)
+			}
+			for _, entry := range test.remoteEntries {
+				lc.remoteUpdateLog.appendHtlc(entry)
+			}
+
+			parent, err := lc.fetchParent(
+				&PaymentDescriptor{
+					ParentIndex: test.parentIndex,
+				},
+				test.remoteChain,
+				test.remoteLog,
+			)
+			gotErr := err != nil
+			if test.expectErr != gotErr {
+				t.Fatalf("expected error: %v, got: %v, "+
+					"error:%v", test.expectErr, gotErr, err)
+			}
+
+			// If our lookup failed, we do not need to check parent
+			// index.
+			if err != nil {
+				return
+			}
+
+			if parent.HtlcIndex != test.expectedIndex {
+				t.Fatalf("expected parent index: %v, got: %v",
+					test.parentIndex, parent.HtlcIndex)
+			}
+		})
+
+	}
+}
+
+// TestEvaluateView tests the creation of a htlc view and the opt in mutation of
+// send and receive balances. This test does not check htlc mutation on a htlc
+// level.
+func TestEvaluateView(t *testing.T) {
+	const (
+		// addHeight is a non-zero height that is used for htlc adds.
+		addHeight = 200
+
+		// nextHeight is a constant that we use for the next height in
+		// all unit tests.
+		nextHeight = 400
+
+		// feePerKw is the fee we start all of our unit tests with.
+		feePerKw = 1
+
+		// htlcAddAmount is the amount for htlc adds in tests.
+		htlcAddAmount = 15
+
+		// ourFeeUpdateAmt is an amount that we update fees to
+		// expressed in msat.
+		ourFeeUpdateAmt = 20000
+
+		// ourFeeUpdatePerSat is the fee rate *in satoshis* that we
+		// expect if we update to ourFeeUpdateAmt.
+		ourFeeUpdatePerSat = chainfee.SatPerKWeight(20)
+
+		// theirFeeUpdateAmt iis an amount that they update fees to
+		// expressed in msat.
+		theirFeeUpdateAmt = 10000
+
+		// theirFeeUpdatePerSat is the fee rate *in satoshis* that we
+		// expect if we update to ourFeeUpdateAmt.
+		theirFeeUpdatePerSat = chainfee.SatPerKWeight(10)
+	)
+
+	tests := []struct {
+		name        string
+		ourHtlcs    []*PaymentDescriptor
+		theirHtlcs  []*PaymentDescriptor
+		remoteChain bool
+		mutateState bool
+
+		// ourExpectedHtlcs is the set of our htlcs that we expect in
+		// the htlc view once it has been evaluated. We just store
+		// htlc index -> bool for brevity, because we only check the
+		// presence of the htlc in the returned set.
+		ourExpectedHtlcs map[uint64]bool
+
+		// theirExpectedHtlcs is the set of their htlcs that we expect
+		// in the htlc view once it has been evaluated. We just store
+		// htlc index -> bool for brevity, because we only check the
+		// presence of the htlc in the returned set.
+		theirExpectedHtlcs map[uint64]bool
+
+		// expectedFee is the fee we expect to be set after evaluating
+		// the htlc view.
+		expectedFee chainfee.SatPerKWeight
+
+		// expectReceived is the amount we expect the channel to have
+		// tracked as our receive total.
+		expectReceived lnwire.MilliSatoshi
+
+		// expectSent is the amount we expect the channel to have
+		// tracked as our send total.
+		expectSent lnwire.MilliSatoshi
+	}{
+		{
+			name:        "our fee update is applied",
+			remoteChain: false,
+			mutateState: false,
+			ourHtlcs: []*PaymentDescriptor{
+				{
+					Amount:    ourFeeUpdateAmt,
+					EntryType: FeeUpdate,
+				},
+			},
+			theirHtlcs:         nil,
+			expectedFee:        ourFeeUpdatePerSat,
+			ourExpectedHtlcs:   nil,
+			theirExpectedHtlcs: nil,
+			expectReceived:     0,
+			expectSent:         0,
+		},
+		{
+			name:        "their fee update is applied",
+			remoteChain: false,
+			mutateState: false,
+			ourHtlcs:    []*PaymentDescriptor{},
+			theirHtlcs: []*PaymentDescriptor{
+				{
+					Amount:    theirFeeUpdateAmt,
+					EntryType: FeeUpdate,
+				},
+			},
+			expectedFee:        theirFeeUpdatePerSat,
+			ourExpectedHtlcs:   nil,
+			theirExpectedHtlcs: nil,
+			expectReceived:     0,
+			expectSent:         0,
+		},
+		{
+			// We expect unresolved htlcs to to remain in the view.
+			name:        "htlcs adds without settles",
+			remoteChain: false,
+			mutateState: false,
+			ourHtlcs: []*PaymentDescriptor{
+				{
+					HtlcIndex: 0,
+					Amount:    htlcAddAmount,
+					EntryType: Add,
+				},
+			},
+			theirHtlcs: []*PaymentDescriptor{
+				{
+					HtlcIndex: 0,
+					Amount:    htlcAddAmount,
+					EntryType: Add,
+				},
+				{
+					HtlcIndex: 1,
+					Amount:    htlcAddAmount,
+					EntryType: Add,
+				},
+			},
+			expectedFee: feePerKw,
+			ourExpectedHtlcs: map[uint64]bool{
+				0: true,
+			},
+			theirExpectedHtlcs: map[uint64]bool{
+				0: true,
+				1: true,
+			},
+			expectReceived: 0,
+			expectSent:     0,
+		},
+		{
+			name:        "our htlc settled, state mutated",
+			remoteChain: false,
+			mutateState: true,
+			ourHtlcs: []*PaymentDescriptor{
+				{
+					HtlcIndex:            0,
+					Amount:               htlcAddAmount,
+					EntryType:            Add,
+					addCommitHeightLocal: addHeight,
+				},
+			},
+			theirHtlcs: []*PaymentDescriptor{
+				{
+					HtlcIndex: 0,
+					Amount:    htlcAddAmount,
+					EntryType: Add,
+				},
+				{
+					HtlcIndex: 1,
+					Amount:    htlcAddAmount,
+					EntryType: Settle,
+					// Map their htlc settle update to our
+					// htlc add (0).
+					ParentIndex: 0,
+				},
+			},
+			expectedFee:      feePerKw,
+			ourExpectedHtlcs: nil,
+			theirExpectedHtlcs: map[uint64]bool{
+				0: true,
+			},
+			expectReceived: 0,
+			expectSent:     htlcAddAmount,
+		},
+		{
+			name:        "our htlc settled, state not mutated",
+			remoteChain: false,
+			mutateState: false,
+			ourHtlcs: []*PaymentDescriptor{
+				{
+					HtlcIndex:            0,
+					Amount:               htlcAddAmount,
+					EntryType:            Add,
+					addCommitHeightLocal: addHeight,
+				},
+			},
+			theirHtlcs: []*PaymentDescriptor{
+				{
+					HtlcIndex: 0,
+					Amount:    htlcAddAmount,
+					EntryType: Add,
+				},
+				{
+					HtlcIndex: 1,
+					Amount:    htlcAddAmount,
+					EntryType: Settle,
+					// Map their htlc settle update to our
+					// htlc add (0).
+					ParentIndex: 0,
+				},
+			},
+			expectedFee:      feePerKw,
+			ourExpectedHtlcs: nil,
+			theirExpectedHtlcs: map[uint64]bool{
+				0: true,
+			},
+			expectReceived: 0,
+			expectSent:     0,
+		},
+		{
+			name:        "their htlc settled, state mutated",
+			remoteChain: false,
+			mutateState: true,
+			ourHtlcs: []*PaymentDescriptor{
+				{
+					HtlcIndex: 0,
+					Amount:    htlcAddAmount,
+					EntryType: Add,
+				},
+				{
+					HtlcIndex: 1,
+					Amount:    htlcAddAmount,
+					EntryType: Settle,
+					// Map our htlc settle update to their
+					// htlc add (1).
+					ParentIndex: 1,
+				},
+			},
+			theirHtlcs: []*PaymentDescriptor{
+				{
+					HtlcIndex:            0,
+					Amount:               htlcAddAmount,
+					EntryType:            Add,
+					addCommitHeightLocal: addHeight,
+				},
+				{
+					HtlcIndex:            1,
+					Amount:               htlcAddAmount,
+					EntryType:            Add,
+					addCommitHeightLocal: addHeight,
+				},
+			},
+			expectedFee: feePerKw,
+			ourExpectedHtlcs: map[uint64]bool{
+				0: true,
+			},
+			theirExpectedHtlcs: map[uint64]bool{
+				0: true,
+			},
+			expectReceived: htlcAddAmount,
+			expectSent:     0,
+		},
+		{
+			name:        "their htlc settled, state not mutated",
+			remoteChain: false,
+			mutateState: false,
+			ourHtlcs: []*PaymentDescriptor{
+				{
+					HtlcIndex: 0,
+					Amount:    htlcAddAmount,
+					EntryType: Add,
+				},
+				{
+					HtlcIndex: 1,
+					Amount:    htlcAddAmount,
+					EntryType: Settle,
+					// Map our htlc settle update to their
+					// htlc add (0).
+					ParentIndex: 0,
+				},
+			},
+			theirHtlcs: []*PaymentDescriptor{
+				{
+					HtlcIndex:            0,
+					Amount:               htlcAddAmount,
+					EntryType:            Add,
+					addCommitHeightLocal: addHeight,
+				},
+			},
+			expectedFee: feePerKw,
+			ourExpectedHtlcs: map[uint64]bool{
+				0: true,
+			},
+			theirExpectedHtlcs: nil,
+			expectReceived:     0,
+			expectSent:         0,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			lc := LightningChannel{
+				channelState: &channeldb.OpenChannel{
+					TotalMSatSent:     0,
+					TotalMSatReceived: 0,
+				},
+
+				// Create update logs for local and remote.
+				localUpdateLog:  newUpdateLog(0, 0),
+				remoteUpdateLog: newUpdateLog(0, 0),
+			}
+
+			for _, htlc := range test.ourHtlcs {
+				if htlc.EntryType == Add {
+					lc.localUpdateLog.appendHtlc(htlc)
+				} else {
+					lc.localUpdateLog.appendUpdate(htlc)
+				}
+			}
+
+			for _, htlc := range test.theirHtlcs {
+				if htlc.EntryType == Add {
+					lc.remoteUpdateLog.appendHtlc(htlc)
+				} else {
+					lc.remoteUpdateLog.appendUpdate(htlc)
+				}
+			}
+
+			view := &htlcView{
+				ourUpdates:   test.ourHtlcs,
+				theirUpdates: test.theirHtlcs,
+				feePerKw:     feePerKw,
+			}
+
+			var (
+				// Create vars to store balance changes. We do
+				// not check these values in this test because
+				// balance modification happens on the htlc
+				// processing level.
+				ourBalance   lnwire.MilliSatoshi
+				theirBalance lnwire.MilliSatoshi
+			)
+
+			// Evaluate the htlc view, mutate as test expects.
+			result, err := lc.evaluateHTLCView(
+				view, &ourBalance, &theirBalance, nextHeight,
+				test.remoteChain, test.mutateState,
+			)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if result.feePerKw != test.expectedFee {
+				t.Fatalf("expected fee: %v, got: %v",
+					test.expectedFee, result.feePerKw)
+			}
+
+			checkExpectedHtlcs(
+				t, result.ourUpdates, test.ourExpectedHtlcs,
+			)
+
+			checkExpectedHtlcs(
+				t, result.theirUpdates, test.theirExpectedHtlcs,
+			)
+
+			if lc.channelState.TotalMSatSent != test.expectSent {
+				t.Fatalf("expected sent: %v, got: %v",
+					test.expectSent,
+					lc.channelState.TotalMSatSent)
+			}
+
+			if lc.channelState.TotalMSatReceived !=
+				test.expectReceived {
+
+				t.Fatalf("expected received: %v, got: %v",
+					test.expectReceived,
+					lc.channelState.TotalMSatReceived)
+			}
+		})
+	}
+}
+
+// checkExpectedHtlcs checks that a set of htlcs that we have contains all the
+// htlcs we expect.
+func checkExpectedHtlcs(t *testing.T, actual []*PaymentDescriptor,
+	expected map[uint64]bool) {
+
+	if len(expected) != len(actual) {
+		t.Fatalf("expected: %v htlcs, got: %v",
+			len(expected), len(actual))
+	}
+
+	for _, htlc := range actual {
+		_, ok := expected[htlc.HtlcIndex]
+		if !ok {
+			t.Fatalf("htlc with index: %v not "+
+				"expected in set", htlc.HtlcIndex)
+		}
+	}
+}
+
+// heights represents the heights on a payment descriptor.
+type heights struct {
+	localAdd     uint64
+	localRemove  uint64
+	remoteAdd    uint64
+	remoteRemove uint64
+}
+
+// TestProcessFeeUpdate tests the applying of fee updates and mutation of
+// local and remote add and remove heights on update messages.
+func TestProcessFeeUpdate(t *testing.T) {
+	const (
+		// height is a non-zero height that can be used for htlcs
+		// heights.
+		height = 200
+
+		// nextHeight is a constant that we use for the next height in
+		// all unit tests.
+		nextHeight = 400
+
+		// feePerKw is the fee we start all of our unit tests with.
+		feePerKw = 1
+
+		// ourFeeUpdateAmt is an amount that we update fees to expressed
+		// in msat.
+		ourFeeUpdateAmt = 20000
+
+		// ourFeeUpdatePerSat is the fee rate *in satoshis* that we
+		// expect if we update to ourFeeUpdateAmt.
+		ourFeeUpdatePerSat = chainfee.SatPerKWeight(20)
+	)
+
+	tests := []struct {
+		name            string
+		startHeights    heights
+		expectedHeights heights
+		remoteChain     bool
+		mutate          bool
+		expectedFee     chainfee.SatPerKWeight
+	}{
+		{
+			// Looking at local chain, local add is non-zero so
+			// the update has been applied already; no fee change.
+			name: "non-zero local height, fee unchanged",
+			startHeights: heights{
+				localAdd:     height,
+				localRemove:  0,
+				remoteAdd:    0,
+				remoteRemove: height,
+			},
+			expectedHeights: heights{
+				localAdd:     height,
+				localRemove:  0,
+				remoteAdd:    0,
+				remoteRemove: height,
+			},
+			remoteChain: false,
+			mutate:      false,
+			expectedFee: feePerKw,
+		},
+		{
+			// Looking at local chain, local add is zero so the
+			// update has not been applied yet; we expect a fee
+			// update.
+			name: "zero local height, fee changed",
+			startHeights: heights{
+				localAdd:     0,
+				localRemove:  0,
+				remoteAdd:    height,
+				remoteRemove: 0,
+			},
+			expectedHeights: heights{
+				localAdd:     0,
+				localRemove:  0,
+				remoteAdd:    height,
+				remoteRemove: 0,
+			},
+			remoteChain: false,
+			mutate:      false,
+			expectedFee: ourFeeUpdatePerSat,
+		},
+		{
+			// Looking at remote chain, the remote add height is
+			// zero, so the update has not been applied so we expect
+			// a fee change.
+			name: "zero remote height, fee changed",
+			startHeights: heights{
+				localAdd:     height,
+				localRemove:  0,
+				remoteAdd:    0,
+				remoteRemove: 0,
+			},
+			expectedHeights: heights{
+				localAdd:     height,
+				localRemove:  0,
+				remoteAdd:    0,
+				remoteRemove: 0,
+			},
+			remoteChain: true,
+			mutate:      false,
+			expectedFee: ourFeeUpdatePerSat,
+		},
+		{
+			// Looking at remote chain, the remote add height is
+			// non-zero, so the update has been applied so we expect
+			// no fee change.
+			name: "non-zero remote height, no fee change",
+			startHeights: heights{
+				localAdd:     height,
+				localRemove:  0,
+				remoteAdd:    height,
+				remoteRemove: 0,
+			},
+			expectedHeights: heights{
+				localAdd:     height,
+				localRemove:  0,
+				remoteAdd:    height,
+				remoteRemove: 0,
+			},
+			remoteChain: true,
+			mutate:      false,
+			expectedFee: feePerKw,
+		},
+		{
+			// Local add height is non-zero, so the update has
+			// already been applied; we do not expect fee to
+			// change or any mutations to be applied.
+			name: "non-zero local height, mutation not applied",
+			startHeights: heights{
+				localAdd:     height,
+				localRemove:  0,
+				remoteAdd:    0,
+				remoteRemove: height,
+			},
+			expectedHeights: heights{
+				localAdd:     height,
+				localRemove:  0,
+				remoteAdd:    0,
+				remoteRemove: height,
+			},
+			remoteChain: false,
+			mutate:      true,
+			expectedFee: feePerKw,
+		},
+		{
+			// Local add is zero and we are looking at our local
+			// chain, so the update has not been applied yet. We
+			// expect the local add and remote heights to be
+			// mutated.
+			name: "zero height, fee changed, mutation applied",
+			startHeights: heights{
+				localAdd:     0,
+				localRemove:  0,
+				remoteAdd:    0,
+				remoteRemove: 0,
+			},
+			expectedHeights: heights{
+				localAdd:     nextHeight,
+				localRemove:  nextHeight,
+				remoteAdd:    0,
+				remoteRemove: 0,
+			},
+			remoteChain: false,
+			mutate:      true,
+			expectedFee: ourFeeUpdatePerSat,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			// Create a fee update with add and remove heights as
+			// set in the test.
+			heights := test.startHeights
+			update := &PaymentDescriptor{
+				Amount:                   ourFeeUpdateAmt,
+				addCommitHeightRemote:    heights.remoteAdd,
+				addCommitHeightLocal:     heights.localAdd,
+				removeCommitHeightRemote: heights.remoteRemove,
+				removeCommitHeightLocal:  heights.localRemove,
+				EntryType:                FeeUpdate,
+			}
+
+			view := &htlcView{
+				feePerKw: chainfee.SatPerKWeight(feePerKw),
+			}
+			processFeeUpdate(
+				update, nextHeight, test.remoteChain,
+				test.mutate, view,
+			)
+
+			if view.feePerKw != test.expectedFee {
+				t.Fatalf("expected fee: %v, got: %v",
+					test.expectedFee, feePerKw)
+			}
+
+			checkHeights(t, update, test.expectedHeights)
+		})
+	}
+}
+
+func checkHeights(t *testing.T, update *PaymentDescriptor, expected heights) {
+	updateHeights := heights{
+		localAdd:     update.addCommitHeightLocal,
+		localRemove:  update.removeCommitHeightLocal,
+		remoteAdd:    update.addCommitHeightRemote,
+		remoteRemove: update.removeCommitHeightRemote,
+	}
+
+	if !reflect.DeepEqual(updateHeights, expected) {
+		t.Fatalf("expected: %v, got: %v", expected, updateHeights)
+	}
+}
+
+// TestProcessAddRemoveEntry tests the updating of our and their balances when
+// we process adds, settles and fails. It also tests the mutating of add and
+// remove heights.
+func TestProcessAddRemoveEntry(t *testing.T) {
+	const (
+		// addHeight is a non-zero addHeight that is used for htlc
+		// add heights.
+		addHeight = 100
+
+		// removeHeight is a non-zero removeHeight that is used for
+		// htlc remove heights.
+		removeHeight = 200
+
+		// nextHeight is a constant that we use for the nextHeight in
+		// all unit tests.
+		nextHeight = 400
+
+		// updateAmount is the amount that the update is set to.
+		updateAmount = lnwire.MilliSatoshi(10)
+
+		// startBalance is a balance we start both sides out with
+		// so that balances can be incremented.
+		startBalance = lnwire.MilliSatoshi(100)
+	)
+
+	tests := []struct {
+		name                 string
+		startHeights         heights
+		remoteChain          bool
+		isIncoming           bool
+		mutateState          bool
+		ourExpectedBalance   lnwire.MilliSatoshi
+		theirExpectedBalance lnwire.MilliSatoshi
+		expectedHeights      heights
+		updateType           updateType
+	}{
+		{
+			name: "add, remote chain, already processed",
+			startHeights: heights{
+				localAdd:     0,
+				remoteAdd:    addHeight,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			remoteChain:          true,
+			isIncoming:           false,
+			mutateState:          false,
+			ourExpectedBalance:   startBalance,
+			theirExpectedBalance: startBalance,
+			expectedHeights: heights{
+				localAdd:     0,
+				remoteAdd:    addHeight,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			updateType: Add,
+		},
+		{
+			name: "add, local chain, already processed",
+			startHeights: heights{
+				localAdd:     addHeight,
+				remoteAdd:    0,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			remoteChain:          false,
+			isIncoming:           false,
+			mutateState:          false,
+			ourExpectedBalance:   startBalance,
+			theirExpectedBalance: startBalance,
+			expectedHeights: heights{
+				localAdd:     addHeight,
+				remoteAdd:    0,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			updateType: Add,
+		},
+		{
+			name: "incoming add, local chain, not mutated",
+			startHeights: heights{
+				localAdd:     0,
+				remoteAdd:    0,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			remoteChain:          false,
+			isIncoming:           true,
+			mutateState:          false,
+			ourExpectedBalance:   startBalance,
+			theirExpectedBalance: startBalance - updateAmount,
+			expectedHeights: heights{
+				localAdd:     0,
+				remoteAdd:    0,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			updateType: Add,
+		},
+		{
+			name: "incoming add, local chain, mutated",
+			startHeights: heights{
+				localAdd:     0,
+				remoteAdd:    0,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			remoteChain:          false,
+			isIncoming:           true,
+			mutateState:          true,
+			ourExpectedBalance:   startBalance,
+			theirExpectedBalance: startBalance - updateAmount,
+			expectedHeights: heights{
+				localAdd:     nextHeight,
+				remoteAdd:    0,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			updateType: Add,
+		},
+
+		{
+			name: "outgoing add, remote chain, not mutated",
+			startHeights: heights{
+				localAdd:     0,
+				remoteAdd:    0,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			remoteChain:          true,
+			isIncoming:           false,
+			mutateState:          false,
+			ourExpectedBalance:   startBalance - updateAmount,
+			theirExpectedBalance: startBalance,
+			expectedHeights: heights{
+				localAdd:     0,
+				remoteAdd:    0,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			updateType: Add,
+		},
+		{
+			name: "outgoing add, remote chain, mutated",
+			startHeights: heights{
+				localAdd:     0,
+				remoteAdd:    0,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			remoteChain:          true,
+			isIncoming:           false,
+			mutateState:          true,
+			ourExpectedBalance:   startBalance - updateAmount,
+			theirExpectedBalance: startBalance,
+			expectedHeights: heights{
+				localAdd:     0,
+				remoteAdd:    nextHeight,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			updateType: Add,
+		},
+		{
+			name: "settle, remote chain, already processed",
+			startHeights: heights{
+				localAdd:     addHeight,
+				remoteAdd:    addHeight,
+				localRemove:  0,
+				remoteRemove: removeHeight,
+			},
+			remoteChain:          true,
+			isIncoming:           false,
+			mutateState:          false,
+			ourExpectedBalance:   startBalance,
+			theirExpectedBalance: startBalance,
+			expectedHeights: heights{
+				localAdd:     addHeight,
+				remoteAdd:    addHeight,
+				localRemove:  0,
+				remoteRemove: removeHeight,
+			},
+			updateType: Settle,
+		},
+		{
+			name: "settle, local chain, already processed",
+			startHeights: heights{
+				localAdd:     addHeight,
+				remoteAdd:    addHeight,
+				localRemove:  removeHeight,
+				remoteRemove: 0,
+			},
+			remoteChain:          false,
+			isIncoming:           false,
+			mutateState:          false,
+			ourExpectedBalance:   startBalance,
+			theirExpectedBalance: startBalance,
+			expectedHeights: heights{
+				localAdd:     addHeight,
+				remoteAdd:    addHeight,
+				localRemove:  removeHeight,
+				remoteRemove: 0,
+			},
+			updateType: Settle,
+		},
+		{
+			// Remote chain, and not processed yet. Incoming settle,
+			// so we expect our balance to increase.
+			name: "incoming settle",
+			startHeights: heights{
+				localAdd:     addHeight,
+				remoteAdd:    addHeight,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			remoteChain:          true,
+			isIncoming:           true,
+			mutateState:          false,
+			ourExpectedBalance:   startBalance + updateAmount,
+			theirExpectedBalance: startBalance,
+			expectedHeights: heights{
+				localAdd:     addHeight,
+				remoteAdd:    addHeight,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			updateType: Settle,
+		},
+		{
+			// Remote chain, and not processed yet. Incoming settle,
+			// so we expect our balance to increase.
+			name: "outgoing settle",
+			startHeights: heights{
+				localAdd:     addHeight,
+				remoteAdd:    addHeight,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			remoteChain:          true,
+			isIncoming:           false,
+			mutateState:          false,
+			ourExpectedBalance:   startBalance,
+			theirExpectedBalance: startBalance + updateAmount,
+			expectedHeights: heights{
+				localAdd:     addHeight,
+				remoteAdd:    addHeight,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			updateType: Settle,
+		},
+		{
+			// Remote chain, and not processed yet. Incoming fail,
+			// so we expect their balance to increase.
+			name: "incoming fail",
+			startHeights: heights{
+				localAdd:     addHeight,
+				remoteAdd:    addHeight,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			remoteChain:          true,
+			isIncoming:           true,
+			mutateState:          false,
+			ourExpectedBalance:   startBalance,
+			theirExpectedBalance: startBalance + updateAmount,
+			expectedHeights: heights{
+				localAdd:     addHeight,
+				remoteAdd:    addHeight,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			updateType: Fail,
+		},
+		{
+			// Remote chain, and not processed yet. Outgoing fail,
+			// so we expect our balance to increase.
+			name: "outgoing fail",
+			startHeights: heights{
+				localAdd:     addHeight,
+				remoteAdd:    addHeight,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			remoteChain:          true,
+			isIncoming:           false,
+			mutateState:          false,
+			ourExpectedBalance:   startBalance + updateAmount,
+			theirExpectedBalance: startBalance,
+			expectedHeights: heights{
+				localAdd:     addHeight,
+				remoteAdd:    addHeight,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			updateType: Fail,
+		},
+		{
+			// Local chain, and not processed yet. Incoming settle,
+			// so we expect our balance to increase. Mutate is
+			// true, so we expect our remove removeHeight to have
+			// changed.
+			name: "fail, our remove height mutated",
+			startHeights: heights{
+				localAdd:     addHeight,
+				remoteAdd:    addHeight,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			remoteChain:          false,
+			isIncoming:           true,
+			mutateState:          true,
+			ourExpectedBalance:   startBalance + updateAmount,
+			theirExpectedBalance: startBalance,
+			expectedHeights: heights{
+				localAdd:     addHeight,
+				remoteAdd:    addHeight,
+				localRemove:  nextHeight,
+				remoteRemove: 0,
+			},
+			updateType: Settle,
+		},
+		{
+			// Remote chain, and not processed yet. Incoming settle,
+			// so we expect our balance to increase. Mutate is
+			// true, so we expect their remove removeHeight to have
+			// changed.
+			name: "fail, their remove height mutated",
+			startHeights: heights{
+				localAdd:     addHeight,
+				remoteAdd:    addHeight,
+				localRemove:  0,
+				remoteRemove: 0,
+			},
+			remoteChain:          true,
+			isIncoming:           true,
+			mutateState:          true,
+			ourExpectedBalance:   startBalance + updateAmount,
+			theirExpectedBalance: startBalance,
+			expectedHeights: heights{
+				localAdd:     addHeight,
+				remoteAdd:    addHeight,
+				localRemove:  0,
+				remoteRemove: nextHeight,
+			},
+			updateType: Settle,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			heights := test.startHeights
+			update := &PaymentDescriptor{
+				Amount:                   updateAmount,
+				addCommitHeightLocal:     heights.localAdd,
+				addCommitHeightRemote:    heights.remoteAdd,
+				removeCommitHeightLocal:  heights.localRemove,
+				removeCommitHeightRemote: heights.remoteRemove,
+				EntryType:                test.updateType,
+			}
+
+			var (
+				// Start both parties off with an initial
+				// balance. Copy by value here so that we do
+				// not mutate the startBalance constant.
+				ourBalance, theirBalance = startBalance,
+					startBalance
+			)
+
+			// Choose the processing function we need based on the
+			// update type. Process remove is used for settles,
+			// fails and malformed htlcs.
+			process := processRemoveEntry
+			if test.updateType == Add {
+				process = processAddEntry
+			}
+
+			process(
+				update, &ourBalance, &theirBalance, nextHeight,
+				test.remoteChain, test.isIncoming,
+				test.mutateState,
+			)
+
+			// Check that balances were updated as expected.
+			if ourBalance != test.ourExpectedBalance {
+				t.Fatalf("expected our balance: %v, got: %v",
+					test.ourExpectedBalance, ourBalance)
+			}
+
+			if theirBalance != test.theirExpectedBalance {
+				t.Fatalf("expected their balance: %v, got: %v",
+					test.theirExpectedBalance, theirBalance)
+			}
+
+			// Check that heights on the update are as expected.
+			checkHeights(t, update, test.expectedHeights)
+		})
+	}
+}
+
+// TestChannelUnsignedAckedFailure tests that unsigned acked updates are
+// properly restored after signing for them and disconnecting.
+//
+// The full state transition of this test is:
+//
+// Alice                   Bob
+//         -----add----->
+//         -----sig----->
+//         <----rev------
+//         <----sig------
+//         -----rev----->
+//         <----fail-----
+//         <----sig------
+//         -----rev----->
+//         -----sig-----X (does not reach Bob! Alice dies!)
+//
+//         -----sig----->
+//         <----rev------
+//         <----add------
+//         <----sig------
+//
+// The last sig was rejected with the old behavior of deleting unsigned
+// acked updates from the database after signing for them. The current
+// behavior of filtering them for deletion upon receiving a revocation
+// causes Alice to accept the signature as valid.
+func TestChannelUnsignedAckedFailure(t *testing.T) {
+	t.Parallel()
+
+	// Create a test channel so that we can test the buggy behavior.
+	aliceChannel, bobChannel, cleanUp, err := CreateTestChannels(
+		channeldb.SingleFunderTweaklessBit,
+	)
+	require.NoError(t, err)
+	defer cleanUp()
+
+	// First we create an HTLC that Alice sends to Bob.
+	htlc, _ := createHTLC(0, lnwire.MilliSatoshi(500000))
+
+	// -----add----->
+	_, err = aliceChannel.AddHTLC(htlc, nil)
+	require.NoError(t, err)
+	_, err = bobChannel.ReceiveHTLC(htlc)
+	require.NoError(t, err)
+
+	// Force a state transition to lock in this add on both commitments.
+	// -----sig----->
+	// <----rev------
+	// <----sig------
+	// -----rev----->
+	err = ForceStateTransition(aliceChannel, bobChannel)
+	require.NoError(t, err)
+
+	// Now Bob should fail the htlc back to Alice.
+	// <----fail-----
+	err = bobChannel.FailHTLC(0, []byte("failreason"), nil, nil, nil)
+	require.NoError(t, err)
+	err = aliceChannel.ReceiveFailHTLC(0, []byte("bad"))
+	require.NoError(t, err)
+
+	// Bob should send a commitment signature to Alice.
+	// <----sig------
+	bobSig, bobHtlcSigs, _, err := bobChannel.SignNextCommitment()
+	require.NoError(t, err)
+	err = aliceChannel.ReceiveNewCommitment(bobSig, bobHtlcSigs)
+	require.NoError(t, err)
+
+	// Alice should reply with a revocation.
+	// -----rev----->
+	aliceRevocation, _, err := aliceChannel.RevokeCurrentCommitment()
+	require.NoError(t, err)
+	_, _, _, _, err = bobChannel.ReceiveRevocation(aliceRevocation)
+	require.NoError(t, err)
+
+	// Alice should sign the next commitment and go down before
+	// sending it.
+	// -----sig-----X
+	aliceSig, aliceHtlcSigs, _, err := aliceChannel.SignNextCommitment()
+	require.NoError(t, err)
+
+	newAliceChannel, err := NewLightningChannel(
+		aliceChannel.Signer, aliceChannel.channelState,
+		aliceChannel.sigPool,
+	)
+	require.NoError(t, err)
+
+	// Bob receives Alice's signature.
+	// -----sig----->
+	err = bobChannel.ReceiveNewCommitment(aliceSig, aliceHtlcSigs)
+	require.NoError(t, err)
+
+	// Bob revokes his current commitment and sends a revocation
+	// to Alice.
+	// <----rev------
+	bobRevocation, _, err := bobChannel.RevokeCurrentCommitment()
+	require.NoError(t, err)
+	_, _, _, _, err = newAliceChannel.ReceiveRevocation(bobRevocation)
+	require.NoError(t, err)
+
+	// Now Bob sends an HTLC to Alice.
+	htlc2, _ := createHTLC(0, lnwire.MilliSatoshi(500000))
+
+	// <----add------
+	_, err = bobChannel.AddHTLC(htlc2, nil)
+	require.NoError(t, err)
+	_, err = newAliceChannel.ReceiveHTLC(htlc2)
+	require.NoError(t, err)
+
+	// Bob sends the final signature to Alice and Alice should not
+	// reject it, given that we properly restore the unsigned acked
+	// updates and therefore our update log is structured correctly.
+	bobSig, bobHtlcSigs, _, err = bobChannel.SignNextCommitment()
+	require.NoError(t, err)
+	err = newAliceChannel.ReceiveNewCommitment(bobSig, bobHtlcSigs)
+	require.NoError(t, err)
+}
+
+// TestChannelLocalUnsignedUpdatesFailure checks that updates from the local
+// log are restored if the remote hasn't sent us a signature covering them.
+//
+// The full state transition is:
+//
+// Alice                Bob
+//       <----add-----
+//       <----sig-----
+//       -----rev---->
+//       -----sig---->
+//       <----rev-----
+//       ----fail---->
+//       -----sig---->
+//       <----rev-----
+//        *reconnect*
+//       <----sig-----
+//
+// Alice should reject the last signature since the settle is not restored
+// into the local update log and thus calculates Bob's signature as invalid.
+func TestChannelLocalUnsignedUpdatesFailure(t *testing.T) {
+	t.Parallel()
+
+	// Create a test channel so that we can test the buggy behavior.
+	aliceChannel, bobChannel, cleanUp, err := CreateTestChannels(
+		channeldb.SingleFunderTweaklessBit,
+	)
+	require.NoError(t, err)
+	defer cleanUp()
+
+	// First we create an htlc that Bob sends to Alice.
+	htlc, _ := createHTLC(0, lnwire.MilliSatoshi(500000))
+
+	// <----add-----
+	_, err = bobChannel.AddHTLC(htlc, nil)
+	require.NoError(t, err)
+	_, err = aliceChannel.ReceiveHTLC(htlc)
+	require.NoError(t, err)
+
+	// Force a state transition to lock in this add on both commitments.
+	// <----sig-----
+	// -----rev---->
+	// -----sig---->
+	// <----rev-----
+	err = ForceStateTransition(bobChannel, aliceChannel)
+	require.NoError(t, err)
+
+	// Now Alice should fail the htlc back to Bob.
+	// -----fail--->
+	err = aliceChannel.FailHTLC(0, []byte("failreason"), nil, nil, nil)
+	require.NoError(t, err)
+	err = bobChannel.ReceiveFailHTLC(0, []byte("bad"))
+	require.NoError(t, err)
+
+	// Alice should send a commitment signature to Bob.
+	// -----sig---->
+	aliceSig, aliceHtlcSigs, _, err := aliceChannel.SignNextCommitment()
+	require.NoError(t, err)
+	err = bobChannel.ReceiveNewCommitment(aliceSig, aliceHtlcSigs)
+	require.NoError(t, err)
+
+	// Bob should reply with a revocation and Alice should save the fail as
+	// an unsigned local update.
+	// <----rev-----
+	bobRevocation, _, err := bobChannel.RevokeCurrentCommitment()
+	require.NoError(t, err)
+	_, _, _, _, err = aliceChannel.ReceiveRevocation(bobRevocation)
+	require.NoError(t, err)
+
+	// Restart Alice and assert that she can receive Bob's next commitment
+	// signature.
+	// *reconnect*
+	newAliceChannel, err := NewLightningChannel(
+		aliceChannel.Signer, aliceChannel.channelState,
+		aliceChannel.sigPool,
+	)
+	require.NoError(t, err)
+
+	// Bob sends the final signature and Alice should not reject it.
+	// <----sig-----
+	bobSig, bobHtlcSigs, _, err := bobChannel.SignNextCommitment()
+	require.NoError(t, err)
+	err = newAliceChannel.ReceiveNewCommitment(bobSig, bobHtlcSigs)
+	require.NoError(t, err)
 }

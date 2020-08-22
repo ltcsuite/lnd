@@ -6,9 +6,11 @@ import (
 	"io"
 	"sync"
 
+	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/sweep"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
@@ -235,33 +237,59 @@ func (c *commitSweepResolver) Resolve() (ContractResolver, error) {
 		return nil, err
 	}
 
+	var sweepTxID chainhash.Hash
+
 	// Sweeper is going to join this input with other inputs if
 	// possible and publish the sweep tx. When the sweep tx
 	// confirms, it signals us through the result channel with the
 	// outcome. Wait for this to happen.
+	outcome := channeldb.ResolverOutcomeClaimed
 	select {
 	case sweepResult := <-resultChan:
-		if sweepResult.Err != nil {
+		switch sweepResult.Err {
+		case sweep.ErrRemoteSpend:
+			// If the remote party was able to sweep this output
+			// it's likely what we sent was actually a revoked
+			// commitment. Report the error and continue to wrap up
+			// the contract.
+			c.log.Warnf("local commitment output was swept by "+
+				"remote party via %v", sweepResult.Tx.TxHash())
+			outcome = channeldb.ResolverOutcomeUnclaimed
+		case nil:
+			// No errors, therefore continue processing.
+			c.log.Infof("local commitment output fully resolved by "+
+				"sweep tx: %v", sweepResult.Tx.TxHash())
+		default:
+			// Unknown errors.
 			c.log.Errorf("unable to sweep input: %v",
 				sweepResult.Err)
 
 			return nil, sweepResult.Err
 		}
 
-		c.log.Infof("commit tx fully resolved by sweep tx: %v",
-			sweepResult.Tx.TxHash())
+		sweepTxID = sweepResult.Tx.TxHash()
+
 	case <-c.quit:
 		return nil, errResolverShuttingDown
 	}
 
 	// Funds have been swept and balance is no longer in limbo.
 	c.reportLock.Lock()
-	c.currentReport.RecoveredBalance = c.currentReport.LimboBalance
+	if outcome == channeldb.ResolverOutcomeClaimed {
+		// We only record the balance as recovered if it actually came
+		// back to us.
+		c.currentReport.RecoveredBalance = c.currentReport.LimboBalance
+	}
 	c.currentReport.LimboBalance = 0
 	c.reportLock.Unlock()
-
+	report := c.currentReport.resolverReport(
+		&sweepTxID, channeldb.ResolverTypeCommit, outcome,
+	)
 	c.resolved = true
-	return nil, c.Checkpoint(c)
+
+	// Checkpoint the resolver with a closure that will write the outcome
+	// of the resolver and its sweep transaction to disk.
+	return nil, c.Checkpoint(c, report)
 }
 
 // Stop signals the resolver to cancel any current resolution processes, and

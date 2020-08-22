@@ -9,6 +9,7 @@ import (
 
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
 	"github.com/ltcsuite/lnd/clock"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/lnwallet"
@@ -58,7 +59,7 @@ type ChainArbitratorConfig struct {
 	// broadcast our commitment transaction if we have incoming htlcs. This
 	// value should be set based on our current fee estimation of the
 	// commitment transaction. We use this to determine when we should
-	// broadcast instead of the just the HTLC timeout, as we want to ensure
+	// broadcast instead of just the HTLC timeout, as we want to ensure
 	// that the commitment transaction is already confirmed, by the time the
 	// HTLC expires. Otherwise we may end up not settling the htlc on-chain
 	// because the other party managed to time it out.
@@ -79,7 +80,7 @@ type ChainArbitratorConfig struct {
 	// PublishTx reliably broadcasts a transaction to the network. Once
 	// this function exits without an error, then they transaction MUST
 	// continually be rebroadcast if needed.
-	PublishTx func(*wire.MsgTx) error
+	PublishTx func(*wire.MsgTx, string) error
 
 	// DeliverResolutionMsg is a function that will append an outgoing
 	// message to the "out box" for a ChannelLink. This is used to cancel
@@ -88,7 +89,7 @@ type ChainArbitratorConfig struct {
 	DeliverResolutionMsg func(...ResolutionMsg) error
 
 	// MarkLinkInactive is a function closure that the ChainArbitrator will
-	// use to mark that active HTLC's shouldn't be attempt ted to be routed
+	// use to mark that active HTLC's shouldn't be attempted to be routed
 	// over a particular channel. This function will be called in that a
 	// ChannelArbitrator decides that it needs to go to chain in order to
 	// resolve contracts.
@@ -156,7 +157,7 @@ type ChainArbitratorConfig struct {
 	// resolution.
 	OnionProcessor OnionProcessor
 
-	// PaymentsExpirationGracePeriod indicates is a time window we let the
+	// PaymentsExpirationGracePeriod indicates a time window we let the
 	// other node to cancel an outgoing htlc that our node has initiated and
 	// has timed out.
 	PaymentsExpirationGracePeriod time.Duration
@@ -347,6 +348,14 @@ func newActiveChannelArbitrator(channel *channeldb.OpenChannel,
 		IsPendingClose:        false,
 		ChainArbitratorConfig: c.cfg,
 		ChainEvents:           chanEvents,
+		PutResolverReport: func(tx kvdb.RwTx,
+			report *channeldb.ResolverReport) error {
+
+			return c.chanSource.PutResolverReport(
+				tx, c.cfg.ChainHash, &channel.FundingOutpoint,
+				report,
+			)
+		},
 	}
 
 	// The final component needed is an arbitrator log that the arbitrator
@@ -552,6 +561,13 @@ func (c *ChainArbitrator) Start() error {
 			IsPendingClose:        true,
 			ClosingHeight:         closeChanInfo.CloseHeight,
 			CloseType:             closeChanInfo.CloseType,
+			PutResolverReport: func(tx kvdb.RwTx,
+				report *channeldb.ResolverReport) error {
+
+				return c.chanSource.PutResolverReport(
+					tx, c.cfg.ChainHash, &chanPoint, report,
+				)
+			},
 		}
 		chanLog, err := newBoltArbitratorLog(
 			c.chanSource.Backend, arbCfg, c.cfg.ChainHash, chanPoint,
@@ -699,7 +715,7 @@ func (c *ChainArbitrator) rebroadcast(channel *channeldb.OpenChannel,
 	log.Infof("Re-publishing %s close tx(%v) for channel %v",
 		kind, closeTx.TxHash(), chanPoint)
 
-	err = c.cfg.PublishTx(closeTx)
+	err = c.cfg.PublishTx(closeTx, "")
 	if err != nil && err != lnwallet.ErrDoubleSpend {
 		log.Warnf("Unable to broadcast %s close tx(%v): %v",
 			kind, closeTx.TxHash(), err)

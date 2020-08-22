@@ -3,13 +3,13 @@
     * [Preliminaries](#preliminaries)
     * [Installing lnd](#installing-lnd)
 * [Available Backend Operating Modes](#available-backend-operating-modes)
-  * [btcd Options](#btcd-options)
+  * [ltcd Options](#ltcd-options)
   * [Neutrino Options](#neutrino-options)
   * [Bitcoind Options](#bitcoind-options)
-  * [Using btcd](#using-btcd)
-    * [Installing btcd](#installing-btcd)
-    * [Starting btcd](#starting-btcd)
-    * [Running lnd using the btcd backend](#running-lnd-using-the-btcd-backend)
+  * [Using ltcd](#using-ltcd)
+    * [Installing ltcd](#installing-ltcd)
+    * [Starting ltcd](#starting-ltcd)
+    * [Running lnd using the ltcd backend](#running-lnd-using-the-ltcd-backend)
   * [Using Neutrino](#using-neutrino)
   * [Using bitcoind or litecoind](#using-bitcoind-or-litecoind)
 * [Creating a Wallet](#creating-a-wallet)
@@ -95,7 +95,7 @@
   * **Go modules:** This project uses [Go modules](https://github.com/golang/go/wiki/Modules) 
     to manage dependencies as well as to provide *reproducible builds*.
 
-    Usage of Go modules (with Go 1.12) means that you no longer need to clone
+    Usage of Go modules (with Go 1.13) means that you no longer need to clone
     `lnd` into your `$GOPATH` for development purposes. Instead, your `lnd`
     repo can now live anywhere!
 
@@ -104,13 +104,27 @@
 With the preliminary steps completed, to install `lnd`, `lncli`, and all
 related dependencies run the following commands:
 ```
-go get -d github.com/ltcsuite/lnd
-cd $GOPATH/src/github.com/ltcsuite/lnd
-make && make install
+git clone https://github.com/ltcsuite/lnd
+cd lnd
+make install
 ```
 
+The command above will install the current _master_ branch of `lnd`. If you
+wish to install a tagged release of `lnd` (as the master branch can at times be
+unstable), then [visit then release page to locate the latest
+release](https://github.com/ltcsuite/lnd/releases). Assuming the name
+of the release is `v0.x.x`, then you can compile this release from source with
+a small modification to the above command: 
+```
+git clone https://github.com/ltcsuite/lnd
+cd lnd
+git checkout v0.x.x
+make install
+```
+
+
 **NOTE**: Our instructions still use the `$GOPATH` directory from prior
-versions of Go, but with Go 1.12, it's now possible for `lnd` to live
+versions of Go, but with Go 1.13, it's now possible for `lnd` to live
 _anywhere_ on your file system.
 
 For Windows WSL users, make will need to be referenced directly via
@@ -165,9 +179,9 @@ in the system's `$PATH` variable. Otherwise some of the tests will fail.
 
 In order to run, `lnd` requires, that the user specify a chain backend. At the
 time of writing of this document, there are three available chain backends:
-`btcd`, `neutrino`, `bitcoind`. All but neutrino (atm) can run on mainnet with
+`ltcd`, `neutrino`, `bitcoind`. All but neutrino (atm) can run on mainnet with
 an out of the box `lnd` instance. We don't require `--txindex` when running
-with `bitcoind` or `btcd` but activating the `txindex` will generally make
+with `bitcoind` or `ltcd` but activating the `txindex` will generally make
 `lnd` run faster.
 
 **NOTE: WE DO NOT FULLY SUPPORT PRUNED OPERATING MODES FOR FULL NODES.** It's
@@ -178,15 +192,15 @@ wallet, and the age of the earliest channels (which were created around March
 
 The set of arguments for each of the backend modes is as follows:
 
-## btcd Options
+## ltcd Options
 ```
-btcd:
-      --btcd.dir=                                             The base directory that contains the node's data, logs, configuration file, etc. (default: /Users/roasbeef/Library/Application Support/Btcd)
-      --btcd.rpchost=                                         The daemon's rpc listening address. If a port is omitted, then the default port for the selected chain parameters will be used. (default: localhost)
-      --btcd.rpcuser=                                         Username for RPC connections
-      --btcd.rpcpass=                                         Password for RPC connections
-      --btcd.rpccert=                                         File containing the daemon's certificate file (default: /Users/roasbeef/Library/Application Support/Btcd/rpc.cert)
-      --btcd.rawrpccert=                                      The raw bytes of the daemon's PEM-encoded certificate chain which will be used to authenticate the RPC connection.
+ltcd:
+      --ltcd.dir=                                             The base directory that contains the node's data, logs, configuration file, etc. (default: /Users/roasbeef/Library/Application Support/ltcd)
+      --ltcd.rpchost=                                         The daemon's rpc listening address. If a port is omitted, then the default port for the selected chain parameters will be used. (default: localhost)
+      --ltcd.rpcuser=                                         Username for RPC connections
+      --ltcd.rpcpass=                                         Password for RPC connections
+      --ltcd.rpccert=                                         File containing the daemon's certificate file (default: /Users/roasbeef/Library/Application Support/ltcd/rpc.cert)
+      --ltcd.rawrpccert=                                      The raw bytes of the daemon's PEM-encoded certificate chain which will be used to authenticate the RPC connection.
 ```
 
 ## Neutrino Options
@@ -199,42 +213,42 @@ neutrino:
       --neutrino.banthreshold=                                Maximum allowed ban score before disconnecting and banning misbehaving peers.
 ```
 
-## Bitcoind Options
+## litecoind Options
 ```
-bitcoind:
-      --bitcoind.dir=                                         The base directory that contains the node's data, logs, configuration file, etc. (default: /Users/roasbeef/Library/Application Support/Bitcoin)
-      --bitcoind.rpchost=                                     The daemon's rpc listening address. If a port is omitted, then the default port for the selected chain parameters will be used. (default: localhost)
-      --bitcoind.rpcuser=                                     Username for RPC connections
-      --bitcoind.rpcpass=                                     Password for RPC connections
-      --bitcoind.zmqpubrawblock=                              The address listening for ZMQ connections to deliver raw block notifications
-      --bitcoind.zmqpubrawtx=                                 The address listening for ZMQ connections to deliver raw transaction notifications
-      --bitcoind.estimatemode=                                The fee estimate mode. Must be either "ECONOMICAL" or "CONSERVATIVE". (default: CONSERVATIVE)
+litecoind:
+      --litecoind.dir=                                         The base directory that contains the node's data, logs, configuration file, etc. (default: /Users/roasbeef/Library/Application Support/Bitcoin)
+      --litecoind.rpchost=                                     The daemon's rpc listening address. If a port is omitted, then the default port for the selected chain parameters will be used. (default: localhost)
+      --litecoind.rpcuser=                                     Username for RPC connections
+      --litecoind.rpcpass=                                     Password for RPC connections
+      --litecoind.zmqpubrawblock=                              The address listening for ZMQ connections to deliver raw block notifications
+      --litecoind.zmqpubrawtx=                                 The address listening for ZMQ connections to deliver raw transaction notifications
+      --litecoind.estimatemode=                                The fee estimate mode. Must be either "ECONOMICAL" or "CONSERVATIVE". (default: CONSERVATIVE)
 ```
 
-## Using btcd
+## Using ltcd
 
-### Installing btcd
+### Installing ltcd
 
 On FreeBSD, use gmake instead of make.
 
-To install btcd, run the following commands:
+To install ltcd, run the following commands:
 
-Install **btcd**:
+Install **ltcd**:
 ```
-make btcd
+make ltcd
 ```
 
-Alternatively, you can install [`btcd` directly from its
-repo](https://github.com/btcsuite/btcd).
+Alternatively, you can install [`ltcd` directly from its
+repo](https://github.com/ltcsuite/ltcd).
 
-### Starting btcd
+### Starting ltcd
 
-Running the following command will create `rpc.cert` and default `btcd.conf`.
+Running the following command will create `rpc.cert` and default `ltcd.conf`.
 
 ```
-btcd --testnet --rpcuser=REPLACEME --rpcpass=REPLACEME
+ltcd --testnet --rpcuser=REPLACEME --rpcpass=REPLACEME
 ```
-If you want to use `lnd` on testnet, `btcd` needs to first fully sync the
+If you want to use `lnd` on testnet, `ltcd` needs to first fully sync the
 testnet blockchain. Depending on your hardware, this may take up to a few
 hours. Note that adding `--txindex` is optional, as it will take longer to sync
 the node, but then `lnd` will generally operate faster as it can hit the index
@@ -242,7 +256,7 @@ directly, rather than scanning blocks or BIP 158 filters for relevant items.
 
 (NOTE: It may take several minutes to find segwit-enabled peers.)
 
-While `btcd` is syncing you can check on its progress using btcd's `getinfo`
+While `ltcd` is syncing you can check on its progress using ltcd's `getinfo`
 RPC command:
 ```
 btcctl --testnet --rpcuser=REPLACEME --rpcpass=REPLACEME getinfo
@@ -260,22 +274,22 @@ btcctl --testnet --rpcuser=REPLACEME --rpcpass=REPLACEME getinfo
 }
 ```
 
-Additionally, you can monitor btcd's logs to track its syncing progress in real
+Additionally, you can monitor ltcd's logs to track its syncing progress in real
 time.
 
-You can test your `btcd` node's connectivity using the `getpeerinfo` command:
+You can test your `ltcd` node's connectivity using the `getpeerinfo` command:
 ```
 btcctl --testnet --rpcuser=REPLACEME --rpcpass=REPLACEME getpeerinfo | more
 ```
 
-### Running lnd using the btcd backend
+### Running lnd using the ltcd backend
 
-If you are on testnet, run this command after `btcd` has finished syncing.
+If you are on testnet, run this command after `ltcd` has finished syncing.
 Otherwise, replace `--bitcoin.testnet` with `--bitcoin.simnet`. If you are
 installing `lnd` in preparation for the
 [tutorial](https://dev.lightning.community/tutorial), you may skip this step.
 ```
-lnd --bitcoin.active --bitcoin.testnet --debuglevel=debug --btcd.rpcuser=kek --btcd.rpcpass=kek --externalip=X.X.X.X
+lnd --bitcoin.active --bitcoin.testnet --debuglevel=debug --ltcd.rpcuser=kek --ltcd.rpcpass=kek --externalip=X.X.X.X
 ```
 
 ## Using Neutrino
@@ -288,7 +302,7 @@ mode.  A public instance of such a node can be found at
 `faucet.lightning.community`.
 
 To run lnd in neutrino mode, run `lnd` with the following arguments, (swapping
-in `--bitcoin.simnet` if needed), and also your own `btcd` node if available:
+in `--bitcoin.simnet` if needed), and also your own `ltcd` node if available:
 ```
 lnd --bitcoin.active --bitcoin.testnet --debuglevel=debug --bitcoin.node=neutrino --neutrino.connect=faucet.lightning.community
 ```
@@ -415,7 +429,7 @@ reachable IP address.
 # Simnet vs. Testnet Development
 
 If you are doing local development, such as for the tutorial, you'll want to
-start both `btcd` and `lnd` in the `simnet` mode. Simnet is similar to regtest
+start both `ltcd` and `lnd` in the `simnet` mode. Simnet is similar to regtest
 in that you'll be able to instantly mine blocks as needed to test `lnd`
 locally. In order to start either daemon in the `simnet` mode use `simnet`
 instead of `testnet`, adding the `--bitcoin.simnet` flag instead of the
@@ -429,9 +443,9 @@ To send this "special" HTLC type, include the `--debugsend` command at the end
 of your `sendpayment` commands.
 
 
-There are currently two primary ways to run `lnd`: one requires a local `btcd`
+There are currently two primary ways to run `lnd`: one requires a local `ltcd`
 instance with the RPC service exposed, and the other uses a fully integrated
-light client powered by [neutrino](https://github.com/lightninglabs/neutrino).
+light client powered by [neutrino](https://github.com/ltcsuite/neutrino).
 
 # Creating an lnd.conf (Optional)
 
@@ -445,7 +459,7 @@ at the command line, you can create an `lnd.conf`.
 **On Linux, located at:**
 `~/.lnd/lnd.conf`
 
-Here's a sample `lnd.conf` for `btcd` to get you started:
+Here's a sample `lnd.conf` for `ltcd` to get you started:
 ```
 [Application Options]
 debuglevel=trace
@@ -460,6 +474,6 @@ Bitcoin chain. `lnd` also supports Litecoin testnet4 (but not both BTC and LTC
 at the same time), so when working with Litecoin be sure to set to parameters
 for Litecoin accordingly. See a more detailed sample config file available
 [here](https://github.com/ltcsuite/lnd/blob/master/sample-lnd.conf)
-and explore the other sections for node configuration, including `[Btcd]`,
+and explore the other sections for node configuration, including `[ltcd]`,
 `[Bitcoind]`, `[Neutrino]`, `[Ltcd]`, and `[Litecoind]` depending on which
 chain and node type you're using.

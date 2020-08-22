@@ -2,7 +2,6 @@ package queue
 
 import (
 	"container/list"
-	"sync"
 	"time"
 
 	"github.com/ltcsuite/lnd/ticker"
@@ -44,7 +43,6 @@ type GCQueue struct {
 	// increasing time of arrival.
 	freeList *list.List
 
-	wg   sync.WaitGroup
 	quit chan struct{}
 }
 

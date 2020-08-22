@@ -7,14 +7,16 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ltcsuite/ltcd/wire"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd"
+	"github.com/ltcsuite/lnd/lncfg"
 	"github.com/ltcsuite/lnd/lnrpc"
 	"github.com/ltcsuite/lnd/lnrpc/invoicesrpc"
+	"github.com/ltcsuite/lnd/lnrpc/routerrpc"
 	"github.com/ltcsuite/lnd/lntest"
 	"github.com/ltcsuite/lnd/lntest/wait"
 	"github.com/ltcsuite/lnd/lntypes"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // testMultiHopHtlcLocalChainClaim tests that in a multi-hop HTLC scenario, if
@@ -61,13 +63,14 @@ func testMultiHopHtlcLocalChainClaim(net *lntest.NetworkHarness, t *harnessTest,
 	ctx, cancel := context.WithCancel(ctxb)
 	defer cancel()
 
-	alicePayStream, err := alice.SendPayment(ctx)
-	if err != nil {
-		t.Fatalf("unable to create payment stream for alice: %v", err)
-	}
-	err = alicePayStream.Send(&lnrpc.SendRequest{
-		PaymentRequest: carolInvoice.PaymentRequest,
-	})
+	_, err = alice.RouterClient.SendPaymentV2(
+		ctx,
+		&routerrpc.SendPaymentRequest{
+			PaymentRequest: carolInvoice.PaymentRequest,
+			TimeoutSeconds: 60,
+			FeeLimitMsat:   noFeeLimitMsat,
+		},
+	)
 	if err != nil {
 		t.Fatalf("unable to send payment: %v", err)
 	}
@@ -136,7 +139,7 @@ func testMultiHopHtlcLocalChainClaim(net *lntest.NetworkHarness, t *harnessTest,
 	// We'll now mine enough blocks so Carol decides that she needs to go
 	// on-chain to claim the HTLC as Bob has been inactive.
 	numBlocks := padCLTV(uint32(invoiceReq.CltvExpiry -
-		lnd.DefaultIncomingBroadcastDelta))
+		lncfg.DefaultIncomingBroadcastDelta))
 
 	if _, err := net.Miner.Node.Generate(numBlocks); err != nil {
 		t.Fatalf("unable to generate blocks")

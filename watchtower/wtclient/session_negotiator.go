@@ -5,14 +5,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/watchtower/blob"
 	"github.com/ltcsuite/lnd/watchtower/wtdb"
 	"github.com/ltcsuite/lnd/watchtower/wtpolicy"
 	"github.com/ltcsuite/lnd/watchtower/wtserver"
 	"github.com/ltcsuite/lnd/watchtower/wtwire"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 )
 
 // SessionNegotiator is an interface for asynchronously requesting new sessions.
@@ -44,7 +44,7 @@ type NegotiatorConfig struct {
 
 	// SecretKeyRing allows the client to derive new session private keys
 	// when attempting to negotiate session with a tower.
-	SecretKeyRing SecretKeyRing
+	SecretKeyRing ECDHKeyRing
 
 	// Candidates is an abstract set of tower candidates that the negotiator
 	// will traverse serially when attempting to negotiate a new session.
@@ -58,7 +58,8 @@ type NegotiatorConfig struct {
 	// Dial initiates an outbound brontide connection to the given address
 	// using a specified private key. The peer is returned in the event of a
 	// successful connection.
-	Dial func(*btcec.PrivateKey, *lnwire.NetAddress) (wtserver.Peer, error)
+	Dial func(keychain.SingleKeyECDH, *lnwire.NetAddress) (wtserver.Peer,
+		error)
 
 	// SendMessage writes a wtwire message to remote peer.
 	SendMessage func(wtserver.Peer, wtwire.Message) error
@@ -315,13 +316,21 @@ func (n *sessionNegotiator) createSession(tower *wtdb.Tower,
 		return ErrNoTowerAddrs
 	}
 
-	sessionPriv, err := DeriveSessionKey(n.cfg.SecretKeyRing, keyIndex)
+	sessionKeyDesc, err := n.cfg.SecretKeyRing.DeriveKey(
+		keychain.KeyLocator{
+			Family: keychain.KeyFamilyTowerSession,
+			Index:  keyIndex,
+		},
+	)
 	if err != nil {
 		return err
 	}
+	sessionKey := keychain.NewPubKeyECDH(
+		sessionKeyDesc, n.cfg.SecretKeyRing,
+	)
 
 	for _, lnAddr := range tower.LNAddrs() {
-		err = n.tryAddress(sessionPriv, keyIndex, tower, lnAddr)
+		err := n.tryAddress(sessionKey, keyIndex, tower, lnAddr)
 		switch {
 		case err == ErrPermanentTowerFailure:
 			// TODO(conner): report to iterator? can then be reset
@@ -346,11 +355,11 @@ func (n *sessionNegotiator) createSession(tower *wtdb.Tower,
 // The address should belong to the tower's set of addresses. This method only
 // returns true if all steps succeed and the new session has been persisted, and
 // fails otherwise.
-func (n *sessionNegotiator) tryAddress(privKey *btcec.PrivateKey,
+func (n *sessionNegotiator) tryAddress(sessionKey keychain.SingleKeyECDH,
 	keyIndex uint32, tower *wtdb.Tower, lnAddr *lnwire.NetAddress) error {
 
 	// Connect to the tower address using our generated session key.
-	conn, err := n.cfg.Dial(privKey, lnAddr)
+	conn, err := n.cfg.Dial(sessionKey, lnAddr)
 	if err != nil {
 		return err
 	}
@@ -417,9 +426,7 @@ func (n *sessionNegotiator) tryAddress(privKey *btcec.PrivateKey,
 		// TODO(conner): validate reward address
 		rewardPkScript := createSessionReply.Data
 
-		sessionID := wtdb.NewSessionIDFromPubKey(
-			privKey.PubKey(),
-		)
+		sessionID := wtdb.NewSessionIDFromPubKey(sessionKey.PubKey())
 		clientSession := &wtdb.ClientSession{
 			ClientSessionBody: wtdb.ClientSessionBody{
 				TowerID:        tower.ID,
@@ -428,7 +435,7 @@ func (n *sessionNegotiator) tryAddress(privKey *btcec.PrivateKey,
 				RewardPkScript: rewardPkScript,
 			},
 			Tower:          tower,
-			SessionPrivKey: privKey,
+			SessionKeyECDH: sessionKey,
 			ID:             sessionID,
 		}
 

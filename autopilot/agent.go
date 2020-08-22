@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcutil"
 )
 
 // Config couples all the items that an autopilot agent needs to function.
@@ -386,9 +386,8 @@ func mergeChanState(pendingChans map[NodeID]Channel,
 	numChans := len(pendingChans) + len(activeChans)
 	totalChans := make([]Channel, 0, numChans)
 
-	for _, activeChan := range activeChans.Channels() {
-		totalChans = append(totalChans, activeChan)
-	}
+	totalChans = append(totalChans, activeChans.Channels()...)
+
 	for _, pendingChan := range pendingChans {
 		totalChans = append(totalChans, pendingChan)
 	}
@@ -649,7 +648,7 @@ func (a *Agent) openChans(availableFunds ltcutil.Amount, numChans uint32,
 	// to open channels to.
 	scores, err = chooseN(numChans, scores)
 	if err != nil {
-		return fmt.Errorf("Unable to make weighted choice: %v",
+		return fmt.Errorf("unable to make weighted choice: %v",
 			err)
 	}
 
@@ -657,17 +656,6 @@ func (a *Agent) openChans(availableFunds ltcutil.Amount, numChans uint32,
 	for nID := range scores {
 		log.Tracef("Creating attachment directive for chosen node %x",
 			nID[:])
-
-		// Add addresses to the candidates.
-		addrs := addresses[nID]
-
-		// If the node has no known addresses, we cannot connect to it,
-		// so we'll skip it.
-		if len(addrs) == 0 {
-			log.Tracef("Skipping scored node %x with no addresses",
-				nID[:])
-			continue
-		}
 
 		// Track the available funds we have left.
 		if availableFunds < chanSize {
@@ -686,7 +674,7 @@ func (a *Agent) openChans(availableFunds ltcutil.Amount, numChans uint32,
 		chanCandidates[nID] = &AttachmentDirective{
 			NodeID:  nID,
 			ChanAmt: chanSize,
-			Addrs:   addrs,
+			Addrs:   addresses[nID],
 		}
 	}
 

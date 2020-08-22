@@ -3,8 +3,10 @@ package channeldb
 import (
 	"github.com/btcsuite/btclog"
 	"github.com/ltcsuite/lnd/build"
+	mig "github.com/ltcsuite/lnd/channeldb/migration"
 	"github.com/ltcsuite/lnd/channeldb/migration12"
 	"github.com/ltcsuite/lnd/channeldb/migration13"
+	"github.com/ltcsuite/lnd/channeldb/migration16"
 	"github.com/ltcsuite/lnd/channeldb/migration_01_to_11"
 )
 
@@ -28,7 +30,9 @@ func DisableLog() {
 // using btclog.
 func UseLogger(logger btclog.Logger) {
 	log = logger
+	mig.UseLogger(logger)
 	migration_01_to_11.UseLogger(logger)
 	migration12.UseLogger(logger)
 	migration13.UseLogger(logger)
+	migration16.UseLogger(logger)
 }

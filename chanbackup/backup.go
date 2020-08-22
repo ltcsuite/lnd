@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"net"
 
+	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/lnd/channeldb"
 )
 
 // LiveChannelSource is an interface that allows us to query for the set of

@@ -5,9 +5,11 @@ import (
 	"io"
 	"sync"
 
+	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/sweep"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
 )
@@ -121,22 +123,27 @@ func (c *anchorResolver) Resolve() (ContractResolver, error) {
 		}
 	}
 
-	var anchorRecovered bool
+	var (
+		outcome channeldb.ResolverOutcome
+		spendTx *chainhash.Hash
+	)
+
 	select {
 	case sweepRes := <-resultChan:
 		switch sweepRes.Err {
 
 		// Anchor was swept successfully.
 		case nil:
-			c.log.Debugf("anchor swept by tx %v",
-				sweepRes.Tx.TxHash())
+			sweepTxID := sweepRes.Tx.TxHash()
 
-			anchorRecovered = true
+			spendTx = &sweepTxID
+			outcome = channeldb.ResolverOutcomeClaimed
 
 		// Anchor was swept by someone else. This is possible after the
 		// 16 block csv lock.
 		case sweep.ErrRemoteSpend:
 			c.log.Warnf("our anchor spent by someone else")
+			outcome = channeldb.ResolverOutcomeUnclaimed
 
 		// The sweeper gave up on sweeping the anchor. This happens
 		// after the maximum number of sweep attempts has been reached.
@@ -147,6 +154,7 @@ func (c *anchorResolver) Resolve() (ContractResolver, error) {
 		// We consider the anchor as being lost.
 		case sweep.ErrTooManyAttempts:
 			c.log.Warnf("anchor sweep abandoned")
+			outcome = channeldb.ResolverOutcomeUnclaimed
 
 		// An unexpected error occurred.
 		default:
@@ -161,14 +169,17 @@ func (c *anchorResolver) Resolve() (ContractResolver, error) {
 
 	// Update report to reflect that funds are no longer in limbo.
 	c.reportLock.Lock()
-	if anchorRecovered {
+	if outcome == channeldb.ResolverOutcomeClaimed {
 		c.currentReport.RecoveredBalance = c.currentReport.LimboBalance
 	}
 	c.currentReport.LimboBalance = 0
+	report := c.currentReport.resolverReport(
+		spendTx, channeldb.ResolverTypeAnchor, outcome,
+	)
 	c.reportLock.Unlock()
 
 	c.resolved = true
-	return nil, nil
+	return nil, c.PutResolverReport(nil, report)
 }
 
 // Stop signals the resolver to cancel any current resolution processes, and

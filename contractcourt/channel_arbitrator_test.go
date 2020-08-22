@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -78,7 +79,7 @@ func (b *mockArbitratorLog) FetchUnresolvedContracts() ([]ContractResolver,
 	return v, nil
 }
 
-func (b *mockArbitratorLog) InsertUnresolvedContracts(
+func (b *mockArbitratorLog) InsertUnresolvedContracts(_ []*channeldb.ResolverReport,
 	resolvers ...ContractResolver) error {
 
 	b.Lock()
@@ -324,7 +325,7 @@ func createTestChannelArbitrator(t *testing.T, log ArbitratorLog,
 	mockSweeper := newMockSweeper()
 	chainArbCfg := ChainArbitratorConfig{
 		ChainIO: chainIO,
-		PublishTx: func(*wire.MsgTx) error {
+		PublishTx: func(*wire.MsgTx, string) error {
 			return nil
 		},
 		DeliverResolutionMsg: func(msgs ...ResolutionMsg) error {
@@ -380,6 +381,11 @@ func createTestChannelArbitrator(t *testing.T, log ArbitratorLog,
 		IsPendingClose:        false,
 		ChainArbitratorConfig: chainArbCfg,
 		ChainEvents:           chanEvents,
+		PutResolverReport: func(_ kvdb.RwTx,
+			_ *channeldb.ResolverReport) error {
+
+			return nil
+		},
 	}
 
 	// Apply all custom options to the config struct.
@@ -575,7 +581,7 @@ func TestChannelArbitratorLocalForceClose(t *testing.T) {
 	// We create a channel we can use to pause the ChannelArbitrator at the
 	// point where it broadcasts the close tx, and check its state.
 	stateChan := make(chan ArbitratorState)
-	chanArb.cfg.PublishTx = func(*wire.MsgTx) error {
+	chanArb.cfg.PublishTx = func(*wire.MsgTx, string) error {
 		// When the force close tx is being broadcasted, check that the
 		// state is correct at that point.
 		select {
@@ -998,7 +1004,7 @@ func TestChannelArbitratorLocalForceCloseRemoteConfirmed(t *testing.T) {
 	// Create a channel we can use to assert the state when it publishes
 	// the close tx.
 	stateChan := make(chan ArbitratorState)
-	chanArb.cfg.PublishTx = func(*wire.MsgTx) error {
+	chanArb.cfg.PublishTx = func(*wire.MsgTx, string) error {
 		// When the force close tx is being broadcasted, check that the
 		// state is correct at that point.
 		select {
@@ -1106,7 +1112,7 @@ func TestChannelArbitratorLocalForceDoubleSpend(t *testing.T) {
 
 	// Return ErrDoubleSpend when attempting to publish the tx.
 	stateChan := make(chan ArbitratorState)
-	chanArb.cfg.PublishTx = func(*wire.MsgTx) error {
+	chanArb.cfg.PublishTx = func(*wire.MsgTx, string) error {
 		// When the force close tx is being broadcasted, check that the
 		// state is correct at that point.
 		select {
@@ -1339,7 +1345,7 @@ func TestChannelArbitratorForceCloseBreachedChannel(t *testing.T) {
 	// unexpected publication error, causing the state machine to halt.
 	expErr := errors.New("intentional publication error")
 	stateChan := make(chan ArbitratorState)
-	chanArb.cfg.PublishTx = func(*wire.MsgTx) error {
+	chanArb.cfg.PublishTx = func(*wire.MsgTx, string) error {
 		// When the force close tx is being broadcasted, check that the
 		// state is correct at that point.
 		select {
@@ -2104,6 +2110,15 @@ func TestChannelArbitratorAnchors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unable to create ChannelArbitrator: %v", err)
 	}
+
+	// Replace our mocked put report function with one which will push
+	// reports into a channel for us to consume. We update this function
+	// because our resolver will be created from the existing chanArb cfg.
+	reports := make(chan *channeldb.ResolverReport)
+	chanArbCtx.chanArb.cfg.PutResolverReport = putResolverReportInChannel(
+		reports,
+	)
+
 	chanArb := chanArbCtx.chanArb
 	chanArb.cfg.PreimageDB = newMockWitnessBeacon()
 	chanArb.cfg.Registry = &mockRegistry{}
@@ -2182,18 +2197,20 @@ func TestChannelArbitratorAnchors(t *testing.T) {
 		},
 	}
 
+	anchorResolution := &lnwallet.AnchorResolution{
+		AnchorSignDescriptor: input.SignDescriptor{
+			Output: &wire.TxOut{
+				Value: 1,
+			},
+		},
+	}
+
 	chanArb.cfg.ChainEvents.LocalUnilateralClosure <- &LocalUnilateralCloseInfo{
 		SpendDetail: &chainntnfs.SpendDetail{},
 		LocalForceCloseSummary: &lnwallet.LocalForceCloseSummary{
-			CloseTx:         closeTx,
-			HtlcResolutions: &lnwallet.HtlcResolutions{},
-			AnchorResolution: &lnwallet.AnchorResolution{
-				AnchorSignDescriptor: input.SignDescriptor{
-					Output: &wire.TxOut{
-						Value: 1,
-					},
-				},
-			},
+			CloseTx:          closeTx,
+			HtlcResolutions:  &lnwallet.HtlcResolutions{},
+			AnchorResolution: anchorResolution,
 		},
 		ChannelCloseSummary: &channeldb.ChannelCloseSummary{},
 		CommitSet: CommitSet{
@@ -2230,6 +2247,47 @@ func TestChannelArbitratorAnchors(t *testing.T) {
 	case <-chanArbCtx.resolvedChan:
 	case <-time.After(5 * time.Second):
 		t.Fatalf("contract was not resolved")
+	}
+
+	anchorAmt := ltcutil.Amount(
+		anchorResolution.AnchorSignDescriptor.Output.Value,
+	)
+	spendTx := chanArbCtx.sweeper.sweepTx.TxHash()
+	expectedReport := &channeldb.ResolverReport{
+		OutPoint:        anchorResolution.CommitAnchor,
+		Amount:          anchorAmt,
+		ResolverType:    channeldb.ResolverTypeAnchor,
+		ResolverOutcome: channeldb.ResolverOutcomeClaimed,
+		SpendTxID:       &spendTx,
+	}
+
+	assertResolverReport(t, reports, expectedReport)
+}
+
+// putResolverReportInChannel returns a put report function which will pipe
+// reports into the channel provided.
+func putResolverReportInChannel(reports chan *channeldb.ResolverReport) func(
+	_ kvdb.RwTx, report *channeldb.ResolverReport) error {
+
+	return func(_ kvdb.RwTx, report *channeldb.ResolverReport) error {
+		reports <- report
+		return nil
+	}
+}
+
+// assertResolverReport checks that  a set of reports only contains a single
+// report, and that it is equal to the expected report passed in.
+func assertResolverReport(t *testing.T, reports chan *channeldb.ResolverReport,
+	expected *channeldb.ResolverReport) {
+
+	select {
+	case report := <-reports:
+		if !reflect.DeepEqual(report, expected) {
+			t.Fatalf("expected: %v, got: %v", expected, report)
+		}
+
+	case <-time.After(defaultTimeout):
+		t.Fatalf("no reports present")
 	}
 }
 

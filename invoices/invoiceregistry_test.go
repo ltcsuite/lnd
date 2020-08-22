@@ -10,6 +10,7 @@ import (
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/record"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestSettleInvoice tests settling of an invoice and related notifications.
@@ -28,7 +29,7 @@ func TestSettleInvoice(t *testing.T) {
 	}
 	defer subscription.Cancel()
 
-	if subscription.hash != testInvoicePaymentHash {
+	if subscription.invoiceRef.PayHash() != testInvoicePaymentHash {
 		t.Fatalf("expected subscription for provided hash")
 	}
 
@@ -240,7 +241,7 @@ func TestCancelInvoice(t *testing.T) {
 	}
 	defer subscription.Cancel()
 
-	if subscription.hash != testInvoicePaymentHash {
+	if subscription.invoiceRef.PayHash() != testInvoicePaymentHash {
 		t.Fatalf("expected subscription for provided hash")
 	}
 
@@ -366,7 +367,7 @@ func TestSettleHoldInvoice(t *testing.T) {
 	}
 	defer subscription.Cancel()
 
-	if subscription.hash != testInvoicePaymentHash {
+	if subscription.invoiceRef.PayHash() != testInvoicePaymentHash {
 		t.Fatalf("expected subscription for provided hash")
 	}
 
@@ -725,15 +726,113 @@ func testKeySend(t *testing.T, keySendEnabled bool) {
 		return
 	}
 
-	// Otherwise we expect no error and a settle resolution for the htlc.
-	settleResolution, ok := resolution.(*HtlcSettleResolution)
-	if !ok {
-		t.Fatalf("expected settle resolution, got: %T",
-			resolution)
+	checkResolution := func(res HtlcResolution, pimg lntypes.Preimage) {
+		// Otherwise we expect no error and a settle res for the htlc.
+		settleResolution, ok := res.(*HtlcSettleResolution)
+		assert.True(t, ok)
+		assert.Equal(t, settleResolution.Preimage, pimg)
 	}
-	if settleResolution.Preimage != preimage {
-		t.Fatalf("expected settle with matching preimage")
+	checkSubscription := func() {
+		// We expect a new invoice notification to be sent out.
+		newInvoice := <-allSubscriptions.NewInvoices
+		assert.Equal(t, newInvoice.State, channeldb.ContractOpen)
+
+		// We expect a settled notification to be sent out.
+		settledInvoice := <-allSubscriptions.SettledInvoices
+		assert.Equal(t, settledInvoice.State, channeldb.ContractSettled)
 	}
+
+	checkResolution(resolution, preimage)
+	checkSubscription()
+
+	// Replay the same keysend payment. We expect an identical resolution,
+	// but no event should be generated.
+	resolution, err = ctx.registry.NotifyExitHopHtlc(
+		hash, amt, expiry,
+		testCurrentHeight, getCircuitKey(10), hodlChan, keySendPayload,
+	)
+	assert.Nil(t, err)
+	checkResolution(resolution, preimage)
+
+	select {
+	case <-allSubscriptions.NewInvoices:
+		t.Fatalf("replayed keysend should not generate event")
+	case <-time.After(time.Second):
+	}
+
+	// Finally, test that we can properly fulfill a second keysend payment
+	// with a unique preiamge.
+	preimage2 := lntypes.Preimage{1, 2, 3, 4}
+	hash2 := preimage2.Hash()
+
+	keySendPayload2 := &mockPayload{
+		customRecords: map[uint64][]byte{
+			record.KeySendType: preimage2[:],
+		},
+	}
+
+	resolution, err = ctx.registry.NotifyExitHopHtlc(
+		hash2, amt, expiry,
+		testCurrentHeight, getCircuitKey(20), hodlChan, keySendPayload2,
+	)
+	assert.Nil(t, err)
+
+	checkResolution(resolution, preimage2)
+	checkSubscription()
+}
+
+// TestHoldKeysend tests receiving a spontaneous payment that is held.
+func TestHoldKeysend(t *testing.T) {
+	t.Run("settle", func(t *testing.T) {
+		testHoldKeysend(t, false)
+	})
+	t.Run("timeout", func(t *testing.T) {
+		testHoldKeysend(t, true)
+	})
+}
+
+// testHoldKeysend is the inner test function that tests hold-keysend.
+func testHoldKeysend(t *testing.T, timeoutKeysend bool) {
+	defer timeout()()
+
+	const holdDuration = time.Minute
+
+	ctx := newTestContext(t)
+	defer ctx.cleanup()
+
+	ctx.registry.cfg.AcceptKeySend = true
+	ctx.registry.cfg.KeysendHoldTime = holdDuration
+
+	allSubscriptions, err := ctx.registry.SubscribeNotifications(0, 0)
+	assert.Nil(t, err)
+	defer allSubscriptions.Cancel()
+
+	hodlChan := make(chan interface{}, 1)
+
+	amt := lnwire.MilliSatoshi(1000)
+	expiry := uint32(testCurrentHeight + 20)
+
+	// Create key for keysend.
+	preimage := lntypes.Preimage{1, 2, 3}
+	hash := preimage.Hash()
+
+	// Try to settle invoice with a valid keysend htlc.
+	keysendPayload := &mockPayload{
+		customRecords: map[uint64][]byte{
+			record.KeySendType: preimage[:],
+		},
+	}
+
+	resolution, err := ctx.registry.NotifyExitHopHtlc(
+		hash, amt, expiry,
+		testCurrentHeight, getCircuitKey(10), hodlChan, keysendPayload,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No immediate resolution is expected.
+	require.Nil(t, resolution, "expected hold resolution")
 
 	// We expect a new invoice notification to be sent out.
 	newInvoice := <-allSubscriptions.NewInvoices
@@ -742,12 +841,43 @@ func testKeySend(t *testing.T, keySendEnabled bool) {
 			newInvoice.State)
 	}
 
+	// We expect no further invoice notifications yet (on the all invoices
+	// subscription).
+	select {
+	case <-allSubscriptions.NewInvoices:
+		t.Fatalf("no invoice update expected")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if timeoutKeysend {
+		// Advance the clock to just past the hold duration.
+		ctx.clock.SetTime(ctx.clock.Now().Add(
+			holdDuration + time.Millisecond),
+		)
+
+		// Expect the keysend payment to be failed.
+		res := <-hodlChan
+		failResolution, ok := res.(*HtlcFailResolution)
+		require.Truef(
+			t, ok, "expected fail resolution, got: %T",
+			resolution,
+		)
+		require.Equal(
+			t, ResultCanceled, failResolution.Outcome,
+			"expected keysend payment to be failed",
+		)
+
+		return
+	}
+
+	// Settle keysend payment manually.
+	require.Nil(t, ctx.registry.SettleHodlInvoice(
+		*newInvoice.Terms.PaymentPreimage,
+	))
+
 	// We expect a settled notification to be sent out.
 	settledInvoice := <-allSubscriptions.SettledInvoices
-	if settledInvoice.State != channeldb.ContractSettled {
-		t.Fatalf("expected state ContractOpen, but got %v",
-			settledInvoice.State)
-	}
+	assert.Equal(t, settledInvoice.State, channeldb.ContractSettled)
 }
 
 // TestMppPayment tests settling of an invoice with multiple partial payments.

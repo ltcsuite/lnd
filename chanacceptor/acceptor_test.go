@@ -8,8 +8,8 @@ import (
 
 	"github.com/ltcsuite/lnd/lnrpc"
 
-	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/btcec"
 )
 
 func randKey(t *testing.T) *btcec.PublicKey {

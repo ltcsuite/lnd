@@ -23,7 +23,6 @@ import (
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/record"
 	"github.com/ltcsuite/lnd/routing/route"
-	"github.com/ltcsuite/lnd/zpay32"
 )
 
 var uniquePaymentID uint64 = 1 // to be used atomically
@@ -223,7 +222,7 @@ func TestFindRoutesWithFeeLimit(t *testing.T) {
 	route, err := ctx.router.FindRoute(
 		ctx.router.selfNode.PubKeyBytes,
 		target, paymentAmt, restrictions, nil, nil,
-		zpay32.DefaultFinalCLTVDelta,
+		MinCLTVDelta,
 	)
 	if err != nil {
 		t.Fatalf("unable to find any routes: %v", err)
@@ -1284,7 +1283,7 @@ func TestAddEdgeUnknownVertexes(t *testing.T) {
 	_, err = ctx.router.FindRoute(
 		ctx.router.selfNode.PubKeyBytes,
 		targetPubKeyBytes, paymentAmt, noRestrictions, nil, nil,
-		zpay32.DefaultFinalCLTVDelta,
+		MinCLTVDelta,
 	)
 	if err != nil {
 		t.Fatalf("unable to find any routes: %v", err)
@@ -1327,7 +1326,7 @@ func TestAddEdgeUnknownVertexes(t *testing.T) {
 	_, err = ctx.router.FindRoute(
 		ctx.router.selfNode.PubKeyBytes,
 		targetPubKeyBytes, paymentAmt, noRestrictions, nil, nil,
-		zpay32.DefaultFinalCLTVDelta,
+		MinCLTVDelta,
 	)
 	if err != nil {
 		t.Fatalf("unable to find any routes: %v", err)
@@ -2809,13 +2808,13 @@ func TestSendToRouteMultiShardSend(t *testing.T) {
 
 	for i := 0; i < numShards; i++ {
 		go func() {
-			preimg, err := ctx.router.SendToRoute(payment, rt)
+			attempt, err := ctx.router.SendToRoute(payment, rt)
 			if err != nil {
 				errChan <- err
 				return
 			}
 
-			successes <- preimg
+			successes <- attempt.Settle.Preimage
 		}()
 	}
 

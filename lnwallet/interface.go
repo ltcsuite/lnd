@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
@@ -12,6 +13,7 @@ import (
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
+	"github.com/ltcsuite/ltcwallet/wtxmgr"
 )
 
 // AddressType is an enum-like type which denotes the possible address types
@@ -43,7 +45,7 @@ var (
 	// ErrDoubleSpend is returned from PublishTransaction in case the
 	// tx being published is spending an output spent by a conflicting
 	// transaction.
-	ErrDoubleSpend = errors.New("Transaction rejected: output already spent")
+	ErrDoubleSpend = errors.New("transaction rejected: output already spent")
 
 	// ErrNotMine is an error denoting that a WalletController instance is
 	// unable to spend a specified output.
@@ -103,6 +105,9 @@ type TransactionDetail struct {
 
 	// RawTx returns the raw serialized transaction.
 	RawTx []byte
+
+	// Label is an optional transaction label.
+	Label string
 }
 
 // TransactionSubscription is an interface which describes an object capable of
@@ -173,8 +178,10 @@ type WalletController interface {
 	// funds, or the outputs are non-standard, an error should be returned.
 	// This method also takes the target fee expressed in sat/kw that should
 	// be used when crafting the transaction.
+	//
+	// NOTE: This method requires the global coin selection lock to be held.
 	SendOutputs(outputs []*wire.TxOut,
-		feeRate chainfee.SatPerKWeight) (*wire.MsgTx, error)
+		feeRate chainfee.SatPerKWeight, label string) (*wire.MsgTx, error)
 
 	// CreateSimpleTx creates a Bitcoin transaction paying to the specified
 	// outputs. The transaction is not broadcasted to the network. In the
@@ -186,6 +193,8 @@ type WalletController interface {
 	// NOTE: The dryRun argument can be set true to create a tx that
 	// doesn't alter the database. A tx created with this set to true
 	// SHOULD NOT be broadcasted.
+	//
+	// NOTE: This method requires the global coin selection lock to be held.
 	CreateSimpleTx(outputs []*wire.TxOut, feeRate chainfee.SatPerKWeight,
 		dryRun bool) (*txauthor.AuthoredTx, error)
 
@@ -196,21 +205,53 @@ type WalletController interface {
 	// 'minconfirms' indicates that even unconfirmed outputs should be
 	// returned. Using MaxInt32 as 'maxconfirms' implies returning all
 	// outputs with at least 'minconfirms'.
+	//
+	// NOTE: This method requires the global coin selection lock to be held.
 	ListUnspentWitness(minconfirms, maxconfirms int32) ([]*Utxo, error)
 
 	// ListTransactionDetails returns a list of all transactions which are
-	// relevant to the wallet.
-	ListTransactionDetails() ([]*TransactionDetail, error)
+	// relevant to the wallet over [startHeight;endHeight]. If start height
+	// is greater than end height, the transactions will be retrieved in
+	// reverse order. To include unconfirmed transactions, endHeight should
+	// be set to the special value -1. This will return transactions from
+	// the tip of the chain until the start height (inclusive) and
+	// unconfirmed transactions.
+	ListTransactionDetails(startHeight,
+		endHeight int32) ([]*TransactionDetail, error)
 
 	// LockOutpoint marks an outpoint as locked meaning it will no longer
 	// be deemed as eligible for coin selection. Locking outputs are
 	// utilized in order to avoid race conditions when selecting inputs for
 	// usage when funding a channel.
+	//
+	// NOTE: This method requires the global coin selection lock to be held.
 	LockOutpoint(o wire.OutPoint)
 
 	// UnlockOutpoint unlocks a previously locked output, marking it
 	// eligible for coin selection.
+	//
+	// NOTE: This method requires the global coin selection lock to be held.
 	UnlockOutpoint(o wire.OutPoint)
+
+	// LeaseOutput locks an output to the given ID, preventing it from being
+	// available for any future coin selection attempts. The absolute time
+	// of the lock's expiration is returned. The expiration of the lock can
+	// be extended by successive invocations of this call. Outputs can be
+	// unlocked before their expiration through `ReleaseOutput`.
+	//
+	// If the output is not known, wtxmgr.ErrUnknownOutput is returned. If
+	// the output has already been locked to a different ID, then
+	// wtxmgr.ErrOutputAlreadyLocked is returned.
+	//
+	// NOTE: This method requires the global coin selection lock to be held.
+	LeaseOutput(id wtxmgr.LockID, op wire.OutPoint) (time.Time, error)
+
+	// ReleaseOutput unlocks an output, allowing it to be available for coin
+	// selection if it remains unspent. The ID should match the one used to
+	// originally lock the output.
+	//
+	// NOTE: This method requires the global coin selection lock to be held.
+	ReleaseOutput(id wtxmgr.LockID, op wire.OutPoint) error
 
 	// PublishTransaction performs cursory validation (dust checks, etc),
 	// then finally broadcasts the passed transaction to the Bitcoin network.
@@ -218,8 +259,14 @@ type WalletController interface {
 	// already known transaction, ErrDoubleSpend is returned. If the
 	// transaction is already known (published already), no error will be
 	// returned. Other error returned depends on the currently active chain
-	// backend.
-	PublishTransaction(tx *wire.MsgTx) error
+	// backend. It takes an optional label which will save a label with the
+	// published transaction.
+	PublishTransaction(tx *wire.MsgTx, label string) error
+
+	// LabelTransaction adds a label to a transaction. If the tx already
+	// has a label, this call will fail unless the overwrite parameter
+	// is set. Labels must not be empty, and they are limited to 500 chars.
+	LabelTransaction(hash chainhash.Hash, label string, overwrite bool) error
 
 	// SubscribeTransactions returns a TransactionSubscription client which
 	// is capable of receiving async notifications as new transactions
@@ -237,6 +284,11 @@ type WalletController interface {
 	// It also returns an int64 indicating the timestamp of the best block
 	// known to the wallet, expressed in Unix epoch time
 	IsSynced() (bool, int64, error)
+
+	// GetRecoveryInfo returns a boolean indicating whether the wallet is
+	// started in recovery mode. It also returns a float64 indicating the
+	// recovery progress made so far.
+	GetRecoveryInfo() (bool, float64, error)
 
 	// Start initializes the wallet, making any necessary connections,
 	// starting up required goroutines etc.

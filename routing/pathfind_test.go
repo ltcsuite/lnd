@@ -22,7 +22,6 @@ import (
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/record"
 	"github.com/ltcsuite/lnd/routing/route"
-	"github.com/ltcsuite/lnd/zpay32"
 	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
@@ -34,12 +33,6 @@ const (
 	// the tests. The basic graph consists of 5 nodes with 5 channels
 	// connecting them.
 	basicGraphFilePath = "testdata/basic_graph.json"
-
-	// excessiveHopsGraphFilePath is a file path which stores the JSON dump
-	// of a graph which was previously triggering an erroneous excessive
-	// hops error. The error has since been fixed, but a test case
-	// exercising it is kept around to guard against regressions.
-	excessiveHopsGraphFilePath = "testdata/excessive_hops.json"
 
 	// specExampleFilePath is a file path which stores an example which
 	// implementations will use in order to ensure that they're calculating
@@ -442,8 +435,7 @@ func createTestGraphFromChannels(testChannels []*testChannel, source string) (
 	addNodeWithAlias := func(alias string, features *lnwire.FeatureVector) (
 		*channeldb.LightningNode, error) {
 
-		keyBytes := make([]byte, 32)
-		keyBytes = []byte{
+		keyBytes := []byte{
 			0, 0, 0, 0, 0, 0, 0, 0,
 			0, 0, 0, 0, 0, 0, 0, 0,
 			0, 0, 0, 0, 0, 0, 0, 0,
@@ -2083,7 +2075,7 @@ func TestPathFindSpecExample(t *testing.T) {
 	const amt lnwire.MilliSatoshi = 4999999
 	route, err := ctx.router.FindRoute(
 		bobNode.PubKeyBytes, carol, amt, noRestrictions, nil, nil,
-		zpay32.DefaultFinalCLTVDelta,
+		MinCLTVDelta,
 	)
 	if err != nil {
 		t.Fatalf("unable to find route: %v", err)
@@ -2107,14 +2099,14 @@ func TestPathFindSpecExample(t *testing.T) {
 		t.Fatalf("wrong hop fee: got %v, expected %v", fee, 0)
 	}
 
-	// The CLTV expiry should be the current height plus 9 (the expiry for
+	// The CLTV expiry should be the current height plus 18 (the expiry for
 	// the B -> C channel.
 	if route.TotalTimeLock !=
-		startingHeight+zpay32.DefaultFinalCLTVDelta {
+		startingHeight+MinCLTVDelta {
 
 		t.Fatalf("wrong total time lock: got %v, expecting %v",
 			route.TotalTimeLock,
-			startingHeight+zpay32.DefaultFinalCLTVDelta)
+			startingHeight+MinCLTVDelta)
 	}
 
 	// Next, we'll set A as the source node so we can assert that we create
@@ -2139,7 +2131,7 @@ func TestPathFindSpecExample(t *testing.T) {
 	// We'll now request a route from A -> B -> C.
 	route, err = ctx.router.FindRoute(
 		source.PubKeyBytes, carol, amt, noRestrictions, nil, nil,
-		zpay32.DefaultFinalCLTVDelta,
+		MinCLTVDelta,
 	)
 	if err != nil {
 		t.Fatalf("unable to find routes: %v", err)
@@ -2152,15 +2144,16 @@ func TestPathFindSpecExample(t *testing.T) {
 	}
 
 	// The total amount should factor in a fee of 10199 and also use a CLTV
-	// delta total of 29 (20 + 9),
+	// delta total of 38 (20 + 18),
 	expectedAmt := lnwire.MilliSatoshi(5010198)
 	if route.TotalAmount != expectedAmt {
 		t.Fatalf("wrong amount: got %v, expected %v",
 			route.TotalAmount, expectedAmt)
 	}
-	if route.TotalTimeLock != startingHeight+29 {
+	expectedDelta := uint32(20 + MinCLTVDelta)
+	if route.TotalTimeLock != startingHeight+expectedDelta {
 		t.Fatalf("wrong total time lock: got %v, expecting %v",
-			route.TotalTimeLock, startingHeight+29)
+			route.TotalTimeLock, startingHeight+expectedDelta)
 	}
 
 	// Ensure that the hops of the route are properly crafted.
@@ -2195,11 +2188,11 @@ func TestPathFindSpecExample(t *testing.T) {
 	// The outgoing CLTV value itself should be the current height plus 30
 	// to meet Carol's requirements.
 	if route.Hops[0].OutgoingTimeLock !=
-		startingHeight+zpay32.DefaultFinalCLTVDelta {
+		startingHeight+MinCLTVDelta {
 
 		t.Fatalf("wrong total time lock: got %v, expecting %v",
 			route.Hops[0].OutgoingTimeLock,
-			startingHeight+zpay32.DefaultFinalCLTVDelta)
+			startingHeight+MinCLTVDelta)
 	}
 
 	// For B -> C, we assert that the final hop also has the proper
@@ -2210,11 +2203,11 @@ func TestPathFindSpecExample(t *testing.T) {
 			lastHop.AmtToForward, amt)
 	}
 	if lastHop.OutgoingTimeLock !=
-		startingHeight+zpay32.DefaultFinalCLTVDelta {
+		startingHeight+MinCLTVDelta {
 
 		t.Fatalf("wrong total time lock: got %v, expecting %v",
 			lastHop.OutgoingTimeLock,
-			startingHeight+zpay32.DefaultFinalCLTVDelta)
+			startingHeight+MinCLTVDelta)
 	}
 }
 

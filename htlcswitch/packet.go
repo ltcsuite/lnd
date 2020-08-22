@@ -4,6 +4,7 @@ import (
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/htlcswitch/hop"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/record"
 )
 
 // htlcPacket is a wrapper around htlc lnwire update, which adds additional
@@ -91,6 +92,10 @@ type htlcPacket struct {
 	// will be extraced from the hop payload recevived by the incoming
 	// link.
 	outgoingTimeout uint32
+
+	// customRecords are user-defined records in the custom type range that
+	// were included in the payload.
+	customRecords record.CustomSet
 }
 
 // inKey returns the circuit key used to identify the incoming htlc.

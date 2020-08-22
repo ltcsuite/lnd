@@ -11,11 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/netann"
+	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // randOutpoint creates a random wire.Outpoint.
@@ -225,9 +226,7 @@ func (g *mockGraph) chans() []*channeldb.OpenChannel {
 	defer g.mu.Unlock()
 
 	channels := make([]*channeldb.OpenChannel, 0, len(g.channels))
-	for _, channel := range g.channels {
-		channels = append(channels, channel)
-	}
+	channels = append(channels, g.channels...)
 
 	return channels
 }
@@ -311,6 +310,7 @@ func newManagerCfg(t *testing.T, numChannels int,
 	if err != nil {
 		t.Fatalf("unable to generate key pair: %v", err)
 	}
+	privKeySigner := &keychain.PrivKeyDigestSigner{PrivKey: privKey}
 
 	graph := newMockGraph(
 		t, numChannels, startEnabled, startEnabled, privKey.PubKey(),
@@ -322,7 +322,7 @@ func newManagerCfg(t *testing.T, numChannels int,
 		ChanEnableTimeout:        500 * time.Millisecond,
 		ChanDisableTimeout:       time.Second,
 		OurPubKey:                privKey.PubKey(),
-		MessageSigner:            netann.NewNodeSigner(privKey),
+		MessageSigner:            netann.NewNodeSigner(privKeySigner),
 		IsChannelActive:          htlcSwitch.HasActiveLink,
 		ApplyChannelUpdate:       graph.ApplyChannelUpdate,
 		DB:                       graph,

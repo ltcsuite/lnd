@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/fastsha256"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/htlcswitch/hop"
@@ -173,6 +172,13 @@ func TestSwitchSendPending(t *testing.T) {
 		t.Fatalf("unable to create alice server: %v", err)
 	}
 
+	bobPeer, err := newMockServer(
+		t, "bob", testStartingHeight, nil, testDefaultDelta,
+	)
+	if err != nil {
+		t.Fatalf("unable to create bob server: %v", err)
+	}
+
 	s, err := initSwitchWithDB(testStartingHeight, nil)
 	if err != nil {
 		t.Fatalf("unable to init switch: %v", err)
@@ -182,7 +188,7 @@ func TestSwitchSendPending(t *testing.T) {
 	}
 	defer s.Stop()
 
-	chanID1, _, aliceChanID, bobChanID := genIDs()
+	chanID1, chanID2, aliceChanID, bobChanID := genIDs()
 
 	pendingChanID := lnwire.ShortChannelID{}
 
@@ -193,13 +199,20 @@ func TestSwitchSendPending(t *testing.T) {
 		t.Fatalf("unable to add alice link: %v", err)
 	}
 
+	bobChannelLink := newMockChannelLink(
+		s, chanID2, bobChanID, bobPeer, true,
+	)
+	if err := s.AddLink(bobChannelLink); err != nil {
+		t.Fatalf("unable to add bob link: %v", err)
+	}
+
 	// Create request which should is being forwarded from Bob channel
 	// link to Alice channel link.
 	preimage, err := genPreimage()
 	if err != nil {
 		t.Fatalf("unable to generate preimage: %v", err)
 	}
-	rhash := fastsha256.Sum256(preimage[:])
+	rhash := sha256.Sum256(preimage[:])
 	packet := &htlcPacket{
 		incomingChanID: bobChanID,
 		incomingHTLCID: 0,
@@ -213,7 +226,17 @@ func TestSwitchSendPending(t *testing.T) {
 
 	// Send the ADD packet, this should not be forwarded out to the link
 	// since there are no eligible links.
-	err = s.forward(packet)
+	if err = s.ForwardPackets(nil, packet); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case p := <-bobChannelLink.packets:
+		if p.linkFailure != nil {
+			err = p.linkFailure
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no timely reply from switch")
+	}
 	linkErr, ok := err.(*LinkError)
 	if !ok {
 		t.Fatalf("expected link error, got: %T", err)
@@ -249,7 +272,7 @@ func TestSwitchSendPending(t *testing.T) {
 	packet.incomingHTLCID++
 
 	// Handle the request and checks that bob channel link received it.
-	if err := s.forward(packet); err != nil {
+	if err := s.ForwardPackets(nil, packet); err != nil {
 		t.Fatalf("unexpected forward failure: %v", err)
 	}
 
@@ -309,7 +332,7 @@ func TestSwitchForward(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unable to generate preimage: %v", err)
 	}
-	rhash := fastsha256.Sum256(preimage[:])
+	rhash := sha256.Sum256(preimage[:])
 	packet := &htlcPacket{
 		incomingChanID: aliceChannelLink.ShortChanID(),
 		incomingHTLCID: 0,
@@ -322,7 +345,7 @@ func TestSwitchForward(t *testing.T) {
 	}
 
 	// Handle the request and checks that bob channel link received it.
-	if err := s.forward(packet); err != nil {
+	if err := s.ForwardPackets(nil, packet); err != nil {
 		t.Fatal(err)
 	}
 
@@ -356,7 +379,7 @@ func TestSwitchForward(t *testing.T) {
 	}
 
 	// Handle the request and checks that payment circuit works properly.
-	if err := s.forward(packet); err != nil {
+	if err := s.ForwardPackets(nil, packet); err != nil {
 		t.Fatal(err)
 	}
 
@@ -431,7 +454,7 @@ func TestSwitchForwardFailAfterFullAdd(t *testing.T) {
 	// Create request which should be forwarded from Alice channel link to
 	// bob channel link.
 	preimage := [sha256.Size]byte{1}
-	rhash := fastsha256.Sum256(preimage[:])
+	rhash := sha256.Sum256(preimage[:])
 	ogPacket := &htlcPacket{
 		incomingChanID: aliceChannelLink.ShortChanID(),
 		incomingHTLCID: 0,
@@ -451,7 +474,7 @@ func TestSwitchForwardFailAfterFullAdd(t *testing.T) {
 	}
 
 	// Handle the request and checks that bob channel link received it.
-	if err := s.forward(ogPacket); err != nil {
+	if err := s.ForwardPackets(nil, ogPacket); err != nil {
 		t.Fatal(err)
 	}
 
@@ -539,7 +562,7 @@ func TestSwitchForwardFailAfterFullAdd(t *testing.T) {
 	}
 
 	// Send the fail packet from the remote peer through the switch.
-	if err := s2.forward(fail); err != nil {
+	if err := s2.ForwardPackets(nil, fail); err != nil {
 		t.Fatalf(err.Error())
 	}
 
@@ -563,9 +586,13 @@ func TestSwitchForwardFailAfterFullAdd(t *testing.T) {
 	}
 
 	// Send the fail packet from the remote peer through the switch.
-	if err := s2.forward(fail); err == nil {
-		t.Fatalf("expected failure when sending duplicate fail " +
-			"with no pending circuit")
+	if err := s.ForwardPackets(nil, fail); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-aliceChannelLink.packets:
+		t.Fatalf("expected duplicate fail to not arrive at the destination")
+	case <-time.After(time.Second):
 	}
 }
 
@@ -626,7 +653,7 @@ func TestSwitchForwardSettleAfterFullAdd(t *testing.T) {
 	// Create request which should be forwarded from Alice channel link to
 	// bob channel link.
 	preimage := [sha256.Size]byte{1}
-	rhash := fastsha256.Sum256(preimage[:])
+	rhash := sha256.Sum256(preimage[:])
 	ogPacket := &htlcPacket{
 		incomingChanID: aliceChannelLink.ShortChanID(),
 		incomingHTLCID: 0,
@@ -646,7 +673,7 @@ func TestSwitchForwardSettleAfterFullAdd(t *testing.T) {
 	}
 
 	// Handle the request and checks that bob channel link received it.
-	if err := s.forward(ogPacket); err != nil {
+	if err := s.ForwardPackets(nil, ogPacket); err != nil {
 		t.Fatal(err)
 	}
 
@@ -736,7 +763,7 @@ func TestSwitchForwardSettleAfterFullAdd(t *testing.T) {
 	}
 
 	// Send the settle packet from the remote peer through the switch.
-	if err := s2.forward(settle); err != nil {
+	if err := s2.ForwardPackets(nil, settle); err != nil {
 		t.Fatalf(err.Error())
 	}
 
@@ -760,10 +787,14 @@ func TestSwitchForwardSettleAfterFullAdd(t *testing.T) {
 		t.Fatalf("wrong amount of circuits")
 	}
 
-	// Send the settle packet again, which should fail.
-	if err := s2.forward(settle); err != nil {
-		t.Fatalf("expected success when sending duplicate settle " +
-			"with no pending circuit")
+	// Send the settle packet again, which not arrive at destination.
+	if err := s2.ForwardPackets(nil, settle); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-bobChannelLink.packets:
+		t.Fatalf("expected duplicate fail to not arrive at the destination")
+	case <-time.After(time.Second):
 	}
 }
 
@@ -824,7 +855,7 @@ func TestSwitchForwardDropAfterFullAdd(t *testing.T) {
 	// Create request which should be forwarded from Alice channel link to
 	// bob channel link.
 	preimage := [sha256.Size]byte{1}
-	rhash := fastsha256.Sum256(preimage[:])
+	rhash := sha256.Sum256(preimage[:])
 	ogPacket := &htlcPacket{
 		incomingChanID: aliceChannelLink.ShortChanID(),
 		incomingHTLCID: 0,
@@ -844,7 +875,7 @@ func TestSwitchForwardDropAfterFullAdd(t *testing.T) {
 	}
 
 	// Handle the request and checks that bob channel link received it.
-	if err := s.forward(ogPacket); err != nil {
+	if err := s.ForwardPackets(nil, ogPacket); err != nil {
 		t.Fatal(err)
 	}
 
@@ -915,12 +946,10 @@ func TestSwitchForwardDropAfterFullAdd(t *testing.T) {
 		t.Fatalf("wrong amount of half circuits")
 	}
 
-	// Resend the failed htlc, it should be returned to alice since the
+	// Resend the failed htlc. The packet will be dropped silently since the
 	// switch will detect that it has been half added previously.
-	err = s2.forward(ogPacket)
-	if err != ErrDuplicateAdd {
-		t.Fatal("unexpected error when reforwarding a "+
-			"failed packet", err)
+	if err := s2.ForwardPackets(nil, ogPacket); err != nil {
+		t.Fatal(err)
 	}
 
 	// After detecting an incomplete forward, the fail packet should have
@@ -991,7 +1020,7 @@ func TestSwitchForwardFailAfterHalfAdd(t *testing.T) {
 	// Create request which should be forwarded from Alice channel link to
 	// bob channel link.
 	preimage := [sha256.Size]byte{1}
-	rhash := fastsha256.Sum256(preimage[:])
+	rhash := sha256.Sum256(preimage[:])
 	ogPacket := &htlcPacket{
 		incomingChanID: aliceChannelLink.ShortChanID(),
 		incomingHTLCID: 0,
@@ -1011,7 +1040,7 @@ func TestSwitchForwardFailAfterHalfAdd(t *testing.T) {
 	}
 
 	// Handle the request and checks that bob channel link received it.
-	if err := s.forward(ogPacket); err != nil {
+	if err := s.ForwardPackets(nil, ogPacket); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1079,20 +1108,20 @@ func TestSwitchForwardFailAfterHalfAdd(t *testing.T) {
 
 	// Resend the failed htlc, it should be returned to alice since the
 	// switch will detect that it has been half added previously.
-	err = s2.forward(ogPacket)
-	linkErr, ok := err.(*LinkError)
-	if !ok {
-		t.Fatalf("expected link error, got: %T", err)
-	}
-	if linkErr.FailureDetail != OutgoingFailureIncompleteForward {
-		t.Fatalf("expected incomplete forward, got: %v",
-			linkErr.FailureDetail)
+	err = s2.ForwardPackets(nil, ogPacket)
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	// After detecting an incomplete forward, the fail packet should have
 	// been returned to the sender.
 	select {
-	case <-aliceChannelLink.packets:
+	case pkt := <-aliceChannelLink.packets:
+		linkErr := pkt.linkFailure
+		if linkErr.FailureDetail != OutgoingFailureIncompleteForward {
+			t.Fatalf("expected incomplete forward, got: %v",
+				linkErr.FailureDetail)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("request was not propagated to destination")
 	}
@@ -1157,7 +1186,7 @@ func TestSwitchForwardCircuitPersistence(t *testing.T) {
 	// Create request which should be forwarded from Alice channel link to
 	// bob channel link.
 	preimage := [sha256.Size]byte{1}
-	rhash := fastsha256.Sum256(preimage[:])
+	rhash := sha256.Sum256(preimage[:])
 	ogPacket := &htlcPacket{
 		incomingChanID: aliceChannelLink.ShortChanID(),
 		incomingHTLCID: 0,
@@ -1177,7 +1206,7 @@ func TestSwitchForwardCircuitPersistence(t *testing.T) {
 	}
 
 	// Handle the request and checks that bob channel link received it.
-	if err := s.forward(ogPacket); err != nil {
+	if err := s.ForwardPackets(nil, ogPacket); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1267,7 +1296,7 @@ func TestSwitchForwardCircuitPersistence(t *testing.T) {
 	}
 
 	// Handle the request and checks that payment circuit works properly.
-	if err := s2.forward(ogPacket); err != nil {
+	if err := s2.ForwardPackets(nil, ogPacket); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1345,7 +1374,7 @@ type multiHopFwdTest struct {
 func TestCircularForwards(t *testing.T) {
 	chanID1, aliceChanID := genID()
 	preimage := [sha256.Size]byte{1}
-	hash := fastsha256.Sum256(preimage[:])
+	hash := sha256.Sum256(preimage[:])
 
 	tests := []struct {
 		name                 string
@@ -1417,7 +1446,17 @@ func TestCircularForwards(t *testing.T) {
 
 			// Attempt to forward the packet and check for the expected
 			// error.
-			err = s.forward(packet)
+			if err = s.ForwardPackets(nil, packet); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case p := <-aliceChannelLink.packets:
+				if p.linkFailure != nil {
+					err = p.linkFailure
+				}
+			case <-time.After(time.Second):
+				t.Fatal("no timely reply from switch")
+			}
 			if !reflect.DeepEqual(err, test.expectedErr) {
 				t.Fatalf("expected: %v, got: %v",
 					test.expectedErr, err)
@@ -1623,7 +1662,7 @@ func testSkipIneligibleLinksMultiHopForward(t *testing.T,
 	// Create a new packet that's destined for Bob as an incoming HTLC from
 	// Alice.
 	preimage := [sha256.Size]byte{1}
-	rhash := fastsha256.Sum256(preimage[:])
+	rhash := sha256.Sum256(preimage[:])
 	obfuscator := NewMockObfuscator()
 	packet = &htlcPacket{
 		incomingChanID: aliceChannelLink.ShortChanID(),
@@ -1637,18 +1676,33 @@ func testSkipIneligibleLinksMultiHopForward(t *testing.T,
 	}
 
 	// The request to forward should fail as
-	err = s.forward(packet)
+	if err := s.ForwardPackets(nil, packet); err != nil {
+		t.Fatal(err)
+	}
 
+	// We select from all links and extract the error if exists.
+	// The packet must be selected but we don't always expect a link error.
+	var linkError *LinkError
+	select {
+	case p := <-aliceChannelLink.packets:
+		linkError = p.linkFailure
+	case p := <-bobChannelLink1.packets:
+		linkError = p.linkFailure
+	case p := <-bobChannelLink2.packets:
+		linkError = p.linkFailure
+	case <-time.After(time.Second):
+		t.Fatal("no timely reply from switch")
+	}
 	failure := obfuscator.(*mockObfuscator).failure
 	if testCase.expectedReply == lnwire.CodeNone {
-		if err != nil {
+		if linkError != nil {
 			t.Fatalf("forwarding should have succeeded")
 		}
 		if failure != nil {
 			t.Fatalf("unexpected failure %T", failure)
 		}
 	} else {
-		if err == nil {
+		if linkError == nil {
 			t.Fatalf("forwarding should have failed due to " +
 				"inactive link")
 		}
@@ -1716,7 +1770,7 @@ func testSkipLinkLocalForward(t *testing.T, eligible bool,
 	if err != nil {
 		t.Fatalf("unable to generate preimage: %v", err)
 	}
-	rhash := fastsha256.Sum256(preimage[:])
+	rhash := sha256.Sum256(preimage[:])
 	addMsg := &lnwire.UpdateAddHTLC{
 		PaymentHash: rhash,
 		Amount:      1,
@@ -1783,7 +1837,7 @@ func TestSwitchCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unable to generate preimage: %v", err)
 	}
-	rhash := fastsha256.Sum256(preimage[:])
+	rhash := sha256.Sum256(preimage[:])
 	request := &htlcPacket{
 		incomingChanID: aliceChannelLink.ShortChanID(),
 		incomingHTLCID: 0,
@@ -1796,7 +1850,7 @@ func TestSwitchCancel(t *testing.T) {
 	}
 
 	// Handle the request and checks that bob channel link received it.
-	if err := s.forward(request); err != nil {
+	if err := s.ForwardPackets(nil, request); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1828,7 +1882,7 @@ func TestSwitchCancel(t *testing.T) {
 	}
 
 	// Handle the request and checks that payment circuit works properly.
-	if err := s.forward(request); err != nil {
+	if err := s.ForwardPackets(nil, request); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1898,7 +1952,7 @@ func TestSwitchAddSamePayment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unable to generate preimage: %v", err)
 	}
-	rhash := fastsha256.Sum256(preimage[:])
+	rhash := sha256.Sum256(preimage[:])
 	request := &htlcPacket{
 		incomingChanID: aliceChannelLink.ShortChanID(),
 		incomingHTLCID: 0,
@@ -1911,7 +1965,7 @@ func TestSwitchAddSamePayment(t *testing.T) {
 	}
 
 	// Handle the request and checks that bob channel link received it.
-	if err := s.forward(request); err != nil {
+	if err := s.ForwardPackets(nil, request); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1941,7 +1995,7 @@ func TestSwitchAddSamePayment(t *testing.T) {
 	}
 
 	// Handle the request and checks that bob channel link received it.
-	if err := s.forward(request); err != nil {
+	if err := s.ForwardPackets(nil, request); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1970,7 +2024,7 @@ func TestSwitchAddSamePayment(t *testing.T) {
 	}
 
 	// Handle the request and checks that payment circuit works properly.
-	if err := s.forward(request); err != nil {
+	if err := s.ForwardPackets(nil, request); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1996,7 +2050,7 @@ func TestSwitchAddSamePayment(t *testing.T) {
 	}
 
 	// Handle the request and checks that payment circuit works properly.
-	if err := s.forward(request); err != nil {
+	if err := s.ForwardPackets(nil, request); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2051,7 +2105,7 @@ func TestSwitchSendPayment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unable to generate preimage: %v", err)
 	}
-	rhash := fastsha256.Sum256(preimage[:])
+	rhash := sha256.Sum256(preimage[:])
 	update := &lnwire.UpdateAddHTLC{
 		PaymentHash: rhash,
 		Amount:      1,
@@ -2139,7 +2193,7 @@ func TestSwitchSendPayment(t *testing.T) {
 		},
 	}
 
-	if err := s.forward(packet); err != nil {
+	if err := s.ForwardPackets(nil, packet); err != nil {
 		t.Fatalf("can't forward htlc packet: %v", err)
 	}
 
@@ -2594,7 +2648,7 @@ func TestInvalidFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unable to generate preimage: %v", err)
 	}
-	rhash := fastsha256.Sum256(preimage[:])
+	rhash := sha256.Sum256(preimage[:])
 	update := &lnwire.UpdateAddHTLC{
 		PaymentHash: rhash,
 		Amount:      1,
@@ -2634,7 +2688,7 @@ func TestInvalidFailure(t *testing.T) {
 		},
 	}
 
-	if err := s.forward(packet); err != nil {
+	if err := s.ForwardPackets(nil, packet); err != nil {
 		t.Fatalf("can't forward htlc packet: %v", err)
 	}
 
@@ -3059,4 +3113,187 @@ func getThreeHopEvents(channels *clusterChannels, htlcID uint64,
 	}
 
 	return aliceEvents, bobEvents, carolEvents
+}
+
+type mockForwardInterceptor struct {
+	intercepted InterceptedForward
+}
+
+func (m *mockForwardInterceptor) InterceptForwardHtlc(intercepted InterceptedForward) bool {
+
+	m.intercepted = intercepted
+	return true
+}
+
+func (m *mockForwardInterceptor) settle(preimage lntypes.Preimage) error {
+	return m.intercepted.Settle(preimage)
+}
+
+func (m *mockForwardInterceptor) fail() error {
+	return m.intercepted.Fail()
+}
+
+func (m *mockForwardInterceptor) resume() error {
+	return m.intercepted.Resume()
+}
+
+func assertNumCircuits(t *testing.T, s *Switch, pending, opened int) {
+	if s.circuits.NumPending() != pending {
+		t.Fatal("wrong amount of half circuits")
+	}
+	if s.circuits.NumOpen() != opened {
+		t.Fatal("wrong amount of circuits")
+	}
+}
+
+func assertOutgoingLinkReceive(t *testing.T, targetLink *mockChannelLink,
+	expectReceive bool) {
+
+	// Pull packet from targetLink link.
+	select {
+	case packet := <-targetLink.packets:
+		if !expectReceive {
+			t.Fatal("forward was intercepted, shouldn't land at bob link")
+		} else if err := targetLink.completeCircuit(packet); err != nil {
+			t.Fatalf("unable to complete payment circuit: %v", err)
+		}
+
+	case <-time.After(time.Second):
+		if expectReceive {
+			t.Fatal("request was not propagated to destination")
+		}
+	}
+}
+
+func TestSwitchHoldForward(t *testing.T) {
+	t.Parallel()
+
+	chanID1, chanID2, aliceChanID, bobChanID := genIDs()
+
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
+	if err != nil {
+		t.Fatalf("unable to create alice server: %v", err)
+	}
+	bobPeer, err := newMockServer(
+		t, "bob", testStartingHeight, nil, testDefaultDelta,
+	)
+	if err != nil {
+		t.Fatalf("unable to create bob server: %v", err)
+	}
+
+	tempPath, err := ioutil.TempDir("", "circuitdb")
+	if err != nil {
+		t.Fatalf("unable to temporary path: %v", err)
+	}
+
+	cdb, err := channeldb.Open(tempPath)
+	if err != nil {
+		t.Fatalf("unable to open channeldb: %v", err)
+	}
+
+	s, err := initSwitchWithDB(testStartingHeight, cdb)
+	if err != nil {
+		t.Fatalf("unable to init switch: %v", err)
+	}
+	if err := s.Start(); err != nil {
+		t.Fatalf("unable to start switch: %v", err)
+	}
+
+	defer func() {
+		if err := s.Stop(); err != nil {
+			t.Fatalf(err.Error())
+		}
+	}()
+
+	aliceChannelLink := newMockChannelLink(
+		s, chanID1, aliceChanID, alicePeer, true,
+	)
+	bobChannelLink := newMockChannelLink(
+		s, chanID2, bobChanID, bobPeer, true,
+	)
+	if err := s.AddLink(aliceChannelLink); err != nil {
+		t.Fatalf("unable to add alice link: %v", err)
+	}
+	if err := s.AddLink(bobChannelLink); err != nil {
+		t.Fatalf("unable to add bob link: %v", err)
+	}
+
+	// Create request which should be forwarded from Alice channel link to
+	// bob channel link.
+	preimage := [sha256.Size]byte{1}
+	rhash := sha256.Sum256(preimage[:])
+	ogPacket := &htlcPacket{
+		incomingChanID: aliceChannelLink.ShortChanID(),
+		incomingHTLCID: 0,
+		outgoingChanID: bobChannelLink.ShortChanID(),
+		obfuscator:     NewMockObfuscator(),
+		htlc: &lnwire.UpdateAddHTLC{
+			PaymentHash: rhash,
+			Amount:      1,
+		},
+	}
+
+	forwardInterceptor := &mockForwardInterceptor{}
+	switchForwardInterceptor := NewInterceptableSwitch(s)
+	switchForwardInterceptor.SetInterceptor(forwardInterceptor.InterceptForwardHtlc)
+	linkQuit := make(chan struct{})
+
+	// Test resume a hold forward
+	assertNumCircuits(t, s, 0, 0)
+	if err := switchForwardInterceptor.ForwardPackets(linkQuit, ogPacket); err != nil {
+		t.Fatalf("can't forward htlc packet: %v", err)
+	}
+	assertNumCircuits(t, s, 0, 0)
+	assertOutgoingLinkReceive(t, bobChannelLink, false)
+
+	if err := forwardInterceptor.resume(); err != nil {
+		t.Fatalf("failed to resume forward")
+	}
+	assertOutgoingLinkReceive(t, bobChannelLink, true)
+	assertNumCircuits(t, s, 1, 1)
+
+	// settling the htlc to close the circuit.
+	settle := &htlcPacket{
+		outgoingChanID: bobChannelLink.ShortChanID(),
+		outgoingHTLCID: 0,
+		amount:         1,
+		htlc: &lnwire.UpdateFulfillHTLC{
+			PaymentPreimage: preimage,
+		},
+	}
+	if err := switchForwardInterceptor.ForwardPackets(linkQuit, settle); err != nil {
+		t.Fatalf("can't forward htlc packet: %v", err)
+	}
+	assertOutgoingLinkReceive(t, aliceChannelLink, true)
+	assertNumCircuits(t, s, 0, 0)
+
+	// Test failing a hold forward
+	if err := switchForwardInterceptor.ForwardPackets(linkQuit, ogPacket); err != nil {
+		t.Fatalf("can't forward htlc packet: %v", err)
+	}
+	assertNumCircuits(t, s, 0, 0)
+	assertOutgoingLinkReceive(t, bobChannelLink, false)
+
+	if err := forwardInterceptor.fail(); err != nil {
+		t.Fatalf("failed to cancel forward %v", err)
+	}
+	assertOutgoingLinkReceive(t, bobChannelLink, false)
+	assertOutgoingLinkReceive(t, aliceChannelLink, true)
+	assertNumCircuits(t, s, 0, 0)
+
+	// Test settling a hold forward
+	if err := switchForwardInterceptor.ForwardPackets(linkQuit, ogPacket); err != nil {
+		t.Fatalf("can't forward htlc packet: %v", err)
+	}
+	assertNumCircuits(t, s, 0, 0)
+	assertOutgoingLinkReceive(t, bobChannelLink, false)
+
+	if err := forwardInterceptor.settle(preimage); err != nil {
+		t.Fatal("failed to cancel forward")
+	}
+	assertOutgoingLinkReceive(t, bobChannelLink, false)
+	assertOutgoingLinkReceive(t, aliceChannelLink, true)
+	assertNumCircuits(t, s, 0, 0)
 }

@@ -7,8 +7,8 @@ import (
 	"io"
 
 	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/channeldb/migration_01_to_11/zpay32"
 	"github.com/ltcsuite/lnd/lnwire"
-	"github.com/ltcsuite/lnd/zpay32"
 	bitcoinCfg "github.com/ltcsuite/ltcd/chaincfg"
 	litecoinCfg "github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/wire"

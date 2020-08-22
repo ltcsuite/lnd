@@ -1,11 +1,12 @@
 package contractcourt
 
 import (
-	"reflect"
 	"testing"
 	"time"
 
 	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb/kvdb"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
@@ -40,11 +41,18 @@ func newCommitSweepResolverTestContext(t *testing.T,
 			Notifier: notifier,
 			Sweeper:  sweeper,
 		},
+		PutResolverReport: func(_ kvdb.RwTx,
+			_ *channeldb.ResolverReport) error {
+
+			return nil
+		},
 	}
 
 	cfg := ResolverConfig{
 		ChannelArbitratorConfig: chainCfg,
-		Checkpoint: func(_ ContractResolver) error {
+		Checkpoint: func(_ ContractResolver,
+			_ ...*channeldb.ResolverReport) error {
+
 			checkPointChan <- struct{}{}
 			return nil
 		},
@@ -96,12 +104,15 @@ func (i *commitSweepResolverTestContext) waitForResult() {
 type mockSweeper struct {
 	sweptInputs   chan input.Input
 	updatedInputs chan wire.OutPoint
+	sweepTx       *wire.MsgTx
+	sweepErr      error
 }
 
 func newMockSweeper() *mockSweeper {
 	return &mockSweeper{
 		sweptInputs:   make(chan input.Input),
 		updatedInputs: make(chan wire.OutPoint),
+		sweepTx:       &wire.MsgTx{},
 	}
 }
 
@@ -112,7 +123,8 @@ func (s *mockSweeper) SweepInput(input input.Input, params sweep.Params) (
 
 	result := make(chan sweep.Result, 1)
 	result <- sweep.Result{
-		Tx: &wire.MsgTx{},
+		Tx:  s.sweepTx,
+		Err: s.sweepErr,
 	}
 	return result, nil
 }
@@ -134,7 +146,7 @@ func (s *mockSweeper) UpdateParams(input wire.OutPoint,
 
 	result := make(chan sweep.Result, 1)
 	result <- sweep.Result{
-		Tx: &wire.MsgTx{},
+		Tx: s.sweepTx,
 	}
 	return result, nil
 }
@@ -157,22 +169,54 @@ func TestCommitSweepResolverNoDelay(t *testing.T) {
 	}
 
 	ctx := newCommitSweepResolverTestContext(t, &res)
+
+	// Replace our checkpoint with one which will push reports into a
+	// channel for us to consume. We replace this function on the resolver
+	// itself because it is created by the test context.
+	reportChan := make(chan *channeldb.ResolverReport)
+	ctx.resolver.Checkpoint = func(_ ContractResolver,
+		reports ...*channeldb.ResolverReport) error {
+
+		// Send all of our reports into the channel.
+		for _, report := range reports {
+			reportChan <- report
+		}
+
+		return nil
+	}
+
 	ctx.resolve()
 
-	ctx.notifier.confChan <- &chainntnfs.TxConfirmation{}
+	spendTx := &wire.MsgTx{}
+	spendHash := spendTx.TxHash()
+	ctx.notifier.confChan <- &chainntnfs.TxConfirmation{
+		Tx: spendTx,
+	}
 
 	// No csv delay, so the input should be swept immediately.
 	<-ctx.sweeper.sweptInputs
 
+	amt := ltcutil.Amount(res.SelfOutputSignDesc.Output.Value)
+	expectedReport := &channeldb.ResolverReport{
+		OutPoint:        wire.OutPoint{},
+		Amount:          amt,
+		ResolverType:    channeldb.ResolverTypeCommit,
+		ResolverOutcome: channeldb.ResolverOutcomeClaimed,
+		SpendTxID:       &spendHash,
+	}
+
+	assertResolverReport(t, reportChan, expectedReport)
+
 	ctx.waitForResult()
 }
 
-// TestCommitSweepResolverDelay tests resolution of a direct commitment output
-// that is encumbered by a time lock.
-func TestCommitSweepResolverDelay(t *testing.T) {
-	t.Parallel()
+// testCommitSweepResolverDelay tests resolution of a direct commitment output
+// that is encumbered by a time lock. sweepErr indicates whether the local node
+// fails to sweep the output.
+func testCommitSweepResolverDelay(t *testing.T, sweepErr error) {
 	defer timeout(t)()
 
+	const sweepProcessInterval = 100 * time.Millisecond
 	amt := int64(100)
 	outpoint := wire.OutPoint{
 		Index: 5,
@@ -190,14 +234,35 @@ func TestCommitSweepResolverDelay(t *testing.T) {
 
 	ctx := newCommitSweepResolverTestContext(t, &res)
 
+	// Replace our checkpoint with one which will push reports into a
+	// channel for us to consume. We replace this function on the resolver
+	// itself because it is created by the test context.
+	reportChan := make(chan *channeldb.ResolverReport)
+	ctx.resolver.Checkpoint = func(_ ContractResolver,
+		reports ...*channeldb.ResolverReport) error {
+
+		// Send all of our reports into the channel.
+		for _, report := range reports {
+			reportChan <- report
+		}
+
+		return nil
+	}
+
+	// Setup whether we expect the sweeper to receive a sweep error in this
+	// test case.
+	ctx.sweeper.sweepErr = sweepErr
+
 	report := ctx.resolver.report()
-	if !reflect.DeepEqual(report, &ContractReport{
+	expectedReport := ContractReport{
 		Outpoint:     outpoint,
 		Type:         ReportOutputUnencumbered,
 		Amount:       ltcutil.Amount(amt),
 		LimboBalance: ltcutil.Amount(amt),
-	}) {
-		t.Fatal("unexpected resolver report")
+	}
+	if *report != expectedReport {
+		t.Fatalf("unexpected resolver report. want=%v got=%v",
+			expectedReport, report)
 	}
 
 	ctx.resolve()
@@ -207,7 +272,7 @@ func TestCommitSweepResolverDelay(t *testing.T) {
 	}
 
 	// Allow resolver to process confirmation.
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(sweepProcessInterval)
 
 	// Expect report to be updated.
 	report = ctx.resolver.report()
@@ -222,7 +287,7 @@ func TestCommitSweepResolverDelay(t *testing.T) {
 	select {
 	case <-ctx.sweeper.sweptInputs:
 		t.Fatal("no sweep expected")
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(sweepProcessInterval):
 	}
 
 	// A new block arrives. The commit tx confirmed at height -1 and the csv
@@ -231,16 +296,70 @@ func TestCommitSweepResolverDelay(t *testing.T) {
 
 	<-ctx.sweeper.sweptInputs
 
+	// Set the resolution report outcome based on whether our sweep
+	// succeeded.
+	outcome := channeldb.ResolverOutcomeClaimed
+	if sweepErr != nil {
+		outcome = channeldb.ResolverOutcomeUnclaimed
+	}
+	sweepTx := ctx.sweeper.sweepTx.TxHash()
+
+	assertResolverReport(t, reportChan, &channeldb.ResolverReport{
+		OutPoint:        outpoint,
+		ResolverType:    channeldb.ResolverTypeCommit,
+		ResolverOutcome: outcome,
+		Amount:          ltcutil.Amount(amt),
+		SpendTxID:       &sweepTx,
+	})
+
 	ctx.waitForResult()
 
+	// If this test case generates a sweep error, we don't expect to be
+	// able to recover anything. This might happen if the local commitment
+	// output was swept by a justice transaction by the remote party.
+	expectedRecoveredBalance := ltcutil.Amount(amt)
+	if sweepErr != nil {
+		expectedRecoveredBalance = 0
+	}
+
 	report = ctx.resolver.report()
-	if !reflect.DeepEqual(report, &ContractReport{
+	expectedReport = ContractReport{
 		Outpoint:         outpoint,
 		Type:             ReportOutputUnencumbered,
 		Amount:           ltcutil.Amount(amt),
-		RecoveredBalance: ltcutil.Amount(amt),
 		MaturityHeight:   testInitialBlockHeight + 2,
-	}) {
-		t.Fatal("unexpected resolver report")
+		RecoveredBalance: expectedRecoveredBalance,
+	}
+	if *report != expectedReport {
+		t.Fatalf("unexpected resolver report. want=%v got=%v",
+			expectedReport, report)
+	}
+
+}
+
+// TestCommitSweepResolverDelay tests resolution of a direct commitment output
+// that is encumbered by a time lock.
+func TestCommitSweepResolverDelay(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name     string
+		sweepErr error
+	}{{
+		name:     "success",
+		sweepErr: nil,
+	}, {
+		name:     "remote spend",
+		sweepErr: sweep.ErrRemoteSpend,
+	}}
+
+	for _, tc := range testCases {
+		tc := tc
+		ok := t.Run(tc.name, func(t *testing.T) {
+			testCommitSweepResolverDelay(t, tc.sweepErr)
+		})
+		if !ok {
+			break
+		}
 	}
 }

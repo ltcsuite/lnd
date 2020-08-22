@@ -377,6 +377,16 @@ func (l *LightningWallet) Shutdown() error {
 	return nil
 }
 
+// ConfirmedBalance returns the current confirmed balance of the wallet. This
+// methods wraps the interal WalletController method so we're able to properly
+// hold the coin select mutex while we compute the balance.
+func (l *LightningWallet) ConfirmedBalance(confs int32) (ltcutil.Amount, error) {
+	l.coinSelectMtx.Lock()
+	defer l.coinSelectMtx.Unlock()
+
+	return l.WalletController.ConfirmedBalance(confs)
+}
+
 // LockedOutpoints returns a list of all currently locked outpoint.
 func (l *LightningWallet) LockedOutpoints() []*wire.OutPoint {
 	outPoints := make([]*wire.OutPoint, 0, len(l.lockedOutPoints))
@@ -1268,7 +1278,6 @@ func (l *LightningWallet) handleSingleContribution(req *addSingleContributionMsg
 	chanState.RemoteCurrentRevocation = theirContribution.FirstCommitmentPoint
 
 	req.err <- nil
-	return
 }
 
 // verifyFundingInputs attempts to verify all remote inputs to the funding

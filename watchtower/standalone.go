@@ -72,7 +72,7 @@ func New(cfg *Config) (*Standalone, error) {
 	listeners := make([]net.Listener, 0, len(cfg.ListenAddrs))
 	for _, listenAddr := range cfg.ListenAddrs {
 		listener, err := brontide.NewListener(
-			cfg.NodePrivKey, listenAddr.String(),
+			cfg.NodeKeyECDH, listenAddr.String(),
 		)
 		if err != nil {
 			return nil, err
@@ -85,7 +85,7 @@ func New(cfg *Config) (*Standalone, error) {
 	server, err := wtserver.New(&wtserver.Config{
 		ChainHash:     cfg.ChainHash,
 		DB:            cfg.DB,
-		NodePrivKey:   cfg.NodePrivKey,
+		NodeKeyECDH:   cfg.NodeKeyECDH,
 		Listeners:     listeners,
 		ReadTimeout:   cfg.ReadTimeout,
 		WriteTimeout:  cfg.WriteTimeout,
@@ -190,7 +190,7 @@ func (w *Standalone) createNewHiddenService() error {
 //
 // NOTE: Part of the watchtowerrpc.WatchtowerBackend interface.
 func (w *Standalone) PubKey() *btcec.PublicKey {
-	return w.cfg.NodePrivKey.PubKey()
+	return w.cfg.NodeKeyECDH.PubKey()
 }
 
 // ListeningAddrs returns the listening addresses where the watchtower server
@@ -212,9 +212,7 @@ func (w *Standalone) ListeningAddrs() []net.Addr {
 // NOTE: Part of the watchtowerrpc.WatchtowerBackend interface.
 func (w *Standalone) ExternalIPs() []net.Addr {
 	addrs := make([]net.Addr, 0, len(w.cfg.ExternalIPs))
-	for _, addr := range w.cfg.ExternalIPs {
-		addrs = append(addrs, addr)
-	}
+	addrs = append(addrs, w.cfg.ExternalIPs...)
 
 	return addrs
 }

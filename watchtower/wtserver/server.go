@@ -8,13 +8,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/connmgr"
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/watchtower/wtdb"
 	"github.com/ltcsuite/lnd/watchtower/wtwire"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/connmgr"
+	"github.com/ltcsuite/ltcutil"
 )
 
 var (
@@ -33,9 +33,9 @@ type Config struct {
 	// storing state updates.
 	DB DB
 
-	// NodePrivKey is private key to be used in accepting new brontide
-	// connections.
-	NodePrivKey *btcec.PrivateKey
+	// NodeKeyECDH is the the ECDH capable wrapper of the key to be used in
+	// accepting new brontide connections.
+	NodeKeyECDH keychain.SingleKeyECDH
 
 	// Listeners specifies which address to which clients may connect.
 	Listeners []net.Listener

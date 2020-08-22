@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 )
 
 // UnsafeStart starts the notifier with a specified best height and optional

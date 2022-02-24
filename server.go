@@ -1952,6 +1952,13 @@ func (s *server) Start() error {
 			)
 		}
 
+		if s.cfg.Litecoin.Active && s.cfg.Litecoin.TestNet4 {
+			setSeedList(
+				s.cfg.Litecoin.DNSSeeds,
+				chainreg.LitecoinTestnetGenesis,
+			)
+		}
+
 		// If network bootstrapping hasn't been disabled, then we'll
 		// configure the set of active bootstrappers, and launch a
 		// dedicated goroutine to maintain a set of persistent

@@ -74,7 +74,7 @@ const (
 	defaultLetsEncryptListen             = ":80"
 
 	defaultTorSOCKSPort            = 9050
-	defaultTorDNSHost              = "soa.nodes.lightning.directory"
+	defaultTorDNSHost              = "soa.lightning.loshan.co.uk"
 	defaultTorDNSPort              = 53
 	defaultTorControlPort          = 9051
 	defaultTorV2PrivateKeyFilename = "v2_onion_private_key"

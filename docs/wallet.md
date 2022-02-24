@@ -1,11 +1,11 @@
 # Wallet management
 
 The wallet in the context of `lnd` is a database file (located in the data
-directory, for example `~/.lnd/data/chain/bitcoin/mainnet/wallet.db` on Linux)
+directory, for example `~/.lndltc/data/chain/litecoin/mainnet/wallet.db` on Linux)
 that contains all addresses and private keys for the on-chain **and** off-chain
 (LN) funds.
 
-The wallet is independent of the chain backend that is used (`bitcoind`, `btcd`
+The wallet is independent of the chain backend that is used (`litecoind`, `ltcd`
 or `neutrino`) and must therefore be created as the first step after starting
 up a fresh `lnd` node.
 
@@ -71,7 +71,7 @@ though where the secrets are mounted to a file anyway.
 
 - Start `lnd` without the flag:
   ```shell
-  ⛰   lnd --bitcoin.active --bitcoin.xxxx .....
+  ⛰   lnd --litecoin.active --litecoin.xxxx .....
   ```
 - Create the wallet and write down the seed in a safe place:
   ```shell
@@ -91,7 +91,7 @@ though where the secrets are mounted to a file anyway.
   ```
 - Start `lnd` with the auto-unlock flag:
   ```shell
-  ⛰   lnd --bitcoin.active --bitcoin.xxxx ..... \
+  ⛰   lnd --litecoin.active --litecoin.xxxx ..... \
          --wallet-unlock-password-file=/some/safe/location/password.txt
   ```
 
@@ -104,7 +104,7 @@ debuglevel=debug
 wallet-unlock-password-file=/some/safe/location/password.txt
 
 [Bitcoin]
-bitcoin.active=1
+litecoin.active=1
 ...
 ```
 
@@ -119,7 +119,7 @@ example here but it should work similarly with other password managers.
 
 - Start `lnd` without the flag:
   ```shell
-  ⛰   lnd --bitcoin.active --bitcoin.xxxx .....
+  ⛰   lnd --litecoin.active --litecoin.xxxx .....
   ```
 - Create the wallet and write down the seed in a safe place:
   ```shell
@@ -150,7 +150,7 @@ example here but it should work similarly with other password managers.
   pass lnd/my-wallet-password > /tmp/wallet-password-pipe &
   
   # Now we can start lnd.
-  lnd --bitcoin.active --bitcoin.xxxx ..... \
+  lnd --litecoin.active --litecoin.xxxx ..... \
     --wallet-unlock-password-file=/tmp/wallet-password-pipe
   ```
 - Run the startup script instead of running `lnd` directly.

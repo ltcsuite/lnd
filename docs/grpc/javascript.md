@@ -47,9 +47,9 @@ const loaderOptions = {
 };
 const packageDefinition = protoLoader.loadSync('lightning.proto', loaderOptions);
 
-//  Lnd cert is at ~/.lnd/tls.cert on Linux and
-//  ~/Library/Application Support/Lnd/tls.cert on Mac
-let lndCert = fs.readFileSync("~/.lnd/tls.cert");
+//  Lnd cert is at ~/.lndltc/tls.cert on Linux and
+//  ~/Library/Application Support/Lndltc/tls.cert on Mac
+let lndCert = fs.readFileSync("~/.lndltc/tls.cert");
 let credentials = grpc.credentials.createSsl(lndCert);
 let lnrpcDescriptor = grpc.loadPackageDefinition(packageDefinition);
 let lnrpc = lnrpcDescriptor.lnrpc;
@@ -87,7 +87,7 @@ GetInfo: { identity_pubkey: '03c892e3f3f077ea1e381c081abb36491a2502bc43ed37ffb82
   block_hash: '198ba1dc43b4190e507fa5c7aea07a74ec0009a9ab308e1736dbdab5c767ff8e',
   synced_to_chain: false,
   testnet: false,
-  chains: [ 'bitcoin' ] }
+  chains: [ 'litecoin' ] }
 ```
 
 ### Response-streaming RPC
@@ -198,9 +198,9 @@ const packageDefinition = protoLoader.loadSync('lightning.proto', loaderOptions)
 
 process.env.GRPC_SSL_CIPHER_SUITES = 'HIGH+ECDSA'
 
-// Lnd admin macaroon is at ~/.lnd/data/chain/bitcoin/simnet/admin.macaroon on Linux and
-// ~/Library/Application Support/Lnd/data/chain/bitcoin/simnet/admin.macaroon on Mac
-let m = fs.readFileSync('~/.lnd/data/chain/bitcoin/simnet/admin.macaroon');
+// Lnd admin macaroon is at ~/.lndltc/data/chain/litecoin/simnet/admin.macaroon on Linux and
+// ~/Library/Application Support/Lndltc/data/chain/litecoin/simnet/admin.macaroon on Mac
+let m = fs.readFileSync('~/.lndltc/data/chain/litecoin/simnet/admin.macaroon');
 let macaroon = m.toString('hex');
 
 // build meta data credentials
@@ -211,7 +211,7 @@ let macaroonCreds = grpc.credentials.createFromMetadataGenerator((_args, callbac
 });
 
 // build ssl credentials using the cert the same as before
-let lndCert = fs.readFileSync("~/.lnd/tls.cert");
+let lndCert = fs.readFileSync("~/.lndltc/tls.cert");
 let sslCreds = grpc.credentials.createSsl(lndCert);
 
 // combine the cert credentials and the macaroon auth credentials

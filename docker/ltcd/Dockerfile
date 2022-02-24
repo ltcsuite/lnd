@@ -1,6 +1,6 @@
 FROM golang:1.17.3-alpine as builder
 
-LABEL maintainer="Olaoluwa Osuntokun <laolu@lightning.engineering>"
+LABEL maintainer="Loshan <loshan1212@gmail.com>"
 
 # Grab and install the latest version of roasbeef's fork of ltcd and all
 # related dependencies.

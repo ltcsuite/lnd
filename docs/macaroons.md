@@ -174,7 +174,7 @@ Where `<macaroon>` is the hex encoded binary data from the macaroon file itself.
 A very simple example using `curl` may look something like this:
 
 ```shell
-⛰  curl --insecure --header "Grpc-Metadata-macaroon: $(xxd -ps -u -c 1000  $HOME/.lnd/data/chain/bitcoin/simnet/admin.macaroon)" https://localhost:8080/v1/getinfo
+⛰  curl --insecure --header "Grpc-Metadata-macaroon: $(xxd -ps -u -c 1000  $HOME/.lndltc/data/chain/bitcoin/simnet/admin.macaroon)" https://localhost:8080/v1/getinfo
 ```
 
 Have a look at the [Java GRPC example](/docs/grpc/java.md) for programmatic usage details.

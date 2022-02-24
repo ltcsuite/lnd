@@ -67,7 +67,7 @@ require 'lightning_services_pb'
 # error when we communicate with the lnd rpc server.
 ENV['GRPC_SSL_CIPHER_SUITES'] = "HIGH+ECDSA"
 
-certificate = File.read(File.expand_path("~/.lnd/tls.cert"))
+certificate = File.read(File.expand_path("~/.lndltc/tls.cert"))
 credentials = GRPC::Core::ChannelCredentials.new(certificate)
 stub = Lnrpc::Lightning::Stub.new('127.0.0.1:10009', credentials)
 
@@ -89,7 +89,7 @@ require 'lightning_services_pb'
 
 ENV['GRPC_SSL_CIPHER_SUITES'] = "HIGH+ECDSA"
 
-certificate = File.read(File.expand_path("~/.lnd/tls.cert"))
+certificate = File.read(File.expand_path("~/.lndltc/tls.cert"))
 credentials = GRPC::Core::ChannelCredentials.new(certificate)
 stub = Lnrpc::Lightning::Stub.new('127.0.0.1:10009', credentials)
 
@@ -121,9 +121,9 @@ You should now see the details of the settled invoice appear.
 To authenticate using macaroons you need to include the macaroon in the metadata of the request.
 
 ```ruby
-# Lnd admin macaroon is at ~/.lnd/data/chain/bitcoin/simnet/admin.macaroon on Linux and
-# ~/Library/Application Support/Lnd/data/chain/bitcoin/simnet/admin.macaroon on Mac
-macaroon_binary = File.read(File.expand_path("~/.lnd/data/chain/bitcoin/simnet/admin.macaroon"))
+# Lnd admin macaroon is at ~/.lndltc/data/chain/litecoin/simnet/admin.macaroon on Linux and
+# ~/Library/Application Support/Lndltc/data/chain/litecoin/simnet/admin.macaroon on Mac
+macaroon_binary = File.read(File.expand_path("~/.lndltc/data/chain/litecoin/simnet/admin.macaroon"))
 macaroon = macaroon_binary.each_byte.map { |b| b.to_s(16).rjust(2,'0') }.join
 ```
 
@@ -159,9 +159,9 @@ end
 And then we would include it when we create our stub like so.
 
 ```ruby
-certificate = File.read(File.expand_path("~/.lnd/tls.cert"))
+certificate = File.read(File.expand_path("~/.lndltc/tls.cert"))
 credentials = GRPC::Core::ChannelCredentials.new(certificate)
-macaroon_binary = File.read(File.expand_path("~/.lnd/data/chain/bitcoin/simnet/admin.macaroon"))
+macaroon_binary = File.read(File.expand_path("~/.lndltc/data/chain/litecoin/simnet/admin.macaroon"))
 macaroon = macaroon_binary.each_byte.map { |b| b.to_s(16).rjust(2,'0') }.join
 
 stub = Lnrpc::Lightning::Stub.new(

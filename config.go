@@ -184,10 +184,10 @@ var (
 	// DefaultLndDir is the default directory where lnd tries to find its
 	// configuration file and store its data. This is a directory in the
 	// user's application data, for example:
-	//   C:\Users\<username>\AppData\Local\Lnd on Windows
-	//   ~/.lnd on Linux
-	//   ~/Library/Application Support/Lnd on MacOS
-	DefaultLndDir = ltcutil.AppDataDir("lnd", false)
+	//   C:\Users\<username>\AppData\Local\Lndltc on Windows
+	//   ~/.lndltc on Linux
+	//   ~/Library/Application Support/Lndltc on MacOS
+	DefaultLndDir = ltcutil.AppDataDir("lndltc", false)
 
 	// DefaultConfigFile is the default full path of lnd's configuration
 	// file.

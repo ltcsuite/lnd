@@ -286,8 +286,8 @@ fallback way to do it.
 **Option 1: Move the whole data directory to the new device**   
 This option works very well if the new device runs the same operating system on
 the same (or at least very similar) architecture. If that is the case, the whole
-`/home/<user>/.lnd` directory in Linux (or
-`$HOME/Library/Application Support/lnd` in MacOS, `%LOCALAPPDATA%\lnd` in
+`/home/<user>/.lndltc` directory in Linux (or
+`$HOME/Library/Application Support/lndltc` in MacOS, `%LOCALAPPDATA%\lndltc` in
 Windows) can be moved to the new device and `lnd` started there. It is important
 to shut down `lnd` on the old device before moving the directory!   
 **Not supported/untested** is moving the data directory between different

@@ -248,7 +248,7 @@ entries for _all_ currently open channels. Each time a channel is opened or
 closed, this file is updated on disk in a safe manner (atomic file rename). As
 a result, unlike the `channel.db` file, it's _always_ safe to copy this file
 for backup at ones desired location. The default location on Linux is: 
-`~/.lnd/data/chain/bitcoin/mainnet/channel.backup`
+`~/.lndltc/data/chain/litecoin/mainnet/channel.backup`
 
 An example of using file system level notification to [copy the backup to a
 distinct volume/partition/drive can be found

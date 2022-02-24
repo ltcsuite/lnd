@@ -1,7 +1,7 @@
 This document is written for people who are eager to do something with 
 the Lightning Network Daemon (`lnd`). This folder uses `docker-compose` to
-package `lnd` and `btcd` together to make deploying the two daemons as easy as
-typing a few commands. All configuration between `lnd` and `btcd` are handled
+package `lnd` and `ltcd` together to make deploying the two daemons as easy as
+typing a few commands. All configuration between `lnd` and `ltcd` are handled
 automatically by their `docker-compose` config file.
 
 ### Prerequisites
@@ -17,7 +17,7 @@ docker | 1.13.0
 
 ### Create lightning network cluster
 This section describes a workflow on `simnet`, a development/test network
-that's similar to Bitcoin Core's `regtest` mode. In `simnet` mode blocks can be
+that's similar to Litecoin Core's `regtest` mode. In `simnet` mode blocks can be
 generated at will, as the difficulty is very low. This makes it an ideal
 environment for testing as one doesn't need to wait tens of minutes for blocks
 to arrive in order to test channel related functionality. Additionally, it's
@@ -26,8 +26,8 @@ create a mini development cluster. All state is saved between instances using a
 shared volume.
 
 Current workflow is big because we recreate the whole network by ourselves,
-next versions will use the started `btcd` bitcoin node in `testnet` and
-`faucet` wallet from which you will get the bitcoins.
+next versions will use the started `ltcd` litecoin node in `testnet` and
+`faucet` wallet from which you will get the litecoins.
 
 In the workflow below, we describe the steps required to recreate the following
 topology, and send a payment from `Alice` to `Bob`.
@@ -35,32 +35,32 @@ topology, and send a payment from `Alice` to `Bob`.
 + ----- +                   + --- +
 | Alice | <--- channel ---> | Bob |  <---   Bob and Alice are the lightning network daemons which 
 + ----- +                   + --- +         create channels and interact with each other using the   
-    |                          |            Bitcoin network as source of truth. 
+    |                          |            Litecoin network as source of truth. 
     |                          |            
     + - - - -  - + - - - - - - +            
                  |
         + --------------- +
-        | Bitcoin network |  <---  In the current scenario for simplicity we create only one  
-        + --------------- +        "btcd" node which represents the Bitcoin network, in a 
+        | Litecoin network |  <---  In the current scenario for simplicity we create only one  
+        + --------------- +        "ltcd" node which represents the Litecoin network, in a 
                                     real situation Alice and Bob will likely be 
-                                    connected to different Bitcoin nodes.
+                                    connected to different Litecoin nodes.
 ```
 
 **General workflow is the following:** 
 
- * Create a `btcd` node running on a private `simnet`.
+ * Create a `ltcd` node running on a private `simnet`.
  * Create `Alice`, one of the `lnd` nodes in our simulation network.
  * Create `Bob`, the other `lnd` node in our simulation network.
- * Mine some blocks to send `Alice` some bitcoins.
+ * Mine some blocks to send `Alice` some litecoins.
  * Open channel between `Alice` and `Bob`.
  * Send payment from `Alice` to `Bob`.
  * Close the channel between `Alice` and `Bob`.
  * Check that on-chain `Bob` balance was changed.
 
-Start `btcd`, and then create an address for `Alice` that we'll directly mine
-bitcoin into.
+Start `ltcd`, and then create an address for `Alice` that we'll directly mine
+litecoin into.
 ```shell
-# Init bitcoin network env variable:
+# Init litecoin network env variable:
 ⛰  export NETWORK="simnet" 
 
 # Create persistent volumes for alice and bob.
@@ -68,21 +68,21 @@ bitcoin into.
 ⛰  docker volume create simnet_lnd_bob
 
 # Run the "Alice" container and log into it:
-⛰  docker-compose run -d --name alice --volume simnet_lnd_alice:/root/.lnd lnd
+⛰  docker-compose run -d --name alice --volume simnet_lnd_alice:/root/.lndltc lnd
 ⛰  docker exec -i -t alice bash
 
 # Generate a new backward compatible nested p2sh address for Alice:
 alice ⛰  lncli --network=simnet newaddress np2wkh 
 
-# Recreate "btcd" node and set Alice's address as mining address:
-⛰  MINING_ADDRESS=<alice_address> docker-compose up -d btcd
+# Recreate "ltcd" node and set Alice's address as mining address:
+⛰  MINING_ADDRESS=<alice_address> docker-compose up -d ltcd
 
 # Generate 400 blocks (we need at least "100 >=" blocks because of coinbase 
 # block maturity and "300 ~=" in order to activate segwit):
-⛰  docker exec -it btcd /start-btcctl.sh generate 400
+⛰  docker exec -it ltcd /start-ltcctl.sh generate 400
 
 # Check that segwit is active:
-⛰  docker exec -it btcd /start-btcctl.sh getblockchaininfo | grep -A 1 segwit
+⛰  docker exec -it ltcd /start-ltcctl.sh getblockchaininfo | grep -A 1 segwit
 ```
 
 Check `Alice` balance:
@@ -94,7 +94,7 @@ Connect `Bob` node to `Alice` node.
 
 ```shell
 # Run "Bob" node and log into it:
-⛰  docker-compose run -d --name bob --volume simnet_lnd_bob:/root/.lnd lnd
+⛰  docker-compose run -d --name bob --volume simnet_lnd_bob:/root/.lndltc lnd
 ⛰  docker exec -i -t bob bash
 
 # Get the identity pubkey of "Bob" node:
@@ -111,7 +111,7 @@ bob ⛰  lncli --network=simnet getinfo
     "synced_to_chain": true,
     "testnet": false
     "chains": [
-        "bitcoin"
+        "litecoin"
     ]
 }
 
@@ -162,7 +162,7 @@ Create the `Alice<->Bob` channel.
 alice ⛰  lncli --network=simnet openchannel --node_key=<bob_identity_pubkey> --local_amt=1000000
 
 # Include funding transaction in block thereby opening the channel:
-⛰  docker exec -it btcd /start-btcctl.sh generate 3
+⛰  docker exec -it ltcd /start-ltcctl.sh generate 3
 
 # Check that channel with "Bob" was opened:
 alice ⛰  lncli --network=simnet listchannels
@@ -246,7 +246,7 @@ alice ⛰  lncli --network=simnet listchannels
 alice ⛰  lncli --network=simnet closechannel --funding_txid=<funding_txid> --output_index=<output_index>
 
 # Include close transaction in a block thereby closing the channel:
-⛰  docker exec -it btcd /start-btcctl.sh generate 3
+⛰  docker exec -it ltcd /start-ltcctl.sh generate 3
 
 # Check "Alice" on-chain balance was credited by her settled amount in the channel:
 alice ⛰  lncli --network=simnet walletbalance
@@ -267,7 +267,7 @@ to create a mini lightning network cluster ([Create lightning network cluster](#
 
 In this section we will try to connect our node to the faucet/hub node 
 which we will create a channel with and send some amount of 
-bitcoins. The schema will be following:
+litecoins. The schema will be following:
 
 ```text
 + ----- +                   + ------ +         (1)        + --- +
@@ -278,7 +278,7 @@ bitcoins. The schema will be following:
     + - - - -  - - - - - - - - - + - - - - - - - - - - - - - +            
                                  |
                        + --------------- +
-                       | Bitcoin network |  <---  (3)   
+                       | Litecoin network |  <---  (3)   
                        + --------------- +        
         
         
@@ -286,22 +286,22 @@ bitcoins. The schema will be following:
  payment Alice->Faucet->Bob
   
  (2) "Faucet", "Alice" and "Bob" are the lightning network daemons which 
- create channels to interact with each other using the Bitcoin network 
+ create channels to interact with each other using the Litecoin network 
  as source of truth.
  
  (3) In current scenario "Alice" and "Faucet" lightning network nodes 
- connect to different Bitcoin nodes. If you decide to connect "Bob"
- to "Faucet" then the already created "btcd" node would be sufficient.
+ connect to different Litecoin nodes. If you decide to connect "Bob"
+ to "Faucet" then the already created "ltcd" node would be sufficient.
 ```
 
-First of all you need to run `btcd` node in `testnet` and wait for it to be 
+First of all you need to run `ltcd` node in `testnet` and wait for it to be 
 synced with test network (`May the Force and Patience be with you`).
 ```shell
-# Init bitcoin network env variable:
+# Init litecoin network env variable:
 ⛰  NETWORK="testnet" docker-compose up
 ```
 
-After `btcd` synced, connect `Alice` to the `Faucet` node.
+After `ltcd` synced, connect `Alice` to the `Faucet` node.
 
 The `Faucet` node address can be found at the [Faucet Lightning Community webpage](https://faucet.lightning.community).
 
@@ -314,7 +314,7 @@ alice ⛰  lncli --network=testnet connect <faucet_identity_address>@<faucet_hos
 ```
 
 After a connection is achieved, the `Faucet` node should create the channel
-and send some amount of bitcoins to `Alice`.
+and send some amount of litecoins to `Alice`.
 
 **What you may do next?:**
 - Send some amount to `Faucet` node back.
@@ -330,7 +330,7 @@ production), outside of `docker-compose`, see the
 ### Questions
 [![Irc](https://img.shields.io/badge/chat-on%20libera-brightgreen.svg)](https://web.libera.chat/#lnd)
 
-* How to see `alice` | `bob` | `btcd` logs?
+* How to see `alice` | `bob` | `ltcd` logs?
 ```shell
-⛰  docker-compose logs <alice|bob|btcd>
+⛰  docker-compose logs <alice|bob|ltcd>
 ```

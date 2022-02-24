@@ -72,8 +72,8 @@ using Grpc.Net.Client;
 // error when we communicate with the lnd rpc server.
 System.Environment.SetEnvironmentVariable("GRPC_SSL_CIPHER_SUITES", "HIGH+ECDSA");
             
-// Lnd cert is at AppData/Local/Lnd/tls.cert on Windows
-// ~/.lnd/tls.cert on Linux and ~/Library/Application Support/Lnd/tls.cert on Mac
+// Lnd cert is at AppData/Local/Lndltc/tls.cert on Windows
+// ~/.lndltc/tls.cert on Linux and ~/Library/Application Support/Lndltc/tls.cert on Mac
 var rawCert = File.ReadAllBytes(<Tls_Cert_Location>);
 var x509Cert = new X509Certificate2(rawCert);
 var httpClientHandler = new HttpClientHandler
@@ -177,9 +177,9 @@ This example will send a payment of 100 satoshis every 2 seconds.
 To authenticate using macaroons you need to include the macaroon in the metadata of the request.
 
 ```cs
-// Lnd admin macaroon is at <LND_DIR>/data/chain/bitcoin/simnet/admin.macaroon on Windows
-// ~/.lnd/data/chain/bitcoin/simnet/admin.macaroon on Linux and ~/Library/Application Support/Lnd/data/chain/bitcoin/simnet/admin.macaroon on Mac
-byte[] macaroonBytes = File.ReadAllBytes("<LND_DIR>/data/chain/bitcoin/simnet/admin.macaroon");
+// Lnd admin macaroon is at <LND_DIR>/data/chain/litecoin/simnet/admin.macaroon on Windows
+// ~/.lndltc/data/chain/litecoin/simnet/admin.macaroon on Linux and ~/Library/Application Support/Lndltc/data/chain/litecoin/simnet/admin.macaroon on Mac
+byte[] macaroonBytes = File.ReadAllBytes("<LND_DIR>/data/chain/litecoin/simnet/admin.macaroon");
 var macaroon = BitConverter.ToString(macaroonBytes).Replace("-", ""); // hex format stripped of "-" chars
 ```
 

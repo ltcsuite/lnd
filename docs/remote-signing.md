@@ -179,7 +179,7 @@ constants):
 ```javascript
 
 // EDIT ME:
-const WATCH_ONLY_LND_DIR = '/home/watch-only/.lnd';
+const WATCH_ONLY_LND_DIR = '/home/watch-only/.lndltc';
 const WATCH_ONLY_RPC_HOSTPORT = 'localhost:10018';
 const WATCH_ONLY_WALLET_PASSWORD = 'testnet3';
 const LND_SOURCE_DIR = '.';

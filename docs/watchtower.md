@@ -63,7 +63,7 @@ The entire set of watchtower configuration options can be found using
 ...
 watchtower:
       --watchtower.active                                     If the watchtower should be active or not
-      --watchtower.towerdir=                                  Directory of the watchtower.db (default: $HOME/.lnd/data/watchtower)
+      --watchtower.towerdir=                                  Directory of the watchtower.db (default: $HOME/.lndltc/data/watchtower)
       --watchtower.listen=                                    Add interfaces/ports to listen for peer connections
       --watchtower.externalip=                                Add interfaces/ports where the watchtower can accept peer connections
       --watchtower.readtimeout=                               Duration the watchtower server will wait for messages to be received before hanging up on client connections
@@ -134,13 +134,13 @@ unless you are prepared to open your tower up to the entire Internet.*
 ### Watchtower Database Directory
 
 The watchtower's database can be moved using the `watchtower.towerdir=`
-configuration option. Note that a trailing `/bitcoin/mainnet/watchtower.db`
+configuration option. Note that a trailing `/litecoin/mainnet/watchtower.db`
 will be appended to the chosen directory to isolate databases for different
 chains, so setting `watchtower.towerdir=/path/to/towerdir` will yield a
-watchtower database at `/path/to/towerdir/bitcoin/mainnet/watchtower.db`.
+watchtower database at `/path/to/towerdir/litecoin/mainnet/watchtower.db`.
 
 On Linux, for example, the default watchtower database will be located at:
-`/home/$USER/.lnd/data/watchtower/bitcoin/mainnet/watchtower.db`
+`/home/$USER/.lndltc/data/watchtower/litecoin/mainnet/watchtower.db`
 
 ## Configuring a Watchtower Client
 

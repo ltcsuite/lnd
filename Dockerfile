@@ -29,7 +29,7 @@ RUN apk add --no-cache --update alpine-sdk \
 FROM alpine as final
 
 # Define a root volume for data persistence.
-VOLUME /root/.lnd
+VOLUME /root/.lndltc
 
 # Add utilities for quality of life and SSL-related reasons. We also require
 # curl and gpg for the signature verification script.

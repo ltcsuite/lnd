@@ -657,7 +657,7 @@ const Buffer = require('safe-buffer').Buffer;
 const randomBytes = require('random-bytes').sync;
 const prompt = require('prompt');
 
-const LND_DIR = '/home/myuser/.lnd';
+const LND_DIR = '/home/myuser/.lndltc';
 const LND_HOST = 'localhost:10009';
 const NETWORK = 'regtest';
 const LNRPC_PROTO_DIR = '/home/myuser/projects/go/lnd/lnrpc';

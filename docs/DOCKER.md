@@ -69,13 +69,13 @@ example):
 
 ## Volumes
 
-A Docker volume will be created with your `.lnd` directory automatically, and will
+A Docker volume will be created with your `.lndltc` directory automatically, and will
 persist through container restarts.
 
 You can also optionally manually specify a local folder to be used as a volume:
 
 ```shell
-⛰  docker create --name=mylndcontainer -v /media/lnd-docker/:/root/.lnd myrepository/lnd [command-line options]
+⛰  docker create --name=mylndcontainer -v /media/lnd-docker/:/root/.lndltc myrepository/lnd [command-line options]
 ```
 
 ## Example

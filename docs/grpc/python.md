@@ -75,9 +75,9 @@ import os
 # error when we communicate with the lnd rpc server.
 os.environ["GRPC_SSL_CIPHER_SUITES"] = 'HIGH+ECDSA'
 
-# Lnd cert is at ~/.lnd/tls.cert on Linux and
-# ~/Library/Application Support/Lnd/tls.cert on Mac
-cert = open(os.path.expanduser('~/.lnd/tls.cert'), 'rb').read()
+# Lnd cert is at ~/.lndltc/tls.cert on Linux and
+# ~/Library/Application Support/Lndltc/tls.cert on Mac
+cert = open(os.path.expanduser('~/.lndltc/tls.cert'), 'rb').read()
 creds = grpc.ssl_channel_credentials(cert)
 channel = grpc.secure_channel('localhost:10009', creds)
 stub = lnrpc.LightningStub(channel)
@@ -157,9 +157,9 @@ To authenticate using macaroons you need to include the macaroon in the metadata
 ```python
 import codecs
 
-# Lnd admin macaroon is at ~/.lnd/data/chain/bitcoin/simnet/admin.macaroon on Linux and
-# ~/Library/Application Support/Lnd/data/chain/bitcoin/simnet/admin.macaroon on Mac
-with open(os.path.expanduser('~/.lnd/data/chain/bitcoin/simnet/admin.macaroon'), 'rb') as f:
+# Lnd admin macaroon is at ~/.lndltc/data/chain/litecoin/simnet/admin.macaroon on Linux and
+# ~/Library/Application Support/Lndltc/data/chain/litecoin/simnet/admin.macaroon on Mac
+with open(os.path.expanduser('~/.lndltc/data/chain/litecoin/simnet/admin.macaroon'), 'rb') as f:
     macaroon_bytes = f.read()
     macaroon = codecs.encode(macaroon_bytes, 'hex')
 ```

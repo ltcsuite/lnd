@@ -14,7 +14,7 @@ import (
 	"github.com/ltcsuite/lnd/watchtower/wtwire"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/connmgr"
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 var (
@@ -96,7 +96,10 @@ type Server struct {
 // sessions and send state updates.
 func New(cfg *Config) (*Server, error) {
 	localInit := wtwire.NewInitMessage(
-		lnwire.NewRawFeatureVector(wtwire.AltruistSessionsOptional),
+		lnwire.NewRawFeatureVector(
+			wtwire.AltruistSessionsOptional,
+			wtwire.AnchorCommitOptional,
+		),
 		cfg.ChainHash,
 	)
 

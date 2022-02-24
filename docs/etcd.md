@@ -14,8 +14,8 @@ on bitcoin mainnet.
 
 To create a dev build of LND with etcd support use the following command:
 
-```
-make tags="kvdb_etcd"
+```shell
+⛰  make tags="kvdb_etcd"
 ```
 
 The important tag is the `kvdb_etcd`, without which the binary is built without
@@ -29,8 +29,8 @@ directory.
 
 To start your local etcd instance for testing run:
 
-```
-./etcd \
+```shell
+⛰  ./etcd \
     --auto-tls \
     --advertise-client-urls=https://127.0.0.1:2379 \
     --listen-client-urls=https://0.0.0.0:2379 \
@@ -51,8 +51,8 @@ through command line flags or in `lnd.conf`.
 
 Sample command line:
 
-```
-./lnd-debug \
+```shell
+⛰  ./lnd-debug \
     --db.backend=etcd \
     --db.etcd.host=127.0.0.1:2379 \
     --db.etcd.certfile=/home/user/etcd/bin/default.etcd/fixtures/client/cert.pem \
@@ -62,17 +62,20 @@ Sample command line:
 
 Sample `lnd.conf` (with other setting omitted):
 
-```
+```text
 [db]
-backend=etcd
-etcd.host=127.0.0.1:2379
-etcd.cerfile=/home/user/etcd/bin/default.etcd/fixtures/client/cert.pem
-etcd.keyfile=/home/user/etcd/bin/default.etcd/fixtures/client/key.pem
-etcd.insecure_skip_verify=true
+db.backend=etcd
+db.etcd.host=127.0.0.1:2379
+db.etcd.cerfile=/home/user/etcd/bin/default.etcd/fixtures/client/cert.pem
+db.etcd.keyfile=/home/user/etcd/bin/default.etcd/fixtures/client/key.pem
+db.etcd.insecure_skip_verify=true
 ```
 
 Optionally users can specifiy `db.etcd.user` and `db.etcd.pass` for db user
-authentication.
+authentication. If the database is shared, it is possible to separate our data
+from other users by setting `db.etcd.namespace` to an (already existing) etcd
+namespace. In order to test without TLS, users are able to set `db.etcd.disabletls`
+flag to `true`.
 
 ## Migrating existing channel.db to etcd
 

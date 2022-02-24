@@ -8,15 +8,17 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ltcsuite/lnd/blockcache"
 	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/queue"
 	"github.com/ltcsuite/ltcd/btcjson"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil/gcs/builder"
 	"github.com/ltcsuite/ltcd/rpcclient"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
-	"github.com/ltcsuite/ltcutil/gcs/builder"
 	"github.com/ltcsuite/neutrino"
 	"github.com/ltcsuite/neutrino/headerfs"
 )
@@ -60,8 +62,9 @@ type NeutrinoNotifier struct {
 
 	rescanErr <-chan error
 
-	chainUpdates *queue.ConcurrentQueue
-	txUpdates    *queue.ConcurrentQueue
+	chainUpdates chan *filteredBlock
+
+	txUpdates *queue.ConcurrentQueue
 
 	// spendHintCache is a cache used to query and update the latest height
 	// hints for an outpoint. Each height hint represents the earliest
@@ -72,6 +75,9 @@ type NeutrinoNotifier struct {
 	// a transaction. Each height hint represents the earliest height at
 	// which the transaction could have confirmed within the chain.
 	confirmHintCache chainntnfs.ConfirmHintCache
+
+	// blockCache is an LRU block cache.
+	blockCache *blockcache.BlockCache
 
 	wg   sync.WaitGroup
 	quit chan struct{}
@@ -86,7 +92,8 @@ var _ chainntnfs.ChainNotifier = (*NeutrinoNotifier)(nil)
 // NOTE: The passed neutrino node should already be running and active before
 // being passed into this function.
 func New(node *neutrino.ChainService, spendHintCache chainntnfs.SpendHintCache,
-	confirmHintCache chainntnfs.ConfirmHintCache) *NeutrinoNotifier {
+	confirmHintCache chainntnfs.ConfirmHintCache,
+	blockCache *blockcache.BlockCache) *NeutrinoNotifier {
 
 	return &NeutrinoNotifier{
 		notificationCancels:  make(chan interface{}),
@@ -99,11 +106,14 @@ func New(node *neutrino.ChainService, spendHintCache chainntnfs.SpendHintCache,
 
 		rescanErr: make(chan error),
 
-		chainUpdates: queue.NewConcurrentQueue(10),
-		txUpdates:    queue.NewConcurrentQueue(10),
+		chainUpdates: make(chan *filteredBlock, 100),
+
+		txUpdates: queue.NewConcurrentQueue(10),
 
 		spendHintCache:   spendHintCache,
 		confirmHintCache: confirmHintCache,
+
+		blockCache: blockCache,
 
 		quit: make(chan struct{}),
 	}
@@ -126,10 +136,11 @@ func (n *NeutrinoNotifier) Stop() error {
 		return nil
 	}
 
+	chainntnfs.Log.Info("neutrino notifier shutting down")
+
 	close(n.quit)
 	n.wg.Wait()
 
-	n.chainUpdates.Stop()
 	n.txUpdates.Stop()
 
 	// Notify all pending clients of our shutdown by closing the related
@@ -154,7 +165,6 @@ func (n *NeutrinoNotifier) startNotifier() error {
 	// Start our concurrent queues before starting the rescan, to ensure
 	// onFilteredBlockConnected and onRelavantTx callbacks won't be
 	// blocked.
-	n.chainUpdates.Start()
 	n.txUpdates.Start()
 
 	// First, we'll obtain the latest block height of the p2p node. We'll
@@ -164,11 +174,19 @@ func (n *NeutrinoNotifier) startNotifier() error {
 	startingPoint, err := n.p2pNode.BestBlock()
 	if err != nil {
 		n.txUpdates.Stop()
-		n.chainUpdates.Stop()
 		return err
 	}
+	startingHeader, err := n.p2pNode.GetBlockHeader(
+		&startingPoint.Hash,
+	)
+	if err != nil {
+		n.txUpdates.Stop()
+		return err
+	}
+
 	n.bestBlock.Hash = &startingPoint.Hash
 	n.bestBlock.Height = startingPoint.Height
+	n.bestBlock.BlockHeader = startingHeader
 
 	n.txNotifier = chainntnfs.NewTxNotifier(
 		uint32(n.bestBlock.Height), chainntnfs.ReorgSafetyLimit,
@@ -218,6 +236,7 @@ func (n *NeutrinoNotifier) startNotifier() error {
 // includes a transaction that confirmed one of our watched txids, or spends
 // one of the outputs currently being watched.
 type filteredBlock struct {
+	header *wire.BlockHeader
 	hash   chainhash.Hash
 	height uint32
 	txns   []*ltcutil.Tx
@@ -243,10 +262,11 @@ func (n *NeutrinoNotifier) onFilteredBlockConnected(height int32,
 	// Append this new chain update to the end of the queue of new chain
 	// updates.
 	select {
-	case n.chainUpdates.ChanIn() <- &filteredBlock{
+	case n.chainUpdates <- &filteredBlock{
 		hash:    header.BlockHash(),
 		height:  uint32(height),
 		txns:    txns,
+		header:  header,
 		connect: true,
 	}:
 	case <-n.quit:
@@ -261,7 +281,7 @@ func (n *NeutrinoNotifier) onFilteredBlockDisconnected(height int32,
 	// Append this new chain update to the end of the queue of new chain
 	// disconnects.
 	select {
-	case n.chainUpdates.ChanIn() <- &filteredBlock{
+	case n.chainUpdates <- &filteredBlock{
 		hash:    header.BlockHash(),
 		height:  uint32(height),
 		connect: false,
@@ -286,11 +306,96 @@ func (n *NeutrinoNotifier) onRelevantTx(tx *ltcutil.Tx, details *btcjson.BlockDe
 	}
 }
 
+// connectFilteredBlock is called when we receive a filteredBlock from the
+// backend. If the block is ahead of what we're expecting, we'll attempt to
+// catch up and then process the block.
+func (n *NeutrinoNotifier) connectFilteredBlock(update *filteredBlock) {
+	n.bestBlockMtx.Lock()
+	defer n.bestBlockMtx.Unlock()
+
+	if update.height != uint32(n.bestBlock.Height+1) {
+		chainntnfs.Log.Infof("Missed blocks, attempting to catch up")
+
+		_, missedBlocks, err := chainntnfs.HandleMissedBlocks(
+			n.chainConn, n.txNotifier, n.bestBlock,
+			int32(update.height), false,
+		)
+		if err != nil {
+			chainntnfs.Log.Error(err)
+			return
+		}
+
+		for _, block := range missedBlocks {
+			filteredBlock, err := n.getFilteredBlock(block)
+			if err != nil {
+				chainntnfs.Log.Error(err)
+				return
+			}
+			err = n.handleBlockConnected(filteredBlock)
+			if err != nil {
+				chainntnfs.Log.Error(err)
+				return
+			}
+		}
+	}
+
+	err := n.handleBlockConnected(update)
+	if err != nil {
+		chainntnfs.Log.Error(err)
+	}
+}
+
+// disconnectFilteredBlock is called when our disconnected filtered block
+// callback is fired. It attempts to rewind the chain to before the
+// disconnection and updates our best block.
+func (n *NeutrinoNotifier) disconnectFilteredBlock(update *filteredBlock) {
+	n.bestBlockMtx.Lock()
+	defer n.bestBlockMtx.Unlock()
+
+	if update.height != uint32(n.bestBlock.Height) {
+		chainntnfs.Log.Infof("Missed disconnected blocks, attempting" +
+			" to catch up")
+	}
+	newBestBlock, err := chainntnfs.RewindChain(n.chainConn, n.txNotifier,
+		n.bestBlock, int32(update.height-1),
+	)
+	if err != nil {
+		chainntnfs.Log.Errorf("Unable to rewind chain from height %d"+
+			"to height %d: %v", n.bestBlock.Height,
+			update.height-1, err,
+		)
+	}
+
+	n.bestBlock = newBestBlock
+}
+
+// drainChainUpdates is called after updating the filter. It reads every
+// buffered item off the chan and returns when no more are available. It is
+// used to ensure that callers performing a historical scan properly update
+// their EndHeight to scan blocks that did not have the filter applied at
+// processing time. Without this, a race condition exists that could allow a
+// spend or confirmation notification to be missed. It is unlikely this would
+// occur in a real-world scenario, and instead would manifest itself in tests.
+func (n *NeutrinoNotifier) drainChainUpdates() {
+	for {
+		select {
+		case update := <-n.chainUpdates:
+			if update.connect {
+				n.connectFilteredBlock(update)
+				break
+			}
+			n.disconnectFilteredBlock(update)
+		default:
+			return
+		}
+	}
+}
+
 // notificationDispatcher is the primary goroutine which handles client
 // notification registrations, as well as notification dispatches.
 func (n *NeutrinoNotifier) notificationDispatcher() {
 	defer n.wg.Done()
-out:
+
 	for {
 		select {
 		case cancelMsg := <-n.notificationCancels:
@@ -366,6 +471,7 @@ out:
 					n.notifyBlockEpochClient(
 						msg, n.bestBlock.Height,
 						n.bestBlock.Hash,
+						n.bestBlock.BlockHeader,
 					)
 
 					msg.errorChan <- nil
@@ -391,6 +497,7 @@ out:
 				for _, block := range missedBlocks {
 					n.notifyBlockEpochClient(
 						msg, block.Height, block.Hash,
+						block.BlockHeader,
 					)
 				}
 
@@ -402,88 +509,28 @@ out:
 					chainntnfs.Log.Errorf("Unable to "+
 						"update rescan filter: %v", err)
 				}
+
+				// Drain the chainUpdates chan so the caller
+				// listening on errChan can be sure that
+				// updates after receiving the error will have
+				// the filter applied. This allows the caller
+				// to update their EndHeight if they're
+				// performing a historical scan.
+				n.drainChainUpdates()
+
+				// After draining, send the error to the
+				// caller.
 				msg.errChan <- err
 			}
 
-		case item := <-n.chainUpdates.ChanOut():
-			update := item.(*filteredBlock)
+		case item := <-n.chainUpdates:
+			update := item
 			if update.connect {
-				n.bestBlockMtx.Lock()
-				// Since neutrino has no way of knowing what
-				// height to rewind to in the case of a reorged
-				// best known height, there is no point in
-				// checking that the previous hash matches the
-				// the hash from our best known height the way
-				// the other notifiers do when they receive
-				// a new connected block. Therefore, we just
-				// compare the heights.
-				if update.height != uint32(n.bestBlock.Height+1) {
-					// Handle the case where the notifier
-					// missed some blocks from its chain
-					// backend
-					chainntnfs.Log.Infof("Missed blocks, " +
-						"attempting to catch up")
-
-					_, missedBlocks, err :=
-						chainntnfs.HandleMissedBlocks(
-							n.chainConn,
-							n.txNotifier,
-							n.bestBlock,
-							int32(update.height),
-							false,
-						)
-					if err != nil {
-						chainntnfs.Log.Error(err)
-						n.bestBlockMtx.Unlock()
-						continue
-					}
-
-					for _, block := range missedBlocks {
-						filteredBlock, err :=
-							n.getFilteredBlock(block)
-						if err != nil {
-							chainntnfs.Log.Error(err)
-							n.bestBlockMtx.Unlock()
-							continue out
-						}
-						err = n.handleBlockConnected(filteredBlock)
-						if err != nil {
-							chainntnfs.Log.Error(err)
-							n.bestBlockMtx.Unlock()
-							continue out
-						}
-					}
-
-				}
-
-				err := n.handleBlockConnected(update)
-				if err != nil {
-					chainntnfs.Log.Error(err)
-				}
-
-				n.bestBlockMtx.Unlock()
+				n.connectFilteredBlock(update)
 				continue
 			}
 
-			n.bestBlockMtx.Lock()
-			if update.height != uint32(n.bestBlock.Height) {
-				chainntnfs.Log.Infof("Missed disconnected " +
-					"blocks, attempting to catch up")
-			}
-			newBestBlock, err := chainntnfs.RewindChain(
-				n.chainConn, n.txNotifier, n.bestBlock,
-				int32(update.height-1),
-			)
-			if err != nil {
-				chainntnfs.Log.Errorf("Unable to rewind chain "+
-					"from height %d to height %d: %v",
-					n.bestBlock.Height, update.height-1, err)
-			}
-
-			// Set the bestHeight here in case a chain rewind
-			// partially completed.
-			n.bestBlock = newBestBlock
-			n.bestBlockMtx.Unlock()
+			n.disconnectFilteredBlock(update)
 
 		case txUpdate := <-n.txUpdates.ChanOut():
 			// A new relevant transaction notification has been
@@ -571,7 +618,7 @@ func (n *NeutrinoNotifier) historicalConfDetails(confRequest chainntnfs.ConfRequ
 		// In the case that we do have a match, we'll fetch the block
 		// from the network so we can find the positional data required
 		// to send the proper response.
-		block, err := n.p2pNode.GetBlock(*blockHash)
+		block, err := n.GetBlock(*blockHash)
 		if err != nil {
 			return nil, fmt.Errorf("unable to get block from network: %v", err)
 		}
@@ -621,14 +668,17 @@ func (n *NeutrinoNotifier) handleBlockConnected(newBlock *filteredBlock) error {
 	// satisfy any client requests based upon the new block.
 	n.bestBlock.Hash = &newBlock.hash
 	n.bestBlock.Height = int32(newBlock.height)
+	n.bestBlock.BlockHeader = newBlock.header
 
-	n.notifyBlockEpochs(int32(newBlock.height), &newBlock.hash)
+	n.notifyBlockEpochs(
+		int32(newBlock.height), &newBlock.hash, newBlock.header,
+	)
 	return n.txNotifier.NotifyHeight(newBlock.height)
 }
 
 // getFilteredBlock is a utility to retrieve the full filtered block from a block epoch.
 func (n *NeutrinoNotifier) getFilteredBlock(epoch chainntnfs.BlockEpoch) (*filteredBlock, error) {
-	rawBlock, err := n.p2pNode.GetBlock(*epoch.Hash)
+	rawBlock, err := n.GetBlock(*epoch.Hash)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get block: %v", err)
 	}
@@ -638,6 +688,7 @@ func (n *NeutrinoNotifier) getFilteredBlock(epoch chainntnfs.BlockEpoch) (*filte
 	block := &filteredBlock{
 		hash:    *epoch.Hash,
 		height:  uint32(epoch.Height),
+		header:  &rawBlock.MsgBlock().Header,
 		txns:    txns,
 		connect: true,
 	}
@@ -646,20 +697,23 @@ func (n *NeutrinoNotifier) getFilteredBlock(epoch chainntnfs.BlockEpoch) (*filte
 
 // notifyBlockEpochs notifies all registered block epoch clients of the newly
 // connected block to the main chain.
-func (n *NeutrinoNotifier) notifyBlockEpochs(newHeight int32, newSha *chainhash.Hash) {
+func (n *NeutrinoNotifier) notifyBlockEpochs(newHeight int32, newSha *chainhash.Hash,
+	blockHeader *wire.BlockHeader) {
+
 	for _, client := range n.blockEpochClients {
-		n.notifyBlockEpochClient(client, newHeight, newSha)
+		n.notifyBlockEpochClient(client, newHeight, newSha, blockHeader)
 	}
 }
 
 // notifyBlockEpochClient sends a registered block epoch client a notification
 // about a specific block.
 func (n *NeutrinoNotifier) notifyBlockEpochClient(epochClient *blockEpochRegistration,
-	height int32, sha *chainhash.Hash) {
+	height int32, sha *chainhash.Hash, blockHeader *wire.BlockHeader) {
 
 	epoch := &chainntnfs.BlockEpoch{
-		Height: height,
-		Hash:   sha,
+		Height:      height,
+		Hash:        sha,
+		BlockHeader: blockHeader,
 	}
 
 	select {
@@ -745,6 +799,14 @@ func (n *NeutrinoNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 		return ntfn.Event, nil
 	}
 
+	// Grab the current best height as the height may have been updated
+	// while we were draining the chainUpdates queue.
+	n.bestBlockMtx.RLock()
+	currentHeight := uint32(n.bestBlock.Height)
+	n.bestBlockMtx.RUnlock()
+
+	ntfn.HistoricalDispatch.EndHeight = currentHeight
+
 	// With the filter updated, we'll dispatch our historical rescan to
 	// ensure we detect the spend if it happened in the past.
 	n.wg.Add(1)
@@ -777,6 +839,18 @@ func (n *NeutrinoNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 			}),
 			neutrino.EndBlock(&headerfs.BlockStamp{
 				Height: int32(ntfn.HistoricalDispatch.EndHeight),
+			}),
+			neutrino.ProgressHandler(func(processedHeight uint32) {
+				// We persist the rescan progress to achieve incremental
+				// behavior across restarts, otherwise long rescans may
+				// start from the beginning with every restart.
+				err := n.spendHintCache.CommitSpendHint(
+					processedHeight,
+					ntfn.HistoricalDispatch.SpendRequest)
+				if err != nil {
+					chainntnfs.Log.Errorf("Failed to update rescan "+
+						"progress: %v", err)
+				}
 			}),
 			neutrino.QuitChan(n.quit),
 		)
@@ -885,6 +959,14 @@ func (n *NeutrinoNotifier) RegisterConfirmationsNtfn(txid *chainhash.Hash,
 		return ntfn.Event, nil
 	}
 
+	// Grab the current best height as the height may have been updated
+	// while we were draining the chainUpdates queue.
+	n.bestBlockMtx.RLock()
+	currentHeight := uint32(n.bestBlock.Height)
+	n.bestBlockMtx.RUnlock()
+
+	ntfn.HistoricalDispatch.EndHeight = currentHeight
+
 	// Finally, with the filter updated, we can dispatch the historical
 	// rescan to ensure we can detect if the event happened in the past.
 	select {
@@ -894,6 +976,21 @@ func (n *NeutrinoNotifier) RegisterConfirmationsNtfn(txid *chainhash.Hash,
 	}
 
 	return ntfn.Event, nil
+}
+
+// GetBlock is used to retrieve the block with the given hash. Since the block
+// cache used by neutrino will be the same as that used by LND (since it is
+// passed to neutrino on initialisation), the neutrino GetBlock method can be
+// called directly since it already uses the block cache. However, neutrino
+// does not lock the block cache mutex for the given block hash and so that is
+// done here.
+func (n *NeutrinoNotifier) GetBlock(hash chainhash.Hash) (
+	*ltcutil.Block, error) {
+
+	n.blockCache.HashMutex.Lock(lntypes.Hash(hash))
+	defer n.blockCache.HashMutex.Unlock(lntypes.Hash(hash))
+
+	return n.p2pNode.GetBlock(hash)
 }
 
 // blockEpochRegistration represents a client's intent to receive a

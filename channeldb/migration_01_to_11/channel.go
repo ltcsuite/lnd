@@ -8,13 +8,13 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
+	lnwire "github.com/ltcsuite/lnd/channeldb/migration/lnwire21"
 	"github.com/ltcsuite/lnd/keychain"
-	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/shachain"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 var (

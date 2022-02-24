@@ -1,13 +1,22 @@
 VERSION_TAG = $(shell date +%Y%m%d)-01
 VERSION_CHECK = @$(call print, "Building master with date version tag")
 
-BUILD_SYSTEM = darwin-386 \
-darwin-amd64 \
+DOCKER_RELEASE_HELPER = docker run \
+  -it \
+  --rm \
+  --user $(shell id -u):$(shell id -g) \
+  -v $(shell pwd):/tmp/build/lnd \
+  -v $(shell bash -c "go env GOCACHE || (mkdir -p /tmp/go-cache; echo /tmp/go-cache)"):/tmp/build/.cache \
+  -v $(shell bash -c "go env GOMODCACHE || (mkdir -p /tmp/go-modcache; echo /tmp/go-modcache)"):/tmp/build/.modcache \
+  -e SKIP_VERSION_CHECK \
+  lnd-release-helper
+
+BUILD_SYSTEM = darwin-amd64 \
+darwin-arm64 \
 dragonfly-amd64 \
 freebsd-386 \
 freebsd-amd64 \
 freebsd-arm \
-illumos-amd64 \
 linux-386 \
 linux-amd64 \
 linux-armv6 \
@@ -18,22 +27,19 @@ linux-ppc64le \
 linux-mips \
 linux-mipsle \
 linux-mips64 \
-linux-mips64le \
 linux-s390x \
 netbsd-386 \
 netbsd-amd64 \
-netbsd-arm \
 netbsd-arm64 \
 openbsd-386 \
 openbsd-amd64 \
-openbsd-arm \
-openbsd-arm64 \
-solaris-amd64 \
 windows-386 \
 windows-amd64 \
 windows-arm
 
-RELEASE_TAGS = autopilotrpc signrpc walletrpc chainrpc invoicesrpc watchtowerrpc
+RELEASE_TAGS = autopilotrpc signrpc walletrpc chainrpc invoicesrpc watchtowerrpc monitoring kvdb_postgres kvdb_etcd
+
+WASM_RELEASE_TAGS = autopilotrpc signrpc walletrpc chainrpc invoicesrpc watchtowerrpc monitoring
 
 # One can either specify a git tag as the version suffix or one is generated
 # from the current date.

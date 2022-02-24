@@ -1,6 +1,19 @@
 package lnwire
 
-import "io"
+import (
+	"bytes"
+	"fmt"
+	"io"
+)
+
+// MaxPongBytes is the maximum number of extra bytes a pong can be requested to
+// send. The type of the message (19) takes 2 bytes, the length field takes up
+// 2 bytes, leaving 65531 bytes.
+const MaxPongBytes = 65531
+
+// ErrMaxPongBytesExceeded indicates that the NumPongBytes field from the ping
+// message has exceeded MaxPongBytes.
+var ErrMaxPongBytesExceeded = fmt.Errorf("pong bytes exceeded")
 
 // PongPayload is a set of opaque bytes sent in response to a ping message.
 type PongPayload []byte
@@ -40,10 +53,8 @@ func (p *Pong) Decode(r io.Reader, pver uint32) error {
 // protocol version specified.
 //
 // This is part of the lnwire.Message interface.
-func (p *Pong) Encode(w io.Writer, pver uint32) error {
-	return WriteElements(w,
-		p.PongBytes,
-	)
+func (p *Pong) Encode(w *bytes.Buffer, pver uint32) error {
+	return WritePongPayload(w, p.PongBytes)
 }
 
 // MsgType returns the integer uniquely identifying this message type on the
@@ -52,12 +63,4 @@ func (p *Pong) Encode(w io.Writer, pver uint32) error {
 // This is part of the lnwire.Message interface.
 func (p *Pong) MsgType() MessageType {
 	return MsgPong
-}
-
-// MaxPayloadLength returns the maximum allowed payload size for a Pong
-// complete message observing the specified protocol version.
-//
-// This is part of the lnwire.Message interface.
-func (p *Pong) MaxPayloadLength(uint32) uint32 {
-	return 65532
 }

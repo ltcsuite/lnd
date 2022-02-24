@@ -9,7 +9,7 @@ import (
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/routing/route"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/wire"
 )
 
@@ -21,14 +21,58 @@ type HTLCAttemptInfo struct {
 	// AttemptID is the unique ID used for this attempt.
 	AttemptID uint64
 
-	// SessionKey is the ephemeral key used for this attempt.
-	SessionKey *btcec.PrivateKey
+	// sessionKey is the raw bytes ephemeral key used for this attempt.
+	// These bytes are lazily read off disk to save ourselves the expensive
+	// EC operations used by btcec.PrivKeyFromBytes.
+	sessionKey [btcec.PrivKeyBytesLen]byte
+
+	// cachedSessionKey is our fully deserialized sesionKey. This value
+	// may be nil if the attempt has just been read from disk and its
+	// session key has not been used yet.
+	cachedSessionKey *btcec.PrivateKey
 
 	// Route is the route attempted to send the HTLC.
 	Route route.Route
 
 	// AttemptTime is the time at which this HTLC was attempted.
 	AttemptTime time.Time
+
+	// Hash is the hash used for this single HTLC attempt. For AMP payments
+	// this will differ across attempts, for non-AMP payments each attempt
+	// will use the same hash. This can be nil for older payment attempts,
+	// in which the payment's PaymentHash in the PaymentCreationInfo should
+	// be used.
+	Hash *lntypes.Hash
+}
+
+// NewHtlcAttemptInfo creates a htlc attempt.
+func NewHtlcAttemptInfo(attemptID uint64, sessionKey *btcec.PrivateKey,
+	route route.Route, attemptTime time.Time,
+	hash *lntypes.Hash) *HTLCAttemptInfo {
+
+	var scratch [btcec.PrivKeyBytesLen]byte
+	copy(scratch[:], sessionKey.Serialize())
+
+	return &HTLCAttemptInfo{
+		AttemptID:        attemptID,
+		sessionKey:       scratch,
+		cachedSessionKey: sessionKey,
+		Route:            route,
+		AttemptTime:      attemptTime,
+		Hash:             hash,
+	}
+}
+
+// SessionKey returns the ephemeral key used for a htlc attempt. This function
+// performs expensive ec-ops to obtain the session key if it is not cached.
+func (h *HTLCAttemptInfo) SessionKey() *btcec.PrivateKey {
+	if h.cachedSessionKey == nil {
+		h.cachedSessionKey, _ = btcec.PrivKeyFromBytes(
+			h.sessionKey[:],
+		)
+	}
+
+	return h.cachedSessionKey
 }
 
 // HTLCAttempt contains information about a specific HTLC attempt for a given

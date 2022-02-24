@@ -5,16 +5,26 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/clock"
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/queue"
 	"github.com/ltcsuite/lnd/zpay32"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 )
 
-// invoiceExpiry holds and invoice's payment hash and its expiry. This
-// is used to order invoices by their expiry for cancellation.
-type invoiceExpiry struct {
+// invoiceExpiry is a vanity interface for different invoice expiry types
+// which implement the priority queue item interface, used to improve code
+// readability.
+type invoiceExpiry queue.PriorityQueueItem
+
+// Compile time assertion that invoiceExpiryTs implements invoiceExpiry.
+var _ invoiceExpiry = (*invoiceExpiryTs)(nil)
+
+// invoiceExpiryTs holds and invoice's payment hash and its expiry. This
+// is used to order invoices by their expiry time for cancellation.
+type invoiceExpiryTs struct {
 	PaymentHash lntypes.Hash
 	Expiry      time.Time
 	Keysend     bool
@@ -22,8 +32,30 @@ type invoiceExpiry struct {
 
 // Less implements PriorityQueueItem.Less such that the top item in the
 // priorty queue will be the one that expires next.
-func (e invoiceExpiry) Less(other queue.PriorityQueueItem) bool {
-	return e.Expiry.Before(other.(*invoiceExpiry).Expiry)
+func (e invoiceExpiryTs) Less(other queue.PriorityQueueItem) bool {
+	return e.Expiry.Before(other.(*invoiceExpiryTs).Expiry)
+}
+
+// Compile time assertion that invoiceExpiryHeight implements invoiceExpiry.
+var _ invoiceExpiry = (*invoiceExpiryHeight)(nil)
+
+// invoiceExpiryHeight holds information about an invoice which can be used to
+// cancel it based on its expiry height.
+type invoiceExpiryHeight struct {
+	paymentHash  lntypes.Hash
+	expiryHeight uint32
+}
+
+// Less implements PriorityQueueItem.Less such that the top item in the
+// priority queue is the lowest block height.
+func (b invoiceExpiryHeight) Less(other queue.PriorityQueueItem) bool {
+	return b.expiryHeight < other.(*invoiceExpiryHeight).expiryHeight
+}
+
+// expired returns a boolean that indicates whether this entry has expired,
+// taking our expiry delta into account.
+func (b invoiceExpiryHeight) expired(currentHeight, delta uint32) bool {
+	return currentHeight+delta >= b.expiryHeight
 }
 
 // InvoiceExpiryWatcher handles automatic invoice cancellation of expried
@@ -41,16 +73,40 @@ type InvoiceExpiryWatcher struct {
 	// It is useful for testing.
 	clock clock.Clock
 
+	// notifier provides us with block height updates.
+	notifier chainntnfs.ChainNotifier
+
+	// blockExpiryDelta is the number of blocks before a htlc's expiry that
+	// we expire the invoice based on expiry height. We use a delta because
+	// we will go to some delta before our expiry, so we want to cancel
+	// before this to prevent force closes.
+	blockExpiryDelta uint32
+
+	// currentHeight is the current block height.
+	currentHeight uint32
+
+	// currentHash is the block hash for our current height.
+	currentHash *chainhash.Hash
+
 	// cancelInvoice is a template method that cancels an expired invoice.
 	cancelInvoice func(lntypes.Hash, bool) error
 
-	// expiryQueue holds invoiceExpiry items and is used to find the next
-	// invoice to expire.
-	expiryQueue queue.PriorityQueue
+	// timestampExpiryQueue holds invoiceExpiry items and is used to find
+	// the next invoice to expire.
+	timestampExpiryQueue queue.PriorityQueue
 
-	// newInvoices channel is used to wake up the main loop when a new invoices
-	// is added.
-	newInvoices chan []*invoiceExpiry
+	// blockExpiryQueue holds blockExpiry items and is used to find the
+	// next invoice to expire based on block height. Only hold invoices
+	// with active htlcs are added to this queue, because they require
+	// manual cancellation when the hltc is going to time out. Items in
+	// this queue may already be in the timestampExpiryQueue, this is ok
+	// because they will not be expired based on timestamp if they have
+	// active htlcs.
+	blockExpiryQueue queue.PriorityQueue
+
+	// newInvoices channel is used to wake up the main loop when a new
+	// invoices is added.
+	newInvoices chan []invoiceExpiry
 
 	wg sync.WaitGroup
 
@@ -59,11 +115,18 @@ type InvoiceExpiryWatcher struct {
 }
 
 // NewInvoiceExpiryWatcher creates a new InvoiceExpiryWatcher instance.
-func NewInvoiceExpiryWatcher(clock clock.Clock) *InvoiceExpiryWatcher {
+func NewInvoiceExpiryWatcher(clock clock.Clock,
+	expiryDelta, startHeight uint32, startHash *chainhash.Hash,
+	notifier chainntnfs.ChainNotifier) *InvoiceExpiryWatcher {
+
 	return &InvoiceExpiryWatcher{
-		clock:       clock,
-		newInvoices: make(chan []*invoiceExpiry),
-		quit:        make(chan struct{}),
+		clock:            clock,
+		notifier:         notifier,
+		blockExpiryDelta: expiryDelta,
+		currentHeight:    startHeight,
+		currentHash:      startHash,
+		newInvoices:      make(chan []invoiceExpiry),
+		quit:             make(chan struct{}),
 	}
 }
 
@@ -83,8 +146,17 @@ func (ew *InvoiceExpiryWatcher) Start(
 
 	ew.started = true
 	ew.cancelInvoice = cancelInvoice
+
+	ntfn, err := ew.notifier.RegisterBlockEpochNtfn(&chainntnfs.BlockEpoch{
+		Height: int32(ew.currentHeight),
+		Hash:   ew.currentHash,
+	})
+	if err != nil {
+		return err
+	}
+
 	ew.wg.Add(1)
-	go ew.mainLoop()
+	go ew.mainLoop(ntfn)
 
 	return nil
 }
@@ -103,13 +175,56 @@ func (ew *InvoiceExpiryWatcher) Stop() {
 	}
 }
 
-// prepareInvoice checks if the passed invoice may be canceled and calculates
-// the expiry time.
-func (ew *InvoiceExpiryWatcher) prepareInvoice(
-	paymentHash lntypes.Hash, invoice *channeldb.Invoice) *invoiceExpiry {
+// makeInvoiceExpiry checks if the passed invoice may be canceled and calculates
+// the expiry time and creates a slimmer invoiceExpiry implementation.
+func makeInvoiceExpiry(paymentHash lntypes.Hash,
+	invoice *channeldb.Invoice) invoiceExpiry {
+
+	switch invoice.State {
+	// If we have an open invoice with no htlcs, we want to expire the
+	// invoice based on timestamp
+	case channeldb.ContractOpen:
+		return makeTimestampExpiry(paymentHash, invoice)
+
+	// If an invoice has active htlcs, we want to expire it based on block
+	// height. We only do this for hodl invoices, since regular invoices
+	// should resolve themselves automatically.
+	case channeldb.ContractAccepted:
+		if !invoice.HodlInvoice {
+			log.Debugf("Invoice in accepted state not added to "+
+				"expiry watcher: %v", paymentHash)
+
+			return nil
+		}
+
+		var minHeight uint32
+		for _, htlc := range invoice.Htlcs {
+			// We only care about accepted htlcs, since they will
+			// trigger force-closes.
+			if htlc.State != channeldb.HtlcStateAccepted {
+				continue
+			}
+
+			if minHeight == 0 || htlc.Expiry < minHeight {
+				minHeight = htlc.Expiry
+			}
+		}
+
+		return makeHeightExpiry(paymentHash, minHeight)
+
+	default:
+		log.Debugf("Invoice not added to expiry watcher: %v",
+			paymentHash)
+
+		return nil
+	}
+}
+
+// makeTimestampExpiry creates a timestamp-based expiry entry.
+func makeTimestampExpiry(paymentHash lntypes.Hash,
+	invoice *channeldb.Invoice) *invoiceExpiryTs {
 
 	if invoice.State != channeldb.ContractOpen {
-		log.Debugf("Invoice not added to expiry watcher: %v", paymentHash)
 		return nil
 	}
 
@@ -119,75 +234,80 @@ func (ew *InvoiceExpiryWatcher) prepareInvoice(
 	}
 
 	expiry := invoice.CreationDate.Add(realExpiry)
-	return &invoiceExpiry{
+	return &invoiceExpiryTs{
 		PaymentHash: paymentHash,
 		Expiry:      expiry,
 		Keysend:     len(invoice.PaymentRequest) == 0,
 	}
 }
 
-// AddInvoices adds multiple invoices to the InvoiceExpiryWatcher.
-func (ew *InvoiceExpiryWatcher) AddInvoices(
-	invoices []channeldb.InvoiceWithPaymentHash) {
+// makeHeightExpiry creates height-based expiry for an invoice based on its
+// lowest htlc expiry height.
+func makeHeightExpiry(paymentHash lntypes.Hash,
+	minHeight uint32) *invoiceExpiryHeight {
 
-	invoicesWithExpiry := make([]*invoiceExpiry, 0, len(invoices))
-	for _, invoiceWithPaymentHash := range invoices {
-		newInvoiceExpiry := ew.prepareInvoice(
-			invoiceWithPaymentHash.PaymentHash, &invoiceWithPaymentHash.Invoice,
-		)
-		if newInvoiceExpiry != nil {
-			invoicesWithExpiry = append(invoicesWithExpiry, newInvoiceExpiry)
-		}
+	if minHeight == 0 {
+		log.Warnf("make height expiry called with 0 height")
+		return nil
 	}
 
-	if len(invoicesWithExpiry) > 0 {
+	return &invoiceExpiryHeight{
+		paymentHash:  paymentHash,
+		expiryHeight: minHeight,
+	}
+}
+
+// AddInvoices adds invoices to the InvoiceExpiryWatcher.
+func (ew *InvoiceExpiryWatcher) AddInvoices(invoices ...invoiceExpiry) {
+	if len(invoices) == 0 {
+		return
+	}
+
+	select {
+	case ew.newInvoices <- invoices:
 		log.Debugf("Added %d invoices to the expiry watcher",
-			len(invoicesWithExpiry))
-		select {
-		case ew.newInvoices <- invoicesWithExpiry:
-		// Select on quit too so that callers won't get blocked in case
-		// of concurrent shutdown.
-		case <-ew.quit:
-		}
+			len(invoices))
+
+	// Select on quit too so that callers won't get blocked in case
+	// of concurrent shutdown.
+	case <-ew.quit:
 	}
 }
 
-// AddInvoice adds a new invoice to the InvoiceExpiryWatcher. This won't check
-// if the invoice is already added and will only add invoices with ContractOpen
-// state.
-func (ew *InvoiceExpiryWatcher) AddInvoice(
-	paymentHash lntypes.Hash, invoice *channeldb.Invoice) {
-
-	newInvoiceExpiry := ew.prepareInvoice(paymentHash, invoice)
-	if newInvoiceExpiry != nil {
-		log.Debugf("Adding invoice '%v' to expiry watcher, expiration: %v",
-			paymentHash, newInvoiceExpiry.Expiry)
-
-		select {
-		case ew.newInvoices <- []*invoiceExpiry{newInvoiceExpiry}:
-		// Select on quit too so that callers won't get blocked in case
-		// of concurrent shutdown.
-		case <-ew.quit:
-		}
-	}
-}
-
-// nextExpiry returns a Time chan to wait on until the next invoice expires.
-// If there are no active invoices, then it'll simply wait indefinitely.
-func (ew *InvoiceExpiryWatcher) nextExpiry() <-chan time.Time {
-	if !ew.expiryQueue.Empty() {
-		top := ew.expiryQueue.Top().(*invoiceExpiry)
+// nextTimestampExpiry returns a Time chan to wait on until the next invoice
+// expires. If there are no active invoices, then it'll simply wait
+// indefinitely.
+func (ew *InvoiceExpiryWatcher) nextTimestampExpiry() <-chan time.Time {
+	if !ew.timestampExpiryQueue.Empty() {
+		top := ew.timestampExpiryQueue.Top().(*invoiceExpiryTs)
 		return ew.clock.TickAfter(top.Expiry.Sub(ew.clock.Now()))
 	}
 
 	return nil
 }
 
+// nextHeightExpiry returns a channel that will immediately be read from if
+// the top item on our queue has expired.
+func (ew *InvoiceExpiryWatcher) nextHeightExpiry() <-chan uint32 {
+	if ew.blockExpiryQueue.Empty() {
+		return nil
+	}
+
+	top := ew.blockExpiryQueue.Top().(*invoiceExpiryHeight)
+	if !top.expired(ew.currentHeight, ew.blockExpiryDelta) {
+		return nil
+	}
+
+	blockChan := make(chan uint32, 1)
+	blockChan <- top.expiryHeight
+	return blockChan
+}
+
 // cancelNextExpiredInvoice will cancel the next expired invoice and removes
 // it from the expiry queue.
 func (ew *InvoiceExpiryWatcher) cancelNextExpiredInvoice() {
-	if !ew.expiryQueue.Empty() {
-		top := ew.expiryQueue.Top().(*invoiceExpiry)
+	if !ew.timestampExpiryQueue.Empty() {
+		top := ew.timestampExpiryQueue.Top().(*invoiceExpiryTs)
 		if !top.Expiry.Before(ew.clock.Now()) {
 			return
 		}
@@ -198,47 +318,124 @@ func (ew *InvoiceExpiryWatcher) cancelNextExpiredInvoice() {
 		// field would never be used. Enabling cancellation for accepted
 		// keysend invoices creates a safety mechanism that can prevents
 		// channel force-closes.
-		err := ew.cancelInvoice(top.PaymentHash, top.Keysend)
-		if err != nil && err != channeldb.ErrInvoiceAlreadySettled &&
-			err != channeldb.ErrInvoiceAlreadyCanceled {
+		ew.expireInvoice(top.PaymentHash, top.Keysend)
+		ew.timestampExpiryQueue.Pop()
+	}
+}
 
-			log.Errorf("Unable to cancel invoice: %v", top.PaymentHash)
+// cancelNextHeightExpiredInvoice looks at our height based queue and expires
+// the next invoice if we have reached its expiry block.
+func (ew *InvoiceExpiryWatcher) cancelNextHeightExpiredInvoice() {
+	if ew.blockExpiryQueue.Empty() {
+		return
+	}
+
+	top := ew.blockExpiryQueue.Top().(*invoiceExpiryHeight)
+	if !top.expired(ew.currentHeight, ew.blockExpiryDelta) {
+		return
+	}
+
+	// We always force-cancel block-based expiry so that we can
+	// cancel invoices that have been accepted but not yet resolved.
+	// This helps us avoid force closes.
+	ew.expireInvoice(top.paymentHash, true)
+	ew.blockExpiryQueue.Pop()
+}
+
+// expireInvoice attempts to expire an invoice and logs an error if we get an
+// unexpected error.
+func (ew *InvoiceExpiryWatcher) expireInvoice(hash lntypes.Hash, force bool) {
+	err := ew.cancelInvoice(hash, force)
+	switch err {
+	case nil:
+
+	case channeldb.ErrInvoiceAlreadyCanceled:
+
+	case channeldb.ErrInvoiceAlreadySettled:
+
+	case channeldb.ErrInvoiceNotFound:
+		// It's possible that the user has manually canceled the invoice
+		// which will then be deleted by the garbage collector resulting
+		// in an ErrInvoiceNotFound error.
+
+	default:
+		log.Errorf("Unable to cancel invoice: %v: %v", hash, err)
+	}
+}
+
+// pushInvoices adds invoices to be expired to their relevant queue.
+func (ew *InvoiceExpiryWatcher) pushInvoices(invoices []invoiceExpiry) {
+	for _, inv := range invoices {
+		// Switch on the type of entry we have. We need to check nil
+		// on the implementation of the interface because the interface
+		// itself is non-nil.
+		switch expiry := inv.(type) {
+		case *invoiceExpiryTs:
+			if expiry != nil {
+				ew.timestampExpiryQueue.Push(expiry)
+			}
+
+		case *invoiceExpiryHeight:
+			if expiry != nil {
+				ew.blockExpiryQueue.Push(expiry)
+			}
+
+		default:
+			log.Errorf("unexpected queue item: %T", inv)
 		}
-
-		ew.expiryQueue.Pop()
 	}
 }
 
 // mainLoop is a goroutine that receives new invoices and handles cancellation
 // of expired invoices.
-func (ew *InvoiceExpiryWatcher) mainLoop() {
-	defer ew.wg.Done()
+func (ew *InvoiceExpiryWatcher) mainLoop(blockNtfns *chainntnfs.BlockEpochEvent) {
+	defer func() {
+		blockNtfns.Cancel()
+		ew.wg.Done()
+	}()
+
+	// We have two different queues, so we use a different cancel method
+	// depending on which expiry condition we have hit. Starting with time
+	// based expiry is an arbitrary choice to start off.
+	cancelNext := ew.cancelNextExpiredInvoice
 
 	for {
 		// Cancel any invoices that may have expired.
-		ew.cancelNextExpiredInvoice()
+		cancelNext()
 
 		select {
 
-		case invoicesWithExpiry := <-ew.newInvoices:
+		case newInvoices := <-ew.newInvoices:
 			// Take newly forwarded invoices with higher priority
 			// in order to not block the newInvoices channel.
-			for _, invoiceWithExpiry := range invoicesWithExpiry {
-				ew.expiryQueue.Push(invoiceWithExpiry)
-			}
+			ew.pushInvoices(newInvoices)
 			continue
 
 		default:
 			select {
 
-			case <-ew.nextExpiry():
-				// Wait until the next invoice expires.
+			// Wait until the next invoice expires.
+			case <-ew.nextTimestampExpiry():
+				cancelNext = ew.cancelNextExpiredInvoice
 				continue
 
-			case invoicesWithExpiry := <-ew.newInvoices:
-				for _, invoiceWithExpiry := range invoicesWithExpiry {
-					ew.expiryQueue.Push(invoiceWithExpiry)
+			case <-ew.nextHeightExpiry():
+				cancelNext = ew.cancelNextHeightExpiredInvoice
+				continue
+
+			case newInvoices := <-ew.newInvoices:
+				ew.pushInvoices(newInvoices)
+
+			// Consume new blocks.
+			case block, ok := <-blockNtfns.Epochs:
+				if !ok {
+					log.Debugf("block notifications " +
+						"canceled")
+					return
 				}
+
+				ew.currentHeight = uint32(block.Height)
+				ew.currentHash = block.Hash
 
 			case <-ew.quit:
 				return

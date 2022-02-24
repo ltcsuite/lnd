@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/watchtower/blob"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // WriteElement is a one-stop shop to write the big endian representation of
@@ -228,7 +228,7 @@ func ReadElement(r io.Reader, element interface{}) error {
 			return err
 		}
 
-		pubKey, err := btcec.ParsePubKey(b[:], btcec.S256())
+		pubKey, err := btcec.ParsePubKey(b[:])
 		if err != nil {
 			return err
 		}

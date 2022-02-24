@@ -23,6 +23,10 @@ type Config struct {
 
 	// NoWumbo unsets any bits signalling support for wumbo channels.
 	NoWumbo bool
+
+	// NoScriptEnforcementLease unsets any bits signaling support for script
+	// enforced leases.
+	NoScriptEnforcementLease bool
 }
 
 // Manager is responsible for generating feature vectors for different requested
@@ -77,18 +81,39 @@ func newManager(cfg Config, desc setDesc) (*Manager, error) {
 			raw.Unset(lnwire.PaymentAddrRequired)
 			raw.Unset(lnwire.MPPOptional)
 			raw.Unset(lnwire.MPPRequired)
+			raw.Unset(lnwire.AMPOptional)
+			raw.Unset(lnwire.AMPRequired)
 		}
 		if cfg.NoStaticRemoteKey {
 			raw.Unset(lnwire.StaticRemoteKeyOptional)
 			raw.Unset(lnwire.StaticRemoteKeyRequired)
 		}
 		if cfg.NoAnchors {
-			raw.Unset(lnwire.AnchorsOptional)
-			raw.Unset(lnwire.AnchorsRequired)
+			raw.Unset(lnwire.AnchorsZeroFeeHtlcTxOptional)
+			raw.Unset(lnwire.AnchorsZeroFeeHtlcTxRequired)
+
+			// If anchors are disabled, then we also need to
+			// disable all other features that depend on it as
+			// well, as otherwise we may create an invalid feature
+			// bit set.
+			for bit, depFeatures := range deps {
+				for depFeature := range depFeatures {
+					switch {
+					case depFeature == lnwire.AnchorsZeroFeeHtlcTxRequired:
+						fallthrough
+					case depFeature == lnwire.AnchorsZeroFeeHtlcTxOptional:
+						raw.Unset(bit)
+					}
+				}
+			}
 		}
 		if cfg.NoWumbo {
 			raw.Unset(lnwire.WumboChannelsOptional)
 			raw.Unset(lnwire.WumboChannelsRequired)
+		}
+		if cfg.NoScriptEnforcementLease {
+			raw.Unset(lnwire.ScriptEnforcedLeaseOptional)
+			raw.Unset(lnwire.ScriptEnforcedLeaseRequired)
 		}
 
 		// Ensure that all of our feature sets properly set any

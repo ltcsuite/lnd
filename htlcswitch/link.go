@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"fmt"
-	"math"
 	prand "math/rand"
 	"sync"
 	"sync/atomic"
@@ -26,6 +25,7 @@ import (
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/queue"
 	"github.com/ltcsuite/lnd/ticker"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
 )
 
@@ -133,6 +133,9 @@ type ChannelLinkConfig struct {
 	//
 	// TODO(conner): remove after refactoring htlcswitch testing framework.
 	Switch *Switch
+
+	// BestHeight returns the best known height.
+	BestHeight func() uint32
 
 	// ForwardPackets attempts to forward the batch of htlcs through the
 	// switch. The function returns and error in case it fails to send one or
@@ -256,7 +259,7 @@ type ChannelLinkConfig struct {
 
 	// TowerClient is an optional engine that manages the signing,
 	// encrypting, and uploading of justice transactions to the daemon's
-	// configured set of watchtowers.
+	// configured set of watchtowers for legacy channels.
 	TowerClient TowerClient
 
 	// MaxOutgoingCltvExpiry is the maximum outgoing timelock that the link
@@ -268,6 +271,10 @@ type ChannelLinkConfig struct {
 	// commitment fee to be of its balance. This only applies to the
 	// initiator of the channel.
 	MaxFeeAllocation float64
+
+	// MaxAnchorsCommitFeeRate is the max commitment fee rate we'll use as
+	// the initiator for channels of the anchor type.
+	MaxAnchorsCommitFeeRate chainfee.SatPerKWeight
 
 	// NotifyActiveLink allows the link to tell the ChannelNotifier when a
 	// link is first started.
@@ -291,6 +298,13 @@ type ChannelLinkConfig struct {
 // prevent the link from blocking.
 type localUpdateAddMsg struct {
 	pkt *htlcPacket
+	err chan error
+}
+
+// shutdownReq contains an error channel that will be used by the channelLink
+// to send an error if shutdown failed. If shutdown succeeded, the channel will
+// be closed.
+type shutdownReq struct {
 	err chan error
 }
 
@@ -362,6 +376,10 @@ type channelLink struct {
 	// sub-systems with the latest set of active HTLC's on our channel.
 	htlcUpdates chan *contractcourt.ContractUpdate
 
+	// shutdownRequest is a channel that the channelLink will listen on to
+	// service shutdown requests from ShutdownIfChannelClean calls.
+	shutdownRequest chan *shutdownReq
+
 	// updateFeeTimer is the timer responsible for updating the link's
 	// commitment fee every time it fires.
 	updateFeeTimer *time.Timer
@@ -400,19 +418,20 @@ type hodlHtlc struct {
 func NewChannelLink(cfg ChannelLinkConfig,
 	channel *lnwallet.LightningChannel) ChannelLink {
 
-	logPrefix := fmt.Sprintf("ChannelLink(%v):", channel.ShortChanID())
+	logPrefix := fmt.Sprintf("ChannelLink(%v):", channel.ChannelPoint())
 
 	return &channelLink{
 		cfg:         cfg,
 		channel:     channel,
 		shortChanID: channel.ShortChanID(),
 		// TODO(roasbeef): just do reserve here?
-		htlcUpdates:    make(chan *contractcourt.ContractUpdate),
-		hodlMap:        make(map[channeldb.CircuitKey]hodlHtlc),
-		hodlQueue:      queue.NewConcurrentQueue(10),
-		log:            build.NewPrefixLog(logPrefix, log),
-		quit:           make(chan struct{}),
-		localUpdateAdd: make(chan *localUpdateAddMsg),
+		htlcUpdates:     make(chan *contractcourt.ContractUpdate),
+		shutdownRequest: make(chan *shutdownReq),
+		hodlMap:         make(map[channeldb.CircuitKey]hodlHtlc),
+		hodlQueue:       queue.NewConcurrentQueue(10),
+		log:             build.NewPrefixLog(logPrefix, log),
+		quit:            make(chan struct{}),
+		localUpdateAdd:  make(chan *localUpdateAddMsg),
 	}
 }
 
@@ -435,12 +454,7 @@ func (l *channelLink) Start() error {
 
 	// If the config supplied watchtower client, ensure the channel is
 	// registered before trying to use it during operation.
-	// TODO(halseth): support anchor types for watchtower.
-	state := l.channel.State()
-	if l.cfg.TowerClient != nil && state.ChanType.HasAnchors() {
-		l.log.Warnf("Skipping tower registration for anchor " +
-			"channel type")
-	} else if l.cfg.TowerClient != nil && !state.ChanType.HasAnchors() {
+	if l.cfg.TowerClient != nil {
 		err := l.cfg.TowerClient.RegisterChannel(l.ChanID())
 		if err != nil {
 			return err
@@ -521,7 +535,14 @@ func (l *channelLink) Stop() {
 		l.cfg.ChainEvents.Cancel()
 	}
 
-	l.updateFeeTimer.Stop()
+	// Ensure the channel for the timer is drained.
+	if !l.updateFeeTimer.Stop() {
+		select {
+		case <-l.updateFeeTimer.C:
+		default:
+		}
+	}
+
 	l.hodlQueue.Stop()
 
 	close(l.quit)
@@ -597,9 +618,18 @@ func (l *channelLink) sampleNetworkFee() (chainfee.SatPerKWeight, error) {
 
 // shouldAdjustCommitFee returns true if we should update our commitment fee to
 // match that of the network fee. We'll only update our commitment fee if the
-// network fee is +/- 10% to our network fee.
-func shouldAdjustCommitFee(netFee, chanFee chainfee.SatPerKWeight) bool {
+// network fee is +/- 10% to our commitment fee or if our current commitment
+// fee is below the minimum relay fee.
+func shouldAdjustCommitFee(netFee, chanFee,
+	minRelayFee chainfee.SatPerKWeight) bool {
+
 	switch {
+	// If the network fee is greater than our current commitment fee and
+	// our current commitment fee is below the minimum relay fee then
+	// we should switch to it no matter if it is less than a 10% increase.
+	case netFee > chanFee && chanFee < minRelayFee:
+		return true
+
 	// If the network fee is greater than the commitment fee, then we'll
 	// switch to it if it's at least 10% greater than the commit fee.
 	case netFee > chanFee && netFee >= (chanFee+(chanFee*10)/100):
@@ -634,7 +664,7 @@ func (l *channelLink) createFailureWithUpdate(
 // flow. We'll compare out commitment chains with the remote party, and re-send
 // either a danging commit signature, a revocation, or both.
 func (l *channelLink) syncChanStates() error {
-	l.log.Info("attempting to re-resynchronize")
+	l.log.Info("attempting to re-synchronize")
 
 	// First, we'll generate our ChanSync message to send to the other
 	// side. Based on this message, the remote party will decide if they
@@ -776,7 +806,7 @@ func (l *channelLink) resolveFwdPkg(fwdPkg *channeldb.FwdPkg) error {
 		l.log.Debugf("removing completed fwd pkg for height=%d",
 			fwdPkg.Height)
 
-		err := l.channel.RemoveFwdPkg(fwdPkg.Height)
+		err := l.channel.RemoveFwdPkgs(fwdPkg.Height)
 		if err != nil {
 			l.log.Errorf("unable to remove fwd pkg for height=%d: "+
 				"%v", fwdPkg.Height, err)
@@ -843,33 +873,49 @@ func (l *channelLink) fwdPkgGarbager() {
 	l.cfg.FwdPkgGCTicker.Resume()
 	defer l.cfg.FwdPkgGCTicker.Stop()
 
+	if err := l.loadAndRemove(); err != nil {
+		l.log.Warnf("unable to run initial fwd pkgs gc: %v", err)
+	}
+
 	for {
 		select {
 		case <-l.cfg.FwdPkgGCTicker.Ticks():
-			fwdPkgs, err := l.channel.LoadFwdPkgs()
-			if err != nil {
-				l.log.Warnf("unable to load fwdpkgs for gc: %v",
+			if err := l.loadAndRemove(); err != nil {
+				l.log.Warnf("unable to remove fwd pkgs: %v",
 					err)
 				continue
-			}
-
-			// TODO(conner): batch removal of forward packages.
-			for _, fwdPkg := range fwdPkgs {
-				if fwdPkg.State != channeldb.FwdStateCompleted {
-					continue
-				}
-
-				err = l.channel.RemoveFwdPkg(fwdPkg.Height)
-				if err != nil {
-					l.log.Warnf("unable to remove fwd pkg "+
-						"for height=%d: %v",
-						fwdPkg.Height, err)
-				}
 			}
 		case <-l.quit:
 			return
 		}
 	}
+}
+
+// loadAndRemove loads all the channels forwarding packages and determines if
+// they can be removed. It is called once before the FwdPkgGCTicker ticks so that
+// a longer tick interval can be used.
+func (l *channelLink) loadAndRemove() error {
+	fwdPkgs, err := l.channel.LoadFwdPkgs()
+	if err != nil {
+		return err
+	}
+
+	var removeHeights []uint64
+	for _, fwdPkg := range fwdPkgs {
+		if fwdPkg.State != channeldb.FwdStateCompleted {
+			continue
+		}
+
+		removeHeights = append(removeHeights, fwdPkg.Height)
+	}
+
+	// If removeHeights is empty, return early so we don't use a db
+	// transaction.
+	if len(removeHeights) == 0 {
+		return nil
+	}
+
+	return l.channel.RemoveFwdPkgs(removeHeights...)
 }
 
 // htlcManager is the primary goroutine which drives a channel's commitment
@@ -1068,15 +1114,22 @@ func (l *channelLink) htlcManager() {
 				continue
 			}
 
-			// We'll check to see if we should update the fee rate
-			// based on our current set fee rate. We'll cap the new
-			// fee rate to our max fee allocation.
-			commitFee := l.channel.CommitFeeRate()
-			maxFee := l.channel.MaxFeeRate(l.cfg.MaxFeeAllocation)
-			newCommitFee := chainfee.SatPerKWeight(
-				math.Min(float64(netFee), float64(maxFee)),
+			minRelayFee := l.cfg.FeeEstimator.RelayFeePerKW()
+
+			newCommitFee := l.channel.IdealCommitFeeRate(
+				netFee, minRelayFee,
+				l.cfg.MaxAnchorsCommitFeeRate,
+				l.cfg.MaxFeeAllocation,
 			)
-			if !shouldAdjustCommitFee(newCommitFee, commitFee) {
+
+			// We determine if we should adjust the commitment fee
+			// based on the current commitment fee, the suggested
+			// new commitment fee and the current minimum relay fee
+			// rate.
+			commitFee := l.channel.CommitFeeRate()
+			if !shouldAdjustCommitFee(
+				newCommitFee, commitFee, minRelayFee,
+			) {
 				continue
 			}
 
@@ -1147,6 +1200,20 @@ func (l *channelLink) htlcManager() {
 				)
 				return
 			}
+
+		case req := <-l.shutdownRequest:
+			// If the channel is clean, we send nil on the err chan
+			// and return to prevent the htlcManager goroutine from
+			// processing any more updates. The full link shutdown
+			// will be triggered by RemoveLink in the peer.
+			if l.channel.IsChannelClean() {
+				req.err <- nil
+				return
+			}
+
+			// Otherwise, the channel has lingering updates, send
+			// an error and continue.
+			req.err <- ErrLinkFailedShutdown
 
 		case <-l.quit:
 			return
@@ -1424,6 +1491,7 @@ func (l *channelLink) handleDownstreamPkt(pkt *htlcPacket) {
 		// Send a settle event notification to htlcNotifier.
 		l.cfg.HtlcNotifier.NotifySettleEvent(
 			newHtlcKey(pkt),
+			htlc.PaymentPreimage,
 			getEventType(pkt),
 		)
 
@@ -1533,7 +1601,7 @@ func (l *channelLink) cleanupSpuriousResponse(pkt *htlcPacket) {
 	// If the htlc packet doesn't have a source reference, it is unsafe to
 	// proceed, as skipping this ack may cause the htlc to be reforwarded.
 	if pkt.sourceRef == nil {
-		l.log.Errorf("uanble to cleanup response for incoming "+
+		l.log.Errorf("unable to cleanup response for incoming "+
 			"circuit-key=%v, does not contain source reference",
 			inKey)
 		return
@@ -1819,14 +1887,9 @@ func (l *channelLink) handleUpstreamMsg(msg lnwire.Message) {
 			return
 		}
 
-		// If we have a tower client, we'll proceed in backing up the
-		// state that was just revoked.
-		// TODO(halseth): support anchor types for watchtower.
-		state := l.channel.State()
-		if l.cfg.TowerClient != nil && state.ChanType.HasAnchors() {
-			l.log.Warnf("Skipping tower backup for anchor " +
-				"channel type")
-		} else if l.cfg.TowerClient != nil && !state.ChanType.HasAnchors() {
+		// If we have a tower client for this channel type, we'll
+		if l.cfg.TowerClient != nil {
+			state := l.channel.State()
 			breachInfo, err := lnwallet.NewBreachRetribution(
 				state, state.RemoteCommitment.CommitHeight-1, 0,
 			)
@@ -1836,10 +1899,9 @@ func (l *channelLink) handleUpstreamMsg(msg lnwire.Message) {
 				return
 			}
 
-			chanType := l.channel.State().ChanType
 			chanID := l.ChanID()
 			err = l.cfg.TowerClient.BackupState(
-				&chanID, breachInfo, chanType.IsTweakless(),
+				&chanID, breachInfo, state.ChanType,
 			)
 			if err != nil {
 				l.fail(LinkFailureError{code: ErrInternalError},
@@ -1880,13 +1942,29 @@ func (l *channelLink) handleUpstreamMsg(msg lnwire.Message) {
 				"error receiving fee update: %v", err)
 			return
 		}
+
+		// Update the mailbox's feerate as well.
+		l.mailBox.SetFeeRate(fee)
+
 	case *lnwire.Error:
 		// Error received from remote, MUST fail channel, but should
 		// only print the contents of the error message if all
 		// characters are printable ASCII.
-		l.fail(LinkFailureError{code: ErrRemoteError},
+		l.fail(
+			LinkFailureError{
+				code: ErrRemoteError,
+
+				// TODO(halseth): we currently don't fail the
+				// channel permanently, as there are some sync
+				// issues with other implementations that will
+				// lead to them sending an error message, but
+				// we can recover from on next connection. See
+				// https://github.com/ElementsProject/lightning/issues/4212
+				PermanentFailure: false,
+			},
 			"ChannelPoint(%v): received error from peer: %v",
-			l.channel.ChannelPoint(), msg.Error())
+			l.channel.ChannelPoint(), msg.Error(),
+		)
 	default:
 		l.log.Warnf("received unknown message of type %T", msg)
 	}
@@ -2125,6 +2203,72 @@ func (l *channelLink) Bandwidth() lnwire.MilliSatoshi {
 	return l.channel.AvailableBalance()
 }
 
+// MayAddOutgoingHtlc indicates whether we can add an outgoing htlc with the
+// amount provided to the link. This check does not reserve a space, since
+// forwards or other payments may use the available slot, so it should be
+// considered best-effort.
+func (l *channelLink) MayAddOutgoingHtlc(amt lnwire.MilliSatoshi) error {
+	return l.channel.MayAddOutgoingHtlc(amt)
+}
+
+// getDustSum is a wrapper method that calls the underlying channel's dust sum
+// method.
+//
+// NOTE: Part of the dustHandler interface.
+func (l *channelLink) getDustSum(remote bool) lnwire.MilliSatoshi {
+	return l.channel.GetDustSum(remote)
+}
+
+// getFeeRate is a wrapper method that retrieves the underlying channel's
+// feerate.
+//
+// NOTE: Part of the dustHandler interface.
+func (l *channelLink) getFeeRate() chainfee.SatPerKWeight {
+	return l.channel.CommitFeeRate()
+}
+
+// getDustClosure returns a closure that can be used by the switch or mailbox
+// to evaluate whether a given HTLC is dust.
+//
+// NOTE: Part of the dustHandler interface.
+func (l *channelLink) getDustClosure() dustClosure {
+	localDustLimit := l.channel.State().LocalChanCfg.DustLimit
+	remoteDustLimit := l.channel.State().RemoteChanCfg.DustLimit
+	chanType := l.channel.State().ChanType
+
+	return dustHelper(chanType, localDustLimit, remoteDustLimit)
+}
+
+// dustClosure is a function that evaluates whether an HTLC is dust. It returns
+// true if the HTLC is dust. It takes in a feerate, a boolean denoting whether
+// the HTLC is incoming (i.e. one that the remote sent), a boolean denoting
+// whether to evaluate on the local or remote commit, and finally an HTLC
+// amount to test.
+type dustClosure func(chainfee.SatPerKWeight, bool, bool, ltcutil.Amount) bool
+
+// dustHelper is used to construct the dustClosure.
+func dustHelper(chantype channeldb.ChannelType, localDustLimit,
+	remoteDustLimit ltcutil.Amount) dustClosure {
+
+	isDust := func(feerate chainfee.SatPerKWeight, incoming,
+		localCommit bool, amt ltcutil.Amount) bool {
+
+		if localCommit {
+			return lnwallet.HtlcIsDust(
+				chantype, incoming, true, feerate, amt,
+				localDustLimit,
+			)
+		}
+
+		return lnwallet.HtlcIsDust(
+			chantype, incoming, false, feerate, amt,
+			remoteDustLimit,
+		)
+	}
+
+	return isDust
+}
+
 // AttachMailBox updates the current mailbox used by this link, and hooks up
 // the mailbox's message and packet outboxes to the link's upstream and
 // downstream chans, respectively.
@@ -2134,6 +2278,14 @@ func (l *channelLink) AttachMailBox(mailbox MailBox) {
 	l.upstream = mailbox.MessageOutBox()
 	l.downstream = mailbox.PacketOutBox()
 	l.Unlock()
+
+	// Set the mailbox's fee rate. This may be refreshing a feerate that was
+	// never committed.
+	l.mailBox.SetFeeRate(l.getFeeRate())
+
+	// Also set the mailbox's dust closure so that it can query whether HTLC's
+	// are dust given the current feerate.
+	l.mailBox.SetDustClosure(l.getDustClosure())
 }
 
 // UpdateForwardingPolicy updates the forwarding policy for the target
@@ -2186,7 +2338,7 @@ func (l *channelLink) CheckHtlcForward(payHash [32]byte,
 	// any case, we'll cancel this HTLC.
 	actualFee := incomingHtlcAmt - amtToForward
 	if incomingHtlcAmt < amtToForward || actualFee < expectedFee {
-		l.log.Errorf("outgoing htlc(%x) has insufficient fee: "+
+		l.log.Warnf("outgoing htlc(%x) has insufficient fee: "+
 			"expected %v, got %v",
 			payHash[:], int64(expectedFee), int64(actualFee))
 
@@ -2208,7 +2360,7 @@ func (l *channelLink) CheckHtlcForward(payHash [32]byte,
 	// sender messed up, or an intermediate node tampered with the HTLC.
 	timeDelta := policy.TimeLockDelta
 	if incomingTimeout < outgoingTimeout+timeDelta {
-		l.log.Errorf("incoming htlc(%x) has incorrect time-lock value: "+
+		l.log.Warnf("incoming htlc(%x) has incorrect time-lock value: "+
 			"expected at least %v block delta, got %v block delta",
 			payHash[:], timeDelta, incomingTimeout-outgoingTimeout)
 
@@ -2245,7 +2397,7 @@ func (l *channelLink) CheckHtlcTransit(payHash [32]byte,
 	)
 }
 
-// htlcSatifiesPolicyOutgoing checks whether the given htlc parameters satisfy
+// canSendHtlc checks whether the given htlc parameters satisfy
 // the channel's amount and time lock constraints.
 func (l *channelLink) canSendHtlc(policy ForwardingPolicy,
 	payHash [32]byte, amt lnwire.MilliSatoshi, timeout uint32,
@@ -2255,7 +2407,7 @@ func (l *channelLink) canSendHtlc(policy ForwardingPolicy,
 	// too small for the next hop. If so, then we'll cancel the HTLC
 	// directly.
 	if amt < policy.MinHTLCOut {
-		l.log.Errorf("outgoing htlc(%x) is too small: min_htlc=%v, "+
+		l.log.Warnf("outgoing htlc(%x) is too small: min_htlc=%v, "+
 			"htlc_value=%v", payHash[:], policy.MinHTLCOut,
 			amt)
 
@@ -2274,7 +2426,7 @@ func (l *channelLink) canSendHtlc(policy ForwardingPolicy,
 	// Next, ensure that the passed HTLC isn't too large. If so, we'll
 	// cancel the HTLC directly.
 	if policy.MaxHTLC != 0 && amt > policy.MaxHTLC {
-		l.log.Errorf("outgoing htlc(%x) is too large: max_htlc=%v, "+
+		l.log.Warnf("outgoing htlc(%x) is too large: max_htlc=%v, "+
 			"htlc_value=%v", payHash[:], policy.MaxHTLC, amt)
 
 		// As part of the returned error, we'll send our latest routing
@@ -2291,7 +2443,7 @@ func (l *channelLink) canSendHtlc(policy ForwardingPolicy,
 	// future, so we'll reject an HTLC if the outgoing expiration time is
 	// too close to the current height.
 	if timeout <= heightNow+l.cfg.OutgoingCltvRejectDelta {
-		l.log.Errorf("htlc(%x) has an expiry that's too soon: "+
+		l.log.Warnf("htlc(%x) has an expiry that's too soon: "+
 			"outgoing_expiry=%v, best_height=%v", payHash[:],
 			timeout, heightNow)
 		failure := l.createFailureWithUpdate(
@@ -2304,7 +2456,7 @@ func (l *channelLink) canSendHtlc(policy ForwardingPolicy,
 
 	// Check absolute max delta.
 	if timeout > l.cfg.MaxOutgoingCltvExpiry+heightNow {
-		l.log.Errorf("outgoing htlc(%x) has a time lock too far in "+
+		l.log.Warnf("outgoing htlc(%x) has a time lock too far in "+
 			"the future: got %v, but maximum is %v", payHash[:],
 			timeout-heightNow, l.cfg.MaxOutgoingCltvExpiry)
 
@@ -2313,6 +2465,8 @@ func (l *channelLink) canSendHtlc(policy ForwardingPolicy,
 
 	// Check to see if there is enough balance in this channel.
 	if amt > l.Bandwidth() {
+		l.log.Warnf("insufficient bandwidth to route htlc: %v is "+
+			"larger than %v", amt, l.Bandwidth())
 		failure := l.createFailureWithUpdate(
 			func(upd *lnwire.ChannelUpdate) lnwire.FailureMessage {
 				return lnwire.NewTemporaryChannelFailure(upd)
@@ -2344,23 +2498,23 @@ func (l *channelLink) String() string {
 	return l.channel.ChannelPoint().String()
 }
 
-// HandleSwitchPacket handles the switch packets. This packets which might be
+// handleSwitchPacket handles the switch packets. This packets which might be
 // forwarded to us from another channel link in case the htlc update came from
 // another peer or if the update was created by user
 //
-// NOTE: Part of the ChannelLink interface.
-func (l *channelLink) HandleSwitchPacket(pkt *htlcPacket) error {
+// NOTE: Part of the packetHandler interface.
+func (l *channelLink) handleSwitchPacket(pkt *htlcPacket) error {
 	l.log.Tracef("received switch packet inkey=%v, outkey=%v",
 		pkt.inKey(), pkt.outKey())
 
 	return l.mailBox.AddPacket(pkt)
 }
 
-// HandleLocalAddPacket handles a locally-initiated UpdateAddHTLC packet. It
+// handleLocalAddPacket handles a locally-initiated UpdateAddHTLC packet. It
 // will be processed synchronously.
 //
-// NOTE: Part of the ChannelLink interface.
-func (l *channelLink) HandleLocalAddPacket(pkt *htlcPacket) error {
+// NOTE: Part of the packetHandler interface.
+func (l *channelLink) handleLocalAddPacket(pkt *htlcPacket) error {
 	l.log.Tracef("received switch packet outkey=%v", pkt.outKey())
 
 	// Create a buffered result channel to prevent the link from blocking.
@@ -2391,6 +2545,29 @@ func (l *channelLink) HandleChannelUpdate(message lnwire.Message) {
 	l.mailBox.AddMessage(message)
 }
 
+// ShutdownIfChannelClean triggers a link shutdown if the channel is in a clean
+// state and errors if the channel has lingering updates.
+//
+// NOTE: Part of the ChannelUpdateHandler interface.
+func (l *channelLink) ShutdownIfChannelClean() error {
+	errChan := make(chan error, 1)
+
+	select {
+	case l.shutdownRequest <- &shutdownReq{
+		err: errChan,
+	}:
+	case <-l.quit:
+		return ErrLinkShuttingDown
+	}
+
+	select {
+	case err := <-errChan:
+		return err
+	case <-l.quit:
+		return ErrLinkShuttingDown
+	}
+}
+
 // updateChannelFee updates the commitment fee-per-kw on this channel by
 // committing to an update_fee message.
 func (l *channelLink) updateChannelFee(feePerKw chainfee.SatPerKWeight) error {
@@ -2408,6 +2585,10 @@ func (l *channelLink) updateChannelFee(feePerKw chainfee.SatPerKWeight) error {
 	if err := l.channel.UpdateFee(feePerKw); err != nil {
 		return err
 	}
+
+	// The fee passed the channel's validation checks, so we update the
+	// mailbox feerate.
+	l.mailBox.SetFeeRate(feePerKw)
 
 	// We'll then attempt to send a new UpdateFee message, and also lock it
 	// in immediately by triggering a commitment update.
@@ -2499,6 +2680,8 @@ func (l *channelLink) processRemoteSettleFails(fwdPkg *channeldb.FwdPkg,
 					),
 				},
 			}
+
+			l.log.Debugf("Failed to send %s", pd.Amount)
 
 			// If the failure message lacks an HMAC (but includes
 			// the 4 bytes for encoding the message and padding
@@ -2635,7 +2818,7 @@ func (l *channelLink) processRemoteAdds(fwdPkg *channeldb.FwdPkg,
 			continue
 		}
 
-		heightNow := l.cfg.Switch.BestHeight()
+		heightNow := l.cfg.BestHeight()
 
 		pld, err := chanIterator.HopPayload()
 		if err != nil {
@@ -2951,6 +3134,7 @@ func (l *channelLink) settleHTLC(preimage lntypes.Preimage,
 				HtlcID: pd.HtlcIndex,
 			},
 		},
+		preimage,
 		HtlcEventTypeReceive,
 	)
 

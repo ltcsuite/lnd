@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/stretchr/testify/require"
@@ -202,7 +202,7 @@ func TestFetchChannelWriteBucket(t *testing.T) {
 			defer cleanup()
 
 			// Update our db to the starting state we expect.
-			err = kvdb.Update(db, test.setup)
+			err = kvdb.Update(db, test.setup, func() {})
 			require.NoError(t, err)
 
 			// Try to get our report bucket.
@@ -211,7 +211,7 @@ func TestFetchChannelWriteBucket(t *testing.T) {
 					tx, testChainHash, &testChanPoint1,
 				)
 				return err
-			})
+			}, func() {})
 			require.NoError(t, err)
 		})
 	}

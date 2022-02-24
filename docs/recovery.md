@@ -43,7 +43,7 @@ When a new `lnd` node is created, it's given a 24-word seed phrase, called an
 The two seed formats look similar, but the only commonality they share are
 using the same default English dictionary. A valid seed phrase obtained over
 the CLI `lncli create` command looks something like: 
-```
+```text
 !!!YOU MUST WRITE DOWN THIS SEED TO BE ABLE TO RESTORE THE WALLET!!!
 
 ---------------BEGIN LND CIPHER SEED---------------
@@ -62,7 +62,7 @@ the CLI `lncli create` command looks something like:
 
 During the creation process, users are first prompted to enter a **wallet
 password**:
-```
+```text
 Input wallet password:
 Confirm wallet password:
 ```
@@ -72,7 +72,7 @@ derived master private keys or public key data.
 
 Users can also _optionally_ enter a second passphrase which we call the _cipher
 seed passphrase_:
-```
+```text
 Your cipher seed can optionally be encrypted.
 Input your passphrase if you wish to encrypt it (or press enter to proceed without a cipher seed passphrase):
 ```
@@ -90,30 +90,30 @@ silently decrypt to a new (likely empty) wallet.
 
 The initial entry point to trigger recovery of on-chain funds in the command
 line is the `lncli create` command.
-```
+```shell
 ⛰   lncli create
 ```
 
 Next, one can enter a _new_ wallet password to encrypt any newly derived keys
 as a result of the recovery process.
-```
+```text
 Input wallet password:
 Confirm wallet password:
 ```
 
 Once a new wallet password has been obtained, the user will be prompted for
 their _existing_ cipher seed:
-```
+```text
 Input your 24-word mnemonic separated by spaces: ability noise lift document certain month shoot perfect matrix mango excess turkey river pitch fluid rack drill text buddy pool soul fatal ship jelly
 ```
 
 If a _cipher seed passphrase_ was used when the seed was created, it MUST be entered now:
-```
+```text
 Input your cipher seed passphrase (press enter if your seed doesn't have a passphrase):
 ```
 
 Finally, the user has an option to choose a _recovery window_:
-```
+```text
 Input an optional address look-ahead used to scan for used keys (default 2500):
 ```
 
@@ -126,7 +126,7 @@ default value.
 
 If all the information provided was valid, then you'll be presented with the
 seed again: 
-```
+```text
 
 !!!YOU MUST WRITE DOWN THIS SEED TO BE ABLE TO RESTORE THE WALLET!!!
 
@@ -145,7 +145,7 @@ lnd successfully initialized!
 ```
 
 In `lnd`'s logs, you should see something along the lines of (irrelevant lines skipped):
-```
+```text
 [INF] LNWL: Opened wallet
 [INF] LTND: Wallet recovery mode enabled with address lookahead of 2500 addresses
 [INF] LNWL: RECOVERY MODE ENABLED -- rescanning for used addresses with recovery_window=2500
@@ -166,7 +166,8 @@ window. Depending on how old the wallet is (the cipher seed stores the wallet's
 birthday!) and how many addresses were used, the rescan may take anywhere from
 a few minutes to a few hours. To track the recovery progress, one can use the
 command `lncli getrecoveryinfo`. When finished, the following is returned,
-```
+```shell
+⛰  lncli getrecoveryinfo
 {
     "recovery_mode": true,
     "recovery_finished": true,
@@ -177,7 +178,7 @@ command `lncli getrecoveryinfo`. When finished, the following is returned,
 If the rescan wasn't able to complete fully (`lnd` was shutdown for example),
 then from `lncli unlock`, it's possible to _restart_ the rescan from where it
 left off with the `--recovery-window` argument:
-```
+```shell
 ⛰  lncli unlock --recovery_window=2500
 ```
 
@@ -190,29 +191,24 @@ rescan.
 The recovery methods described above assume a clean slate for a node, so
 there's no existing UTXO or key data in the node's database. However, there're
 times when an _existing_ node may want to _manually_ rescan the chain. We have
-a tool for that! The tool is called
-[`dropwtxmgr`](https://github.com/btcsuite/btcwallet/tree/master/cmd/dropwtxmgr).
-It can be installed with the following command:
-```
-⛰  go get -v -u github.com/btcsuite/btcwallet/cmd/dropwtxmgr
+a command line flag for that! Just start `lnd` and add the following flag:
+```shell
+⛰  lnd --reset-wallet-transactions
 ```
 
-The `dropwtxmgr` tool will _reset_ the best synced height of the wallet back to
-its birthday, or genesis if the birthday isn't known (for some older wallets).
-In order to run the tool, you must first **shutdown `lnd`**. Once `lnd` is
-shutdown, the rescan can be initiated with the following commands:
-```
-⛰  cp $HOME/.lnd/data/chain/bitcoin/mainnet/wallet.db $HOME/wallet.db # Copy the existing databse just in case!
-⛰  dropwtxmgr --db=$HOME/.lnd/data/chain/bitcoin/mainnet/wallet.db
-```
+The `--reset-wallet-transactions` flag will _reset_ the best synced height of
+the wallet back to its birthday, or genesis if the birthday isn't known (for
+some older wallets).
 
-Once the above command returns (if it hangs for a while, then `lnd` may not
-actually be shutdown, so double check!), `lnd` can be restarted. After it's
-restarted, then the wallet should being rescanning. An entry resembling the
-following will show up in the logs once it's complete:
-```
+Just run `lnd` with the flag, unlock it, then the wallet should begin
+rescanning. An entry resembling the following will show up in the logs once it's
+complete:
+```text
 [INF] LNWL: Finished rescan for 800 addresses (synced to block 3032830c812a4a6ea305d8ead13b52e9e69d6400ff3c997970b6f76fbc770920, height 748)
 ```
+
+**Remember to remove the flag once the rescan was completed successfully to
+avoid rescanning again for every restart of lnd**.
 
 ## Off-Chain Recovery
 
@@ -246,15 +242,13 @@ process.
 #### On-Disk `channel.backup`
 
 There are multiple ways of obtaining SCBs from `lnd`. The most commonly used
-method will likely be via the `channels.backup` file that's stored on-disk
+method will likely be via the `channel.backup` file that's stored on-disk
 alongside the rest of the chain data. This is a special file that contains SCB
 entries for _all_ currently open channels. Each time a channel is opened or
 closed, this file is updated on disk in a safe manner (atomic file rename). As
 a result, unlike the `channel.db` file, it's _always_ safe to copy this file
 for backup at ones desired location. The default location on Linux is: 
-```
-~/.lnd/data/chain/bitcoin/mainnet/channel.backup
-```
+`~/.lnd/data/chain/bitcoin/mainnet/channel.backup`
 
 An example of using file system level notification to [copy the backup to a
 distinct volume/partition/drive can be found
@@ -264,7 +258,7 @@ here](https://gist.github.com/alexbosworth/2c5e185aedbdac45a03655b709e255a3).
 
 Another way to obtain SCBS for all or a target channel is via the new
 `exportchanbackup` `lncli` command:
-```
+```shell
 ⛰  lncli --network=simnet exportchanbackup --chan_point=29be6d259dc71ebdf0a3a0e83b240eda78f9023d8aeaae13c89250c7e59467d5:0
 {
     "chan_point": "29be6d259dc71ebdf0a3a0e83b240eda78f9023d8aeaae13c89250c7e59467d5:0",
@@ -279,7 +273,7 @@ Another way to obtain SCBS for all or a target channel is via the new
     "multi_chan_backup": "fd73e992e5133aa085c8e45548e0189c411c8cfe42e902b0ee2dec528a18fb472c3375447868ffced0d4812125e4361d667b7e6a18b2357643e09bbe7e9110c6b28d74f4f55e7c29e92419b52509e5c367cf2d977b670a2ff7560f5fe24021d246abe30542e6c6e3aa52f903453c3a2389af918249dbdb5f1199aaecf4931c0366592165b10bdd58eaf706d6df02a39d9323a0c65260ffcc84776f2705e4942d89e4dbefa11c693027002c35582d56e295dcf74d27e90873699657337696b32c05c8014911a7ec8eb03bdbe526fe658be8abdf50ab12c4fec9ddeefc489cf817721c8e541d28fbe71e32137b5ea066a9f4e19814deedeb360def90eff2965570aab5fedd0ebfcd783ce3289360953680ac084b2e988c9cbd0912da400861467d7bb5ad4b42a95c2d541653e805cbfc84da401baf096fba43300358421ae1b43fd25f3289c8c73489977592f75bc9f73781f41718a752ab325b70c8eb2011c5d979f6efc7a76e16492566e43d94dbd42698eb06ff8ad4fd3f2baabafded"
 }
 
-⛰  lncli --network=simnet exportchanbackup --all --output_file=channels.backup
+⛰  lncli --network=simnet exportchanbackup --all --output_file=channel.backup
 ```
 
 As shown above, a user can either: specify a specific channel to backup, backup
@@ -298,14 +292,14 @@ schemes, compared to the file system notification based approach.
 
 If a node is being created from scratch, then it's possible to pass in an
 existing SCB using the `lncli create` or `lncli unlock` commands:
-```
-⛰  lncli create -multi_file=channels.backup
+```shell
+⛰  lncli create -multi_file=channel.backup
 ```
 
 Alternatively, the `restorechanbackup` command can be used if `lnd` has already
 been created at the time of SCB restoration:
-```
-⛰   lncli restorechanbackup -h
+```shell
+⛰  lncli restorechanbackup -h
 NAME:
    lncli restorechanbackup - Restore an existing single or multi-channel static channel backup
 
@@ -319,7 +313,7 @@ DESCRIPTION:
 
   Allows a user to restore a Static Channel Backup (SCB) that was
   obtained either via the exportchanbackup command, or from lnd's
-  automatically manged channels.backup file. This command should be used
+  automatically managed channel.backup file. This command should be used
   if a user is attempting to restore a channel due to data loss on a
   running node restored with the same seed as the node that created the
   channel. If successful, this command will allows the user to recover
@@ -334,7 +328,7 @@ DESCRIPTION:
        static channel backups in single blob.
 
      * A file path which points to a packed multi-channel backup within a
-       file, using the same format that lnd does in its channels.backup
+       file, using the same format that lnd does in its channel.backup
        file.
 
 

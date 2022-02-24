@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ltcsuite/lnd/lnwire"
-	"github.com/ltcsuite/ltcd/btcec"
+	lnwire "github.com/ltcsuite/lnd/channeldb/migration/lnwire21"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/chaincfg"
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 const (

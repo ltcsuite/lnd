@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 // ReservationError wraps certain errors returned during channel reservation
@@ -139,6 +139,24 @@ func ErrChanTooSmall(chanSize, minChanSize ltcutil.Amount) ReservationError {
 	return ReservationError{
 		fmt.Errorf("chan size of %v is below min chan size of %v",
 			chanSize, minChanSize),
+	}
+}
+
+// ErrChanTooLarge returns an error indicating that an incoming channel request
+// was too large. We'll reject any incoming channels if they're above our
+// configured value for the max channel size we'll accept.
+func ErrChanTooLarge(chanSize, maxChanSize ltcutil.Amount) ReservationError {
+	return ReservationError{
+		fmt.Errorf("chan size of %v exceeds maximum chan size of %v",
+			chanSize, maxChanSize),
+	}
+}
+
+// ErrInvalidDustLimit returns an error indicating that a proposed DustLimit
+// was rejected.
+func ErrInvalidDustLimit(dustLimit ltcutil.Amount) ReservationError {
+	return ReservationError{
+		fmt.Errorf("dust limit %v is invalid", dustLimit),
 	}
 }
 

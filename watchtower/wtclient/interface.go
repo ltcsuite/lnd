@@ -3,12 +3,13 @@ package wtclient
 import (
 	"net"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/lnd/brontide"
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/tor"
+	"github.com/ltcsuite/lnd/watchtower/blob"
 	"github.com/ltcsuite/lnd/watchtower/wtdb"
 	"github.com/ltcsuite/lnd/watchtower/wtserver"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
 // DB abstracts the required database operations required by the watchtower
@@ -44,12 +45,12 @@ type DB interface {
 	ListTowers() ([]*wtdb.Tower, error)
 
 	// NextSessionKeyIndex reserves a new session key derivation index for a
-	// particular tower id. The index is reserved for that tower until
-	// CreateClientSession is invoked for that tower and index, at which
-	// point a new index for that tower can be reserved. Multiple calls to
-	// this method before CreateClientSession is invoked should return the
-	// same index.
-	NextSessionKeyIndex(wtdb.TowerID) (uint32, error)
+	// particular tower id and blob type. The index is reserved for that
+	// (tower, blob type) pair until CreateClientSession is invoked for that
+	// tower and index, at which point a new index for that tower can be
+	// reserved. Multiple calls to this method before CreateClientSession is
+	// invoked should return the same index.
+	NextSessionKeyIndex(wtdb.TowerID, blob.Type) (uint32, error)
 
 	// CreateClientSession saves a newly negotiated client session to the
 	// client's database. This enables the session to be used across
@@ -95,22 +96,12 @@ type DB interface {
 	AckUpdate(id *wtdb.SessionID, seqNum, lastApplied uint16) error
 }
 
-// Dial connects to an addr using the specified net and returns the connection
-// object.
-type Dial func(net, addr string) (net.Conn, error)
-
 // AuthDialer connects to a remote node using an authenticated transport, such as
 // brontide. The dialer argument is used to specify a resolver, which allows
 // this method to be used over Tor or clear net connections.
-type AuthDialer func(localKey keychain.SingleKeyECDH, netAddr *lnwire.NetAddress,
-	dialer func(string, string) (net.Conn, error)) (wtserver.Peer, error)
-
-// AuthDial is the watchtower client's default method of dialing.
-func AuthDial(localKey keychain.SingleKeyECDH, netAddr *lnwire.NetAddress,
-	dialer func(string, string) (net.Conn, error)) (wtserver.Peer, error) {
-
-	return brontide.Dial(localKey, netAddr, dialer)
-}
+type AuthDialer func(localKey keychain.SingleKeyECDH,
+	netAddr *lnwire.NetAddress,
+	dialer tor.DialFunc) (wtserver.Peer, error)
 
 // ECDHKeyRing abstracts the ability to derive shared ECDH keys given a
 // description of the derivation path of a private key.

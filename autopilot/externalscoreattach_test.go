@@ -3,14 +3,14 @@ package autopilot_test
 import (
 	"testing"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/lnd/autopilot"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 // randKey returns a random public key.
 func randKey() (*btcec.PublicKey, error) {
-	priv, err := btcec.NewPrivateKey(btcec.S256())
+	priv, err := btcec.NewPrivateKey()
 	if err != nil {
 		return nil, err
 	}

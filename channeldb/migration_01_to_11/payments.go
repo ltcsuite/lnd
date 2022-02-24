@@ -9,11 +9,11 @@ import (
 	"sort"
 	"time"
 
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	lnwire "github.com/ltcsuite/lnd/channeldb/migration/lnwire21"
+	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/lntypes"
-	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/tlv"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/wire"
 )
 
@@ -303,6 +303,8 @@ func (db *DB) FetchPayments() ([]*Payment, error) {
 				return nil
 			})
 		})
+	}, func() {
+		payments = nil
 	})
 	if err != nil {
 		return nil, err

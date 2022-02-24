@@ -3,7 +3,7 @@ package autopilot
 import (
 	"runtime"
 
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 // TopCentrality is a simple greedy technique to create connections to nodes
@@ -50,7 +50,7 @@ func (g *TopCentrality) Name() string {
 // As our current implementation of betweenness centrality is non-incremental,
 // NodeScores will recalculate the centrality values on every call, which is
 // slow for large graphs.
-func (g *TopCentrality) NodeScores(graph ChannelGraph, chans []Channel,
+func (g *TopCentrality) NodeScores(graph ChannelGraph, chans []LocalChannel,
 	chanSize ltcutil.Amount, nodes map[NodeID]struct{}) (
 	map[NodeID]*NodeScore, error) {
 

@@ -14,7 +14,7 @@ import (
 	"golang.org/x/crypto/hkdf"
 
 	"github.com/ltcsuite/lnd/keychain"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
 const (
@@ -64,7 +64,7 @@ var (
 	// ephemeralGen is the default ephemeral key generator, used to derive a
 	// unique ephemeral key for each brontide handshake.
 	ephemeralGen = func() (*btcec.PrivateKey, error) {
-		return btcec.NewPrivateKey(btcec.S256())
+		return btcec.NewPrivateKey()
 	}
 )
 
@@ -252,7 +252,7 @@ func (s *symmetricState) EncryptAndHash(plaintext []byte) []byte {
 }
 
 // DecryptAndHash returns the authenticated decryption of the passed
-// ciphertext.  When encrypting the handshake digest (h) is used as the
+// ciphertext. When encrypting the handshake digest (h) is used as the
 // associated data to the AEAD cipher.
 func (s *symmetricState) DecryptAndHash(ciphertext []byte) ([]byte, error) {
 	plaintext, err := s.Decrypt(s.handshakeDigest[:], nil, ciphertext)
@@ -501,7 +501,7 @@ func (b *Machine) RecvActOne(actOne [ActOneSize]byte) error {
 	copy(p[:], actOne[34:])
 
 	// e
-	b.remoteEphemeral, err = btcec.ParsePubKey(e[:], btcec.S256())
+	b.remoteEphemeral, err = btcec.ParsePubKey(e[:])
 	if err != nil {
 		return err
 	}
@@ -579,7 +579,7 @@ func (b *Machine) RecvActTwo(actTwo [ActTwoSize]byte) error {
 	copy(p[:], actTwo[34:])
 
 	// e
-	b.remoteEphemeral, err = btcec.ParsePubKey(e[:], btcec.S256())
+	b.remoteEphemeral, err = btcec.ParsePubKey(e[:])
 	if err != nil {
 		return err
 	}
@@ -655,7 +655,7 @@ func (b *Machine) RecvActThree(actThree [ActThreeSize]byte) error {
 	if err != nil {
 		return err
 	}
-	b.remoteStatic, err = btcec.ParsePubKey(remotePub, btcec.S256())
+	b.remoteStatic, err = btcec.ParsePubKey(remotePub)
 	if err != nil {
 		return err
 	}
@@ -854,8 +854,11 @@ func (b *Machine) ReadHeader(r io.Reader) (uint32, error) {
 	}
 
 	// Attempt to decrypt+auth the packet length present in the stream.
+	//
+	// By passing in `nextCipherHeader` as the destination, we avoid making
+	// the library allocate a new buffer to decode the plaintext.
 	pktLenBytes, err := b.recvCipher.Decrypt(
-		nil, nil, b.nextCipherHeader[:],
+		nil, b.nextCipherHeader[:0], b.nextCipherHeader[:],
 	)
 	if err != nil {
 		return 0, err
@@ -870,7 +873,7 @@ func (b *Machine) ReadHeader(r io.Reader) (uint32, error) {
 // ReadBody attempts to ready the next message body from the passed io.Reader.
 // The provided buffer MUST be the length indicated by the packet length
 // returned by the preceding call to ReadHeader. In the case of an
-// authentication eerror, a non-nil error is returned.
+// authentication error, a non-nil error is returned.
 func (b *Machine) ReadBody(r io.Reader, buf []byte) ([]byte, error) {
 	// Next, using the length read from the packet header, read the
 	// encrypted packet itself into the buffer allocated by the read
@@ -880,28 +883,11 @@ func (b *Machine) ReadBody(r io.Reader, buf []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	// Finally, decrypt the message held in the buffer, and return a
-	// new byte slice containing the plaintext.
-	// TODO(roasbeef): modify to let pass in slice
-	return b.recvCipher.Decrypt(nil, nil, buf)
-}
-
-// SetCurveToNil sets the 'Curve' parameter to nil on the handshakeState keys.
-// This allows us to log the Machine object without spammy log messages.
-func (b *Machine) SetCurveToNil() {
-	if b.localStatic != nil {
-		b.localStatic.PubKey().Curve = nil
-	}
-
-	if b.localEphemeral != nil {
-		b.localEphemeral.PubKey().Curve = nil
-	}
-
-	if b.remoteStatic != nil {
-		b.remoteStatic.Curve = nil
-	}
-
-	if b.remoteEphemeral != nil {
-		b.remoteEphemeral.Curve = nil
-	}
+	// Finally, decrypt the message held in the buffer, and return a new
+	// byte slice containing the plaintext.
+	//
+	// By passing in the buf (the ciphertext) as the first argument, we end
+	// up re-using it as we don't force the library to allocate a new
+	// buffer to decode the plaintext.
+	return b.recvCipher.Decrypt(nil, buf[:0], buf)
 }

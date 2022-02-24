@@ -8,17 +8,19 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/stretchr/testify/require"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/clock"
 	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/kvdb"
+	"github.com/ltcsuite/lnd/lntest/channels"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/shachain"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	_ "github.com/ltcsuite/ltcwallet/walletdb/bdb"
 )
 
@@ -34,39 +36,7 @@ var (
 		0x48, 0x59, 0xe6, 0x96, 0x31, 0x13, 0xa1, 0x17,
 		0x2d, 0xe7, 0x93, 0xe4,
 	}
-	testTx = &wire.MsgTx{
-		Version: 1,
-		TxIn: []*wire.TxIn{
-			{
-				PreviousOutPoint: wire.OutPoint{
-					Hash:  chainhash.Hash{},
-					Index: 0xffffffff,
-				},
-				SignatureScript: []byte{0x04, 0x31, 0xdc, 0x00, 0x1b, 0x01, 0x62},
-				Sequence:        0xffffffff,
-			},
-		},
-		TxOut: []*wire.TxOut{
-			{
-				Value: 5000000000,
-				PkScript: []byte{
-					0x41, // OP_DATA_65
-					0x04, 0xd6, 0x4b, 0xdf, 0xd0, 0x9e, 0xb1, 0xc5,
-					0xfe, 0x29, 0x5a, 0xbd, 0xeb, 0x1d, 0xca, 0x42,
-					0x81, 0xbe, 0x98, 0x8e, 0x2d, 0xa0, 0xb6, 0xc1,
-					0xc6, 0xa5, 0x9d, 0xc2, 0x26, 0xc2, 0x86, 0x24,
-					0xe1, 0x81, 0x75, 0xe8, 0x51, 0xc9, 0x6b, 0x97,
-					0x3d, 0x81, 0xb0, 0x1c, 0xc3, 0x1f, 0x04, 0x78,
-					0x34, 0xbc, 0x06, 0xd6, 0xd6, 0xed, 0xf6, 0x20,
-					0xd1, 0x84, 0x24, 0x1a, 0x6a, 0xed, 0x8b, 0x63,
-					0xa6, // 65-byte signature
-					0xac, // OP_CHECKSIG
-				},
-			},
-		},
-		LockTime: 5,
-	}
-	privKey, pubKey = btcec.PrivKeyFromBytes(btcec.S256(), key[:])
+	privKey, pubKey = btcec.PrivKeyFromBytes(key[:])
 
 	wireSig, _ = lnwire.NewSigFromSignature(testSig)
 
@@ -82,6 +52,9 @@ var (
 		IP:   net.ParseIP("127.0.0.1"),
 		Port: 18555,
 	}
+
+	// keyLocIndex is the KeyLocator Index we use for TestKeyLocatorEncoding.
+	keyLocIndex = uint32(2049)
 )
 
 // testChannelParams is a struct which details the specifics of how a channel
@@ -157,6 +130,25 @@ func remoteHtlcsOption(htlcs []HTLC) testChannelOption {
 	}
 }
 
+// loadFwdPkgs is a helper method that reads all forwarding packages for a
+// particular packager.
+func loadFwdPkgs(t *testing.T, db kvdb.Backend,
+	packager FwdPackager) []*FwdPkg {
+
+	var (
+		fwdPkgs []*FwdPkg
+		err     error
+	)
+
+	err = kvdb.View(db, func(tx kvdb.RTx) error {
+		fwdPkgs, err = packager.LoadFwdPkgs(tx)
+		return err
+	}, func() {})
+	require.NoError(t, err, "unable to load fwd pkgs")
+
+	return fwdPkgs
+}
+
 // localShutdownOption is an option which sets the local upfront shutdown
 // script for the channel.
 func localShutdownOption(addr lnwire.DeliveryAddress) testChannelOption {
@@ -191,7 +183,7 @@ var channelIDOption = func(chanID lnwire.ShortChannelID) testChannelOption {
 // createTestChannel writes a test channel to the database. It takes a set of
 // functional options which can be used to overwrite the default of creating
 // a pending channel that was broadcast at height 100.
-func createTestChannel(t *testing.T, cdb *DB,
+func createTestChannel(t *testing.T, cdb *ChannelStateDB,
 	opts ...testChannelOption) *OpenChannel {
 
 	// Create a default set of parameters.
@@ -229,7 +221,7 @@ func createTestChannel(t *testing.T, cdb *DB,
 	return params.channel
 }
 
-func createTestChannelState(t *testing.T, cdb *DB) *OpenChannel {
+func createTestChannelState(t *testing.T, cdb *ChannelStateDB) *OpenChannel {
 	// Simulate 1000 channel updates.
 	producer, err := shachain.NewRevocationProducerFromBytes(key[:])
 	if err != nil {
@@ -340,7 +332,7 @@ func createTestChannelState(t *testing.T, cdb *DB) *OpenChannel {
 			RemoteBalance: lnwire.MilliSatoshi(3000),
 			CommitFee:     ltcutil.Amount(rand.Int63()),
 			FeePerKw:      ltcutil.Amount(5000),
-			CommitTx:      testTx,
+			CommitTx:      channels.TestFundingTx,
 			CommitSig:     bytes.Repeat([]byte{1}, 71),
 		},
 		RemoteCommitment: ChannelCommitment{
@@ -349,7 +341,7 @@ func createTestChannelState(t *testing.T, cdb *DB) *OpenChannel {
 			RemoteBalance: lnwire.MilliSatoshi(9000),
 			CommitFee:     ltcutil.Amount(rand.Int63()),
 			FeePerKw:      ltcutil.Amount(5000),
-			CommitTx:      testTx,
+			CommitTx:      channels.TestFundingTx,
 			CommitSig:     bytes.Repeat([]byte{1}, 71),
 		},
 		NumConfsRequired:        4,
@@ -359,7 +351,7 @@ func createTestChannelState(t *testing.T, cdb *DB) *OpenChannel {
 		RevocationStore:         store,
 		Db:                      cdb,
 		Packager:                NewChannelPackager(chanID),
-		FundingTxn:              testTx,
+		FundingTxn:              channels.TestFundingTx,
 		ThawHeight:              uint32(defaultPendingHeight),
 	}
 }
@@ -367,11 +359,13 @@ func createTestChannelState(t *testing.T, cdb *DB) *OpenChannel {
 func TestOpenChannelPutGetDelete(t *testing.T) {
 	t.Parallel()
 
-	cdb, cleanUp, err := MakeTestDB()
+	fullDB, cleanUp, err := MakeTestDB()
 	if err != nil {
 		t.Fatalf("unable to make test database: %v", err)
 	}
 	defer cleanUp()
+
+	cdb := fullDB.ChannelStateDB()
 
 	// Create the test channel state, with additional htlcs on the local
 	// and remote commitment.
@@ -419,7 +413,7 @@ func TestOpenChannelPutGetDelete(t *testing.T) {
 	// We'll also test that the channel is properly able to hot swap the
 	// next revocation for the state machine. This tests the initial
 	// post-funding revocation exchange.
-	nextRevKey, err := btcec.NewPrivateKey(btcec.S256())
+	nextRevKey, err := btcec.NewPrivateKey()
 	if err != nil {
 		t.Fatalf("unable to create new private key: %v", err)
 	}
@@ -516,11 +510,13 @@ func TestOptionalShutdown(t *testing.T) {
 		test := test
 
 		t.Run(test.name, func(t *testing.T) {
-			cdb, cleanUp, err := MakeTestDB()
+			fullDB, cleanUp, err := MakeTestDB()
 			if err != nil {
 				t.Fatalf("unable to make test database: %v", err)
 			}
 			defer cleanUp()
+
+			cdb := fullDB.ChannelStateDB()
 
 			// Create a channel with upfront scripts set as
 			// specified in the test.
@@ -573,11 +569,13 @@ func assertCommitmentEqual(t *testing.T, a, b *ChannelCommitment) {
 func TestChannelStateTransition(t *testing.T) {
 	t.Parallel()
 
-	cdb, cleanUp, err := MakeTestDB()
+	fullDB, cleanUp, err := MakeTestDB()
 	if err != nil {
 		t.Fatalf("unable to make test database: %v", err)
 	}
 	defer cleanUp()
+
+	cdb := fullDB.ChannelStateDB()
 
 	// First create a minimal channel, then perform a full sync in order to
 	// persist the data.
@@ -639,7 +637,8 @@ func TestChannelStateTransition(t *testing.T) {
 		{
 			LogIndex: 2,
 			UpdateMsg: &lnwire.UpdateAddHTLC{
-				ChanID: lnwire.ChannelID{1, 2, 3},
+				ChanID:    lnwire.ChannelID{1, 2, 3},
+				ExtraData: make([]byte, 0),
 			},
 		},
 	}
@@ -660,7 +659,9 @@ func TestChannelStateTransition(t *testing.T) {
 	if !reflect.DeepEqual(
 		dbUnsignedAckedUpdates[0], unsignedAckedUpdates[0],
 	) {
-		t.Fatalf("unexpected update")
+		t.Fatalf("unexpected update: expected %v, got %v",
+			spew.Sdump(unsignedAckedUpdates[0]),
+			spew.Sdump(dbUnsignedAckedUpdates))
 	}
 
 	// The balances, new update, the HTLCs and the changes to the fake
@@ -702,22 +703,25 @@ func TestChannelStateTransition(t *testing.T) {
 				wireSig,
 				wireSig,
 			},
+			ExtraData: make([]byte, 0),
 		},
 		LogUpdates: []LogUpdate{
 			{
 				LogIndex: 1,
 				UpdateMsg: &lnwire.UpdateAddHTLC{
-					ID:     1,
-					Amount: lnwire.NewMSatFromSatoshis(100),
-					Expiry: 25,
+					ID:        1,
+					Amount:    lnwire.NewMSatFromSatoshis(100),
+					Expiry:    25,
+					ExtraData: make([]byte, 0),
 				},
 			},
 			{
 				LogIndex: 2,
 				UpdateMsg: &lnwire.UpdateAddHTLC{
-					ID:     2,
-					Amount: lnwire.NewMSatFromSatoshis(200),
-					Expiry: 50,
+					ID:        2,
+					Amount:    lnwire.NewMSatFromSatoshis(200),
+					Expiry:    50,
+					ExtraData: make([]byte, 0),
 				},
 			},
 		},
@@ -752,7 +756,7 @@ func TestChannelStateTransition(t *testing.T) {
 	// current uncollapsed revocation state to simulate a state transition
 	// by the remote party.
 	channel.RemoteCurrentRevocation = channel.RemoteNextRevocation
-	newPriv, err := btcec.NewPrivateKey(btcec.S256())
+	newPriv, err := btcec.NewPrivateKey()
 	if err != nil {
 		t.Fatalf("unable to generate key: %v", err)
 	}
@@ -843,6 +847,10 @@ func TestChannelStateTransition(t *testing.T) {
 		t.Fatalf("revocation state was not synced")
 	}
 
+	// At this point, we should have 2 forwarding packages added.
+	fwdPkgs := loadFwdPkgs(t, cdb.backend, channel.Packager)
+	require.Len(t, fwdPkgs, 2, "wrong number of forwarding packages")
+
 	// Now attempt to delete the channel from the database.
 	closeSummary := &ChannelCloseSummary{
 		ChanPoint:         channel.FundingOutpoint,
@@ -873,16 +881,22 @@ func TestChannelStateTransition(t *testing.T) {
 	if err == nil {
 		t.Fatal("revocation log search should have failed")
 	}
+
+	// All forwarding packages of this channel has been deleted too.
+	fwdPkgs = loadFwdPkgs(t, cdb.backend, channel.Packager)
+	require.Empty(t, fwdPkgs, "no forwarding packages should exist")
 }
 
 func TestFetchPendingChannels(t *testing.T) {
 	t.Parallel()
 
-	cdb, cleanUp, err := MakeTestDB()
+	fullDB, cleanUp, err := MakeTestDB()
 	if err != nil {
 		t.Fatalf("unable to make test database: %v", err)
 	}
 	defer cleanUp()
+
+	cdb := fullDB.ChannelStateDB()
 
 	// Create a pending channel that was broadcast at height 99.
 	const broadcastHeight = 99
@@ -957,11 +971,13 @@ func TestFetchPendingChannels(t *testing.T) {
 func TestFetchClosedChannels(t *testing.T) {
 	t.Parallel()
 
-	cdb, cleanUp, err := MakeTestDB()
+	fullDB, cleanUp, err := MakeTestDB()
 	if err != nil {
 		t.Fatalf("unable to make test database: %v", err)
 	}
 	defer cleanUp()
+
+	cdb := fullDB.ChannelStateDB()
 
 	// Create an open channel in the database.
 	state := createTestChannel(t, cdb, openChannelOption())
@@ -1048,18 +1064,20 @@ func TestFetchWaitingCloseChannels(t *testing.T) {
 	// We'll start by creating two channels within our test database. One of
 	// them will have their funding transaction confirmed on-chain, while
 	// the other one will remain unconfirmed.
-	db, cleanUp, err := MakeTestDB()
+	fullDB, cleanUp, err := MakeTestDB()
 	if err != nil {
 		t.Fatalf("unable to make test database: %v", err)
 	}
 	defer cleanUp()
+
+	cdb := fullDB.ChannelStateDB()
 
 	channels := make([]*OpenChannel, numChannels)
 	for i := 0; i < numChannels; i++ {
 		// Create a pending channel in the database at the broadcast
 		// height.
 		channels[i] = createTestChannel(
-			t, db, pendingHeightOption(broadcastHeight),
+			t, cdb, pendingHeightOption(broadcastHeight),
 		)
 	}
 
@@ -1110,7 +1128,7 @@ func TestFetchWaitingCloseChannels(t *testing.T) {
 	// Now, we'll fetch all the channels waiting to be closed from the
 	// database. We should expect to see both channels above, even if any of
 	// them haven't had their funding transaction confirm on-chain.
-	waitingCloseChannels, err := db.FetchWaitingCloseChannels()
+	waitingCloseChannels, err := cdb.FetchWaitingCloseChannels()
 	if err != nil {
 		t.Fatalf("unable to fetch all waiting close channels: %v", err)
 	}
@@ -1163,11 +1181,13 @@ func TestFetchWaitingCloseChannels(t *testing.T) {
 func TestRefreshShortChanID(t *testing.T) {
 	t.Parallel()
 
-	cdb, cleanUp, err := MakeTestDB()
+	fullDB, cleanUp, err := MakeTestDB()
 	if err != nil {
 		t.Fatalf("unable to make test database: %v", err)
 	}
 	defer cleanUp()
+
+	cdb := fullDB.ChannelStateDB()
 
 	// First create a test channel.
 	state := createTestChannel(t, cdb)
@@ -1311,12 +1331,14 @@ func TestCloseInitiator(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			cdb, cleanUp, err := MakeTestDB()
+			fullDB, cleanUp, err := MakeTestDB()
 			if err != nil {
 				t.Fatalf("unable to make test database: %v",
 					err)
 			}
 			defer cleanUp()
+
+			cdb := fullDB.ChannelStateDB()
 
 			// Create an open channel.
 			channel := createTestChannel(
@@ -1356,12 +1378,14 @@ func TestCloseInitiator(t *testing.T) {
 // TestCloseChannelStatus tests setting of a channel status on the historical
 // channel on channel close.
 func TestCloseChannelStatus(t *testing.T) {
-	cdb, cleanUp, err := MakeTestDB()
+	fullDB, cleanUp, err := MakeTestDB()
 	if err != nil {
 		t.Fatalf("unable to make test database: %v",
 			err)
 	}
 	defer cleanUp()
+
+	cdb := fullDB.ChannelStateDB()
 
 	// Create an open channel.
 	channel := createTestChannel(
@@ -1421,7 +1445,7 @@ func TestBalanceAtHeight(t *testing.T) {
 	putRevokedState := func(c *OpenChannel, height uint64, local,
 		remote lnwire.MilliSatoshi) error {
 
-		err := kvdb.Update(c.Db, func(tx kvdb.RwTx) error {
+		err := kvdb.Update(c.Db.backend, func(tx kvdb.RwTx) error {
 			chanBucket, err := fetchChanBucketRw(
 				tx, c.IdentityPub, &c.FundingOutpoint,
 				c.ChainHash,
@@ -1447,7 +1471,7 @@ func TestBalanceAtHeight(t *testing.T) {
 			commit.RemoteBalance = remote
 
 			return appendChannelLogEntry(logBucket, &commit)
-		})
+		}, func() {})
 
 		return err
 	}
@@ -1485,7 +1509,7 @@ func TestBalanceAtHeight(t *testing.T) {
 			targetHeight:          unknownHeight,
 			expectedLocalBalance:  0,
 			expectedRemoteBalance: 0,
-			expectedError:         errLogEntryNotFound,
+			expectedError:         ErrLogEntryNotFound,
 		},
 		{
 			name:                  "height not reached",
@@ -1502,12 +1526,14 @@ func TestBalanceAtHeight(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			cdb, cleanUp, err := MakeTestDB()
+			fullDB, cleanUp, err := MakeTestDB()
 			if err != nil {
 				t.Fatalf("unable to make test database: %v",
 					err)
 			}
 			defer cleanUp()
+
+			cdb := fullDB.ChannelStateDB()
 
 			// Create options to set the heights and balances of
 			// our local and remote commitments.
@@ -1612,4 +1638,34 @@ func TestHasChanStatus(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestKeyLocatorEncoding tests that we are able to serialize a given
+// keychain.KeyLocator. After successfully encoding, we check that the decode
+// output arrives at the same initial KeyLocator.
+func TestKeyLocatorEncoding(t *testing.T) {
+	keyLoc := keychain.KeyLocator{
+		Family: keychain.KeyFamilyRevocationRoot,
+		Index:  keyLocIndex,
+	}
+
+	// First, we'll encode the KeyLocator into a buffer.
+	var (
+		b   bytes.Buffer
+		buf [8]byte
+	)
+
+	err := EKeyLocator(&b, &keyLoc, &buf)
+	require.NoError(t, err, "unable to encode key locator")
+
+	// Next, we'll attempt to decode the bytes into a new KeyLocator.
+	r := bytes.NewReader(b.Bytes())
+	var decodedKeyLoc keychain.KeyLocator
+
+	err = DKeyLocator(r, &decodedKeyLoc, &buf, 8)
+	require.NoError(t, err, "unable to decode key locator")
+
+	// Finally, we'll compare that the original KeyLocator and the decoded
+	// version are equal.
+	require.Equal(t, keyLoc, decodedKeyLoc)
 }

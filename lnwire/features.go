@@ -66,7 +66,7 @@ const (
 	// able to decode the new TLV information included in the onion packet.
 	TLVOnionPayloadRequired FeatureBit = 8
 
-	// TLVOnionPayloadRequired is an optional feature bit that indicates a
+	// TLVOnionPayloadOptional is an optional feature bit that indicates a
 	// node is able to decode the new TLV information included in the onion
 	// packet.
 	TLVOnionPayloadOptional FeatureBit = 9
@@ -91,7 +91,7 @@ const (
 	// attacks on the receiver of a payment.
 	PaymentAddrOptional FeatureBit = 15
 
-	// MPPOptional is a required feature bit that signals that the receiver
+	// MPPRequired is a required feature bit that signals that the receiver
 	// of a payment requires settlement of an invoice with more than one
 	// HTLC.
 	MPPRequired FeatureBit = 16
@@ -112,12 +112,66 @@ const (
 	// AnchorsRequired is a required feature bit that signals that the node
 	// requires channels to be made using commitments having anchor
 	// outputs.
-	AnchorsRequired FeatureBit = 1336
+	AnchorsRequired FeatureBit = 20
 
-	// AnchorsRequired is an optional feature bit that signals that the
+	// AnchorsOptional is an optional feature bit that signals that the
 	// node supports channels to be made using commitments having anchor
 	// outputs.
-	AnchorsOptional FeatureBit = 1337
+	AnchorsOptional FeatureBit = 21
+
+	// AnchorsZeroFeeHtlcTxRequired is a required feature bit that signals
+	// that the node requires channels having zero-fee second-level HTLC
+	// transactions, which also imply anchor commitments.
+	AnchorsZeroFeeHtlcTxRequired FeatureBit = 22
+
+	// AnchorsZeroFeeHtlcTxOptional is an optional feature bit that signals
+	// that the node supports channels having zero-fee second-level HTLC
+	// transactions, which also imply anchor commitments.
+	AnchorsZeroFeeHtlcTxOptional FeatureBit = 23
+
+	// AMPRequired is a required feature bit that signals that the receiver
+	// of a payment supports accepts spontaneous payments, i.e.
+	// sender-generated preimages according to BOLT XX.
+	AMPRequired FeatureBit = 30
+
+	// AMPOptional is an optional feature bit that signals that the receiver
+	// of a payment supports accepts spontaneous payments, i.e.
+	// sender-generated preimages according to BOLT XX.
+	AMPOptional FeatureBit = 31
+
+	// ExplicitChannelTypeRequired is a required bit that denotes that a
+	// connection established with this node is to use explicit channel
+	// commitment types for negotiation instead of the existing implicit
+	// negotiation methods. With this bit, there is no longer a "default"
+	// implicit channel commitment type, allowing a connection to
+	// open/maintain types of several channels over its lifetime.
+	ExplicitChannelTypeRequired = 44
+
+	// ExplicitChannelTypeOptional is an optional bit that denotes that a
+	// connection established with this node is to use explicit channel
+	// commitment types for negotiation instead of the existing implicit
+	// negotiation methods. With this bit, there is no longer a "default"
+	// implicit channel commitment type, allowing a connection to
+	// TODO: Decide on actual feature bit value.
+	ExplicitChannelTypeOptional = 45
+
+	// ScriptEnforcedLeaseOptional is an optional feature bit that signals
+	// that the node requires channels having zero-fee second-level HTLC
+	// transactions, which also imply anchor commitments, along with an
+	// additional CLTV constraint of a channel lease's expiration height
+	// applied to all outputs that pay directly to the channel initiator.
+	//
+	// TODO: Decide on actual feature bit value.
+	ScriptEnforcedLeaseRequired FeatureBit = 2022
+
+	// ScriptEnforcedLeaseOptional is a required feature bit that signals
+	// that the node requires channels having zero-fee second-level HTLC
+	// transactions, which also imply anchor commitments, along with an
+	// additional CLTV constraint of a channel lease's expiration height
+	// applied to all outputs that pay directly to the channel initiator.
+	//
+	// TODO: Decide on actual feature bit value.
+	ScriptEnforcedLeaseOptional FeatureBit = 2023
 
 	// maxAllowedSize is a maximum allowed size of feature vector.
 	//
@@ -126,7 +180,7 @@ const (
 	// message to signal the type of message, that leaves us with 65533 bytes
 	// for the init message itself.  Next, we reserve 4 bytes to encode the
 	// lengths of both the local and global feature vectors, so 65529 bytes
-	// for the local and global features.  Knocking off one byte for the sake
+	// for the local and global features. Knocking off one byte for the sake
 	// of the calculation, that leads us to 32764 bytes for each feature
 	// vector, or 131056 different features.
 	maxAllowedSize = 32764
@@ -158,8 +212,16 @@ var Features = map[FeatureBit]string{
 	MPPRequired:                   "multi-path-payments",
 	AnchorsRequired:               "anchor-commitments",
 	AnchorsOptional:               "anchor-commitments",
+	AnchorsZeroFeeHtlcTxRequired:  "anchors-zero-fee-htlc-tx",
+	AnchorsZeroFeeHtlcTxOptional:  "anchors-zero-fee-htlc-tx",
 	WumboChannelsRequired:         "wumbo-channels",
 	WumboChannelsOptional:         "wumbo-channels",
+	AMPRequired:                   "amp",
+	AMPOptional:                   "amp",
+	ExplicitChannelTypeOptional:   "explicit-commitment-type",
+	ExplicitChannelTypeRequired:   "explicit-commitment-type",
+	ScriptEnforcedLeaseRequired:   "script-enforced-lease",
+	ScriptEnforcedLeaseOptional:   "script-enforced-lease",
 }
 
 // RawFeatureVector represents a set of feature bits as defined in BOLT-09.  A
@@ -168,17 +230,49 @@ var Features = map[FeatureBit]string{
 // can be serialized and deserialized to/from a byte representation that is
 // transmitted in Lightning network messages.
 type RawFeatureVector struct {
-	features map[FeatureBit]bool
+	features map[FeatureBit]struct{}
 }
 
 // NewRawFeatureVector creates a feature vector with all of the feature bits
 // given as arguments enabled.
 func NewRawFeatureVector(bits ...FeatureBit) *RawFeatureVector {
-	fv := &RawFeatureVector{features: make(map[FeatureBit]bool)}
+	fv := &RawFeatureVector{features: make(map[FeatureBit]struct{})}
 	for _, bit := range bits {
 		fv.Set(bit)
 	}
 	return fv
+}
+
+// IsEmpty returns whether the feature vector contains any feature bits.
+func (fv RawFeatureVector) IsEmpty() bool {
+	return len(fv.features) == 0
+}
+
+// OnlyContains determines whether only the specified feature bits are found.
+func (fv RawFeatureVector) OnlyContains(bits ...FeatureBit) bool {
+	if len(bits) != len(fv.features) {
+		return false
+	}
+	for _, bit := range bits {
+		if !fv.IsSet(bit) {
+			return false
+		}
+	}
+	return true
+}
+
+// Equals determines whether two features vectors contain exactly the same
+// features.
+func (fv RawFeatureVector) Equals(other *RawFeatureVector) bool {
+	if len(fv.features) != len(other.features) {
+		return false
+	}
+	for bit := range fv.features {
+		if _, ok := other.features[bit]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // Merges sets all feature bits in other on the receiver's feature vector.
@@ -203,12 +297,13 @@ func (fv *RawFeatureVector) Clone() *RawFeatureVector {
 
 // IsSet returns whether a particular feature bit is enabled in the vector.
 func (fv *RawFeatureVector) IsSet(feature FeatureBit) bool {
-	return fv.features[feature]
+	_, ok := fv.features[feature]
+	return ok
 }
 
 // Set marks a feature as enabled in the vector.
 func (fv *RawFeatureVector) Set(feature FeatureBit) {
-	fv.features[feature] = true
+	fv.features[feature] = struct{}{}
 }
 
 // SafeSet sets the chosen feature bit in the feature vector, but returns an
@@ -398,6 +493,20 @@ func (fv *FeatureVector) HasFeature(feature FeatureBit) bool {
 		(fv.isFeatureBitPair(feature) && fv.IsSet(feature^1))
 }
 
+// RequiresFeature returns true if the referenced feature vector *requires*
+// that the given required bit be set. This method can be used with both
+// optional and required feature bits as a parameter.
+func (fv *FeatureVector) RequiresFeature(feature FeatureBit) bool {
+	// If we weren't passed a required feature bit, then we'll flip the
+	// lowest bit to query for the required version of the feature. This
+	// lets callers pass in both the optional and required bits.
+	if !feature.IsRequired() {
+		feature ^= 1
+	}
+
+	return fv.IsSet(feature)
+}
+
 // UnknownRequiredFeatures returns a list of feature bits set in the vector
 // that are unknown and in an even bit position. Feature bits with an even
 // index must be known to a node receiving the feature vector in a message.
@@ -413,7 +522,7 @@ func (fv *FeatureVector) UnknownRequiredFeatures() []FeatureBit {
 
 // Name returns a string identifier for the feature represented by this bit. If
 // the bit does not represent a known feature, this returns a string indicating
-// as much.
+// as such.
 func (fv *FeatureVector) Name(bit FeatureBit) string {
 	name, known := fv.featureNames[bit]
 	if !known {

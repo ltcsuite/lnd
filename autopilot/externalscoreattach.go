@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 // ExternalScoreAttachment is an implementation of the AttachmentHeuristic
@@ -80,7 +80,7 @@ func (s *ExternalScoreAttachment) SetNodeScores(targetHeuristic string,
 // not known will get a score of 0.
 //
 // NOTE: This is a part of the AttachmentHeuristic interface.
-func (s *ExternalScoreAttachment) NodeScores(g ChannelGraph, chans []Channel,
+func (s *ExternalScoreAttachment) NodeScores(g ChannelGraph, chans []LocalChannel,
 	chanSize ltcutil.Amount, nodes map[NodeID]struct{}) (
 	map[NodeID]*NodeScore, error) {
 

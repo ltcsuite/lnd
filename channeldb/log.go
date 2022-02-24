@@ -7,7 +7,9 @@ import (
 	"github.com/ltcsuite/lnd/channeldb/migration12"
 	"github.com/ltcsuite/lnd/channeldb/migration13"
 	"github.com/ltcsuite/lnd/channeldb/migration16"
+	"github.com/ltcsuite/lnd/channeldb/migration24"
 	"github.com/ltcsuite/lnd/channeldb/migration_01_to_11"
+	"github.com/ltcsuite/lnd/kvdb"
 )
 
 // log is a logger that is initialized with no output filters.  This
@@ -35,4 +37,6 @@ func UseLogger(logger btclog.Logger) {
 	migration12.UseLogger(logger)
 	migration13.UseLogger(logger)
 	migration16.UseLogger(logger)
+	migration24.UseLogger(logger)
+	kvdb.UseLogger(logger)
 }

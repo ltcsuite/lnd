@@ -3,8 +3,8 @@ package autopilot_test
 import (
 	"testing"
 
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/lnd/autopilot"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 // TestMedian tests the Median method.

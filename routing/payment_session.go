@@ -4,15 +4,33 @@ import (
 	"fmt"
 
 	"github.com/btcsuite/btclog"
+	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/build"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/routing/route"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
 // BlockPadding is used to increment the finalCltvDelta value for the last hop
 // to prevent an HTLC being failed if some blocks are mined while it's in-flight.
 const BlockPadding uint16 = 3
+
+// ValidateCLTVLimit is a helper function that validates that the cltv limit is
+// greater than the final cltv delta parameter, optionally including the
+// BlockPadding in this calculation.
+func ValidateCLTVLimit(limit uint32, delta uint16, includePad bool) error {
+	if includePad {
+		delta += BlockPadding
+	}
+
+	if limit <= uint32(delta) {
+		return fmt.Errorf("cltv limit %v should be greater than %v",
+			limit, delta)
+	}
+
+	return nil
+}
 
 // noRouteError encodes a non-critical error encountered during path finding.
 type noRouteError uint8
@@ -120,6 +138,19 @@ type PaymentSession interface {
 	// during path finding.
 	RequestRoute(maxAmt, feeLimit lnwire.MilliSatoshi,
 		activeShards, height uint32) (*route.Route, error)
+
+	// UpdateAdditionalEdge takes an additional channel edge policy
+	// (private channels) and applies the update from the message. Returns
+	// a boolean to indicate whether the update has been applied without
+	// error.
+	UpdateAdditionalEdge(msg *lnwire.ChannelUpdate, pubKey *btcec.PublicKey,
+		policy *channeldb.CachedEdgePolicy) bool
+
+	// GetAdditionalEdgePolicy uses the public key and channel ID to query
+	// the ephemeral channel edge policy for additional edges. Returns a nil
+	// if nothing found.
+	GetAdditionalEdgePolicy(pubKey *btcec.PublicKey,
+		channelID uint64) *channeldb.CachedEdgePolicy
 }
 
 // paymentSession is used during an HTLC routings session to prune the local
@@ -131,9 +162,9 @@ type PaymentSession interface {
 // loop if payment attempts take long enough. An additional set of edges can
 // also be provided to assist in reaching the payment's destination.
 type paymentSession struct {
-	additionalEdges map[route.Vertex][]*channeldb.ChannelEdgePolicy
+	additionalEdges map[route.Vertex][]*channeldb.CachedEdgePolicy
 
-	getBandwidthHints func() (map[uint64]lnwire.MilliSatoshi, error)
+	getBandwidthHints func(routingGraph) (bandwidthHints, error)
 
 	payment *LightningPayment
 
@@ -161,7 +192,7 @@ type paymentSession struct {
 
 // newPaymentSession instantiates a new payment session.
 func newPaymentSession(p *LightningPayment,
-	getBandwidthHints func() (map[uint64]lnwire.MilliSatoshi, error),
+	getBandwidthHints func(routingGraph) (bandwidthHints, error),
 	getRoutingGraph func() (routingGraph, func(), error),
 	missionControl MissionController, pathFindingConfig PathFindingConfig) (
 	*paymentSession, error) {
@@ -171,7 +202,7 @@ func newPaymentSession(p *LightningPayment,
 		return nil, err
 	}
 
-	logPrefix := fmt.Sprintf("PaymentSession(%x):", p.PaymentHash)
+	logPrefix := fmt.Sprintf("PaymentSession(%x):", p.Identifier())
 
 	return &paymentSession{
 		additionalEdges:   edges,
@@ -230,25 +261,37 @@ func (p *paymentSession) RequestRoute(maxAmt, feeLimit lnwire.MilliSatoshi,
 
 	finalHtlcExpiry := int32(height) + int32(finalCltvDelta)
 
+	// Before we enter the loop below, we'll make sure to respect the max
+	// payment shard size (if it's set), which is effectively our
+	// client-side MTU that we'll attempt to respect at all times.
+	maxShardActive := p.payment.MaxShardAmt != nil
+	if maxShardActive && maxAmt > *p.payment.MaxShardAmt {
+		p.log.Debug("Clamping payment attempt from %v to %v due to "+
+			"max shard size of %v", maxAmt,
+			*p.payment.MaxShardAmt, maxAmt)
+
+		maxAmt = *p.payment.MaxShardAmt
+	}
+
 	for {
+		// Get a routing graph.
+		routingGraph, cleanup, err := p.getRoutingGraph()
+		if err != nil {
+			return nil, err
+		}
+
 		// We'll also obtain a set of bandwidthHints from the lower
 		// layer for each of our outbound channels. This will allow the
 		// path finding to skip any links that aren't active or just
 		// don't have enough bandwidth to carry the payment. New
 		// bandwidth hints are queried for every new path finding
 		// attempt, because concurrent payments may change balances.
-		bandwidthHints, err := p.getBandwidthHints()
+		bandwidthHints, err := p.getBandwidthHints(routingGraph)
 		if err != nil {
 			return nil, err
 		}
 
 		p.log.Debugf("pathfinding for amt=%v", maxAmt)
-
-		// Get a routing graph.
-		routingGraph, cleanup, err := p.getRoutingGraph()
-		if err != nil {
-			return nil, err
-		}
 
 		sourceVertex := routingGraph.sourceNode()
 
@@ -274,6 +317,22 @@ func (p *paymentSession) RequestRoute(maxAmt, feeLimit lnwire.MilliSatoshi,
 			if p.payment.PaymentAddr == nil {
 				p.log.Debugf("not splitting because payment " +
 					"address is unspecified")
+
+				return nil, errNoPathFound
+			}
+
+			if p.payment.DestFeatures == nil {
+				p.log.Debug("Not splitting because " +
+					"destination DestFeatures is nil")
+				return nil, errNoPathFound
+			}
+
+			destFeatures := p.payment.DestFeatures
+			if !destFeatures.HasFeature(lnwire.MPPOptional) &&
+				!destFeatures.HasFeature(lnwire.AMPOptional) {
+
+				p.log.Debug("not splitting because " +
+					"destination doesn't declare MPP or AMP")
 
 				return nil, errNoPathFound
 			}
@@ -337,4 +396,54 @@ func (p *paymentSession) RequestRoute(maxAmt, feeLimit lnwire.MilliSatoshi,
 
 		return route, err
 	}
+}
+
+// UpdateAdditionalEdge updates the channel edge policy for a private edge. It
+// validates the message signature and checks it's up to date, then applies the
+// updates to the supplied policy. It returns a boolean to indicate whether
+// there's an error when applying the updates.
+func (p *paymentSession) UpdateAdditionalEdge(msg *lnwire.ChannelUpdate,
+	pubKey *btcec.PublicKey, policy *channeldb.CachedEdgePolicy) bool {
+
+	// Validate the message signature.
+	if err := VerifyChannelUpdateSignature(msg, pubKey); err != nil {
+		log.Errorf(
+			"Unable to validate channel update signature: %v", err,
+		)
+		return false
+	}
+
+	// Update channel policy for the additional edge.
+	policy.TimeLockDelta = msg.TimeLockDelta
+	policy.FeeBaseMSat = lnwire.MilliSatoshi(msg.BaseFee)
+	policy.FeeProportionalMillionths = lnwire.MilliSatoshi(msg.FeeRate)
+
+	log.Debugf("New private channel update applied: %v",
+		newLogClosure(func() string { return spew.Sdump(msg) }))
+
+	return true
+}
+
+// GetAdditionalEdgePolicy uses the public key and channel ID to query the
+// ephemeral channel edge policy for additional edges. Returns a nil if nothing
+// found.
+func (p *paymentSession) GetAdditionalEdgePolicy(pubKey *btcec.PublicKey,
+	channelID uint64) *channeldb.CachedEdgePolicy {
+
+	target := route.NewVertex(pubKey)
+
+	edges, ok := p.additionalEdges[target]
+	if !ok {
+		return nil
+	}
+
+	for _, edge := range edges {
+		if edge.ChannelID != channelID {
+			continue
+		}
+
+		return edge
+	}
+
+	return nil
 }

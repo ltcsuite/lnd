@@ -10,7 +10,7 @@ const charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 var gen = []int{0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3}
 
 // NOTE: This method it a slight modification of the method bech32.Decode found
-// btcutil, allowing strings to be more than 90 characters.
+// ltcutil, allowing strings to be more than 90 characters.
 
 // decodeBech32 decodes a bech32 encoded string, returning the human-readable
 // part and the data part excluding the checksum.

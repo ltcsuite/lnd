@@ -6,9 +6,10 @@ import (
 	"fmt"
 
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcutil"
-	"github.com/ltcsuite/ltcutil/bech32"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil/bech32"
 )
 
 // Encode takes the given MessageSigner and returns a string encoding this
@@ -51,8 +52,16 @@ func (invoice *Invoice) Encode(signer MessageSigner) (string, error) {
 		return "", err
 	}
 
-	// The human-readable part (hrp) is "ln" + net hrp + optional amount.
+	// The human-readable part (hrp) is "ln" + net hrp + optional amount,
+	// except for signet where we add an additional "s" to differentiate it
+	// from the older testnet3 (Core devs decided to use the same hrp for
+	// signet as for testnet3 which is not optimal for LN). See
+	// https://github.com/lightningnetwork/lightning-rfc/pull/844 for more
+	// information.
 	hrp := "ln" + invoice.Net.Bech32HRPSegwit
+	if invoice.Net.Name == chaincfg.SigNetParams.Name {
+		hrp = "lntbs"
+	}
 	if invoice.MilliSat != nil {
 		// Encode the amount using the fewest possible characters.
 		am, err := encodeAmount(*invoice.MilliSat)
@@ -70,12 +79,11 @@ func (invoice *Invoice) Encode(signer MessageSigner) (string, error) {
 	}
 
 	toSign := append([]byte(hrp), taggedFieldsBytes...)
-	hash := chainhash.HashB(toSign)
 
 	// We use compact signature format, and also encoded the recovery ID
 	// such that a reader of the invoice can recover our pubkey from the
 	// signature.
-	sign, err := signer.SignCompact(hash)
+	sign, err := signer.SignCompact(toSign)
 	if err != nil {
 		return "", err
 	}
@@ -95,6 +103,7 @@ func (invoice *Invoice) Encode(signer MessageSigner) (string, error) {
 				"signature: %v", err)
 		}
 
+		hash := chainhash.HashB(toSign)
 		valid := signature.Verify(hash, invoice.Destination)
 		if !valid {
 			return "", fmt.Errorf("signature does not match " +

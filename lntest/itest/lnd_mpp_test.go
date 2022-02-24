@@ -1,5 +1,3 @@
-// +build rpctest
-
 package itest
 
 import (
@@ -8,13 +6,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ltcsuite/lnd"
+	"github.com/ltcsuite/lnd/chainreg"
 	"github.com/ltcsuite/lnd/lnrpc"
 	"github.com/ltcsuite/lnd/lnrpc/routerrpc"
 	"github.com/ltcsuite/lnd/lntest"
 	"github.com/ltcsuite/lnd/routing/route"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 )
 
 // testSendToRouteMultiPath tests that we are able to successfully route a
@@ -25,7 +23,7 @@ func testSendToRouteMultiPath(net *lntest.NetworkHarness, t *harnessTest) {
 	ctx := newMppTestContext(t, net)
 	defer ctx.shutdownNodes()
 
-	// To ensure the payment goes through seperate paths, we'll set a
+	// To ensure the payment goes through separate paths, we'll set a
 	// channel size that can only carry one shard at a time. We'll divide
 	// the payment into 3 shards.
 	const (
@@ -57,7 +55,7 @@ func testSendToRouteMultiPath(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// Make Bob create an invoice for Alice to pay.
 	payReqs, rHashes, invoices, err := createPayReqs(
-		net.Bob, paymentAmt, 1,
+		ctx.bob, paymentAmt, 1,
 	)
 	if err != nil {
 		t.Fatalf("unable to create pay reqs: %v", err)
@@ -67,7 +65,7 @@ func testSendToRouteMultiPath(net *lntest.NetworkHarness, t *harnessTest) {
 	payReq := payReqs[0]
 
 	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	decodeResp, err := net.Bob.DecodePayReq(
+	decodeResp, err := ctx.bob.DecodePayReq(
 		ctxt, &lnrpc.PayReqString{PayReq: payReq},
 	)
 	if err != nil {
@@ -75,36 +73,6 @@ func testSendToRouteMultiPath(net *lntest.NetworkHarness, t *harnessTest) {
 	}
 
 	payAddr := decodeResp.PaymentAddr
-
-	// Helper function for Alice to build a route from pubkeys.
-	buildRoute := func(amt ltcutil.Amount, hops []*lntest.HarnessNode) (
-		*lnrpc.Route, error) {
-
-		rpcHops := make([][]byte, 0, len(hops))
-		for _, hop := range hops {
-			k := hop.PubKeyStr
-			pubkey, err := route.NewVertexFromStr(k)
-			if err != nil {
-				return nil, fmt.Errorf("error parsing %v: %v",
-					k, err)
-			}
-			rpcHops = append(rpcHops, pubkey[:])
-		}
-
-		req := &routerrpc.BuildRouteRequest{
-			AmtMsat:        int64(amt * 1000),
-			FinalCltvDelta: lnd.DefaultBitcoinTimeLockDelta,
-			HopPubkeys:     rpcHops,
-		}
-
-		ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-		routeResp, err := net.Alice.RouterClient.BuildRoute(ctxt, req)
-		if err != nil {
-			return nil, err
-		}
-
-		return routeResp.Route, nil
-	}
 
 	// We'll send shards along three routes from Alice.
 	sendRoutes := [][]*lntest.HarnessNode{
@@ -116,7 +84,7 @@ func testSendToRouteMultiPath(net *lntest.NetworkHarness, t *harnessTest) {
 	responses := make(chan *lnrpc.HTLCAttempt, len(sendRoutes))
 	for _, hops := range sendRoutes {
 		// Build a route for the specified hops.
-		r, err := buildRoute(shardAmt, hops)
+		r, err := ctx.buildRoute(ctxb, shardAmt, ctx.alice, hops)
 		if err != nil {
 			t.Fatalf("unable to build route: %v", err)
 		}
@@ -139,7 +107,7 @@ func testSendToRouteMultiPath(net *lntest.NetworkHarness, t *harnessTest) {
 		// block as long as the payment is in flight.
 		go func() {
 			ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-			resp, err := net.Alice.RouterClient.SendToRouteV2(ctxt, sendReq)
+			resp, err := ctx.alice.RouterClient.SendToRouteV2(ctxt, sendReq)
 			if err != nil {
 				t.Fatalf("unable to send payment: %v", err)
 			}
@@ -266,10 +234,10 @@ func testSendToRouteMultiPath(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// Finally check that the payment shows up with three settled HTLCs in
 	// Alice's list of payments...
-	assertNumHtlcs(net.Alice, 3)
+	assertNumHtlcs(ctx.alice, 3)
 
 	// ...and in Bob's list of paid invoices.
-	assertSettledInvoice(net.Bob, rHash, 3)
+	assertSettledInvoice(ctx.bob, rHash, 3)
 }
 
 type mppTestContext struct {
@@ -287,41 +255,28 @@ type mppTestContext struct {
 func newMppTestContext(t *harnessTest,
 	net *lntest.NetworkHarness) *mppTestContext {
 
-	ctxb := context.Background()
+	alice := net.NewNode(t.t, "alice", nil)
+	bob := net.NewNode(t.t, "bob", []string{"--accept-amp"})
 
 	// Create a five-node context consisting of Alice, Bob and three new
 	// nodes.
-	carol, err := net.NewNode("carol", nil)
-	if err != nil {
-		t.Fatalf("unable to create carol: %v", err)
-	}
-
-	dave, err := net.NewNode("dave", nil)
-	if err != nil {
-		t.Fatalf("unable to create dave: %v", err)
-	}
-
-	eve, err := net.NewNode("eve", nil)
-	if err != nil {
-		t.Fatalf("unable to create eve: %v", err)
-	}
+	carol := net.NewNode(t.t, "carol", nil)
+	dave := net.NewNode(t.t, "dave", nil)
+	eve := net.NewNode(t.t, "eve", nil)
 
 	// Connect nodes to ensure propagation of channels.
-	nodes := []*lntest.HarnessNode{net.Alice, net.Bob, carol, dave, eve}
+	nodes := []*lntest.HarnessNode{alice, bob, carol, dave, eve}
 	for i := 0; i < len(nodes); i++ {
 		for j := i + 1; j < len(nodes); j++ {
-			ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-			if err := net.EnsureConnected(ctxt, nodes[i], nodes[j]); err != nil {
-				t.Fatalf("unable to connect nodes: %v", err)
-			}
+			net.EnsureConnected(t.t, nodes[i], nodes[j])
 		}
 	}
 
 	ctx := mppTestContext{
 		t:     t,
 		net:   net,
-		alice: net.Alice,
-		bob:   net.Bob,
+		alice: alice,
+		bob:   bob,
 		carol: carol,
 		dave:  dave,
 		eve:   eve,
@@ -332,28 +287,18 @@ func newMppTestContext(t *harnessTest,
 }
 
 // openChannel is a helper to open a channel from->to.
-func (c *mppTestContext) openChannel(from, to *lntest.HarnessNode, chanSize ltcutil.Amount) {
-	ctxb := context.Background()
+func (c *mppTestContext) openChannel(from, to *lntest.HarnessNode,
+	chanSize ltcutil.Amount) {
 
-	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	err := c.net.SendCoins(ctxt, ltcutil.SatoshiPerBitcoin, from)
-	if err != nil {
-		c.t.Fatalf("unable to send coins : %v", err)
-	}
+	c.net.SendCoins(c.t.t, ltcutil.SatoshiPerBitcoin, from)
 
-	ctxt, _ = context.WithTimeout(ctxb, channelOpenTimeout)
 	chanPoint := openChannelAndAssert(
-		ctxt, c.t, c.net, from, to,
-		lntest.OpenChannelParams{
-			Amt: chanSize,
-		},
+		c.t, c.net, from, to,
+		lntest.OpenChannelParams{Amt: chanSize},
 	)
 
 	c.closeChannelFuncs = append(c.closeChannelFuncs, func() {
-		ctxt, _ := context.WithTimeout(ctxb, channelCloseTimeout)
-		closeChannelAndAssert(
-			ctxt, c.t, c.net, from, chanPoint, false,
-		)
+		closeChannelAndAssert(c.t, c.net, from, chanPoint, false)
 	})
 
 	c.networkChans = append(c.networkChans, chanPoint)
@@ -366,18 +311,18 @@ func (c *mppTestContext) closeChannels() {
 }
 
 func (c *mppTestContext) shutdownNodes() {
+	shutdownAndAssert(c.net, c.t, c.alice)
+	shutdownAndAssert(c.net, c.t, c.bob)
 	shutdownAndAssert(c.net, c.t, c.carol)
 	shutdownAndAssert(c.net, c.t, c.dave)
 	shutdownAndAssert(c.net, c.t, c.eve)
 }
 
 func (c *mppTestContext) waitForChannels() {
-	ctxb := context.Background()
-
 	// Wait for all nodes to have seen all channels.
 	for _, chanPoint := range c.networkChans {
 		for _, node := range c.nodes {
-			txid, err := lnd.GetChanPointFundingTxid(chanPoint)
+			txid, err := lnrpc.GetChanPointFundingTxid(chanPoint)
 			if err != nil {
 				c.t.Fatalf("unable to get txid: %v", err)
 			}
@@ -386,13 +331,43 @@ func (c *mppTestContext) waitForChannels() {
 				Index: chanPoint.OutputIndex,
 			}
 
-			ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-			err = node.WaitForNetworkChannelOpen(ctxt, chanPoint)
+			err = node.WaitForNetworkChannelOpen(chanPoint)
 			if err != nil {
-				c.t.Fatalf("(%d): timeout waiting for "+
+				c.t.Fatalf("(%v:%d): timeout waiting for "+
 					"channel(%s) open: %v",
-					node.NodeID, point, err)
+					node.Cfg.Name, node.NodeID, point, err)
 			}
 		}
 	}
+}
+
+// Helper function for Alice to build a route from pubkeys.
+func (c *mppTestContext) buildRoute(ctxb context.Context, amt ltcutil.Amount,
+	sender *lntest.HarnessNode, hops []*lntest.HarnessNode) (*lnrpc.Route,
+	error) {
+
+	rpcHops := make([][]byte, 0, len(hops))
+	for _, hop := range hops {
+		k := hop.PubKeyStr
+		pubkey, err := route.NewVertexFromStr(k)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing %v: %v",
+				k, err)
+		}
+		rpcHops = append(rpcHops, pubkey[:])
+	}
+
+	req := &routerrpc.BuildRouteRequest{
+		AmtMsat:        int64(amt * 1000),
+		FinalCltvDelta: chainreg.DefaultBitcoinTimeLockDelta,
+		HopPubkeys:     rpcHops,
+	}
+
+	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
+	routeResp, err := sender.RouterClient.BuildRoute(ctxt, req)
+	if err != nil {
+		return nil, err
+	}
+
+	return routeResp.Route, nil
 }

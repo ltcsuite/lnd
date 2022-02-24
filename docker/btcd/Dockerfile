@@ -1,6 +1,6 @@
-FROM golang:1.12-alpine as builder
+FROM golang:1.17.3-alpine as builder
 
-LABEL maintainer="Loshan T <loshan1212@gmail.com>"
+LABEL maintainer="Loshan <loshan1212@gmail.com>"
 
 # Install build dependencies such as git and glide.
 RUN apk add --no-cache git gcc musl-dev
@@ -8,12 +8,12 @@ RUN apk add --no-cache git gcc musl-dev
 WORKDIR $GOPATH/src/github.com/ltcsuite/ltcd
 
 # Pin down btcd to a version that we know works with lnd.
-ARG BTCD_VERSION=v0.20.1-beta
+ARG BTCD_VERSION=v0.22.0-beta
 
 # Grab and install the latest version of of btcd and all related dependencies.
 RUN git clone https://github.com/ltcsuite/ltcd.git . \
     && git checkout $BTCD_VERSION \
-    &&  GO111MODULE=on go install -v . ./cmd/...
+    && go install -v . ./cmd/...
 
 # Start a new image
 FROM alpine as final

@@ -5,11 +5,11 @@ import (
 	"errors"
 	"io"
 
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/tlv"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 )
 
 var (
@@ -130,7 +130,7 @@ func (d *DB) PutResolverReport(tx kvdb.RwTx, chainHash chainhash.Hash,
 
 	// If the transaction is nil, we'll create a new one.
 	if tx == nil {
-		return kvdb.Update(d, putReportFunc)
+		return kvdb.Update(d, putReportFunc, func() {})
 	}
 
 	// Otherwise, we can write the report to disk using the existing
@@ -214,7 +214,7 @@ func (d DB) FetchChannelReports(chainHash chainhash.Hash,
 
 	var reports []*ResolverReport
 
-	if err := kvdb.View(d, func(tx kvdb.RTx) error {
+	if err := kvdb.View(d.Backend, func(tx kvdb.RTx) error {
 		chanBucket, err := fetchReportReadBucket(
 			tx, chainHash, outPoint,
 		)
@@ -250,6 +250,8 @@ func (d DB) FetchChannelReports(chainHash chainhash.Hash,
 
 			return nil
 		})
+	}, func() {
+		reports = nil
 	}); err != nil {
 		return nil, err
 	}

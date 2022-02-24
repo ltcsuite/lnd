@@ -5,9 +5,9 @@ import (
 
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/keychain"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 )
 
 // ShimIntent is an intent created by the CannedAssembler which represents a
@@ -63,16 +63,16 @@ func (s *ShimIntent) FundingOutput() ([]byte, *wire.TxOut, error) {
 func (s *ShimIntent) Cancel() {
 }
 
-// RemoteFundingAmt is the amount the remote party put into the channel.
+// LocalFundingAmt is the amount we put into the channel. This may differ from
+// the local amount requested, as depending on coin selection, we may bleed
+// from of that LocalAmt into fees to minimize change.
 //
 // NOTE: This method satisfies the chanfunding.Intent interface.
 func (s *ShimIntent) LocalFundingAmt() ltcutil.Amount {
 	return s.localFundingAmt
 }
 
-// LocalFundingAmt is the amount we put into the channel. This may differ from
-// the local amount requested, as depending on coin selection, we may bleed
-// from of that LocalAmt into fees to minimize change.
+// RemoteFundingAmt is the amount the remote party put into the channel.
 //
 // NOTE: This method satisfies the chanfunding.Intent interface.
 func (s *ShimIntent) RemoteFundingAmt() ltcutil.Amount {
@@ -96,6 +96,30 @@ func (s *ShimIntent) ChanPoint() (*wire.OutPoint, error) {
 // channel.
 func (s *ShimIntent) ThawHeight() uint32 {
 	return s.thawHeight
+}
+
+// Inputs returns all inputs to the final funding transaction that we
+// know about. For the ShimIntent this will always be none, since it is funded
+// externally.
+func (s *ShimIntent) Inputs() []wire.OutPoint {
+	return nil
+}
+
+// Outputs returns all outputs of the final funding transaction that we
+// know about. Since this is an externally funded channel, the channel output
+// is the only known one.
+func (s *ShimIntent) Outputs() []*wire.TxOut {
+	_, txOut, err := s.FundingOutput()
+	if err != nil {
+		log.Warnf("Unable to find funding output for shim intent: %v",
+			err)
+
+		// Failed finding funding output, return empty list of known
+		// outputs.
+		return nil
+	}
+
+	return []*wire.TxOut{txOut}
 }
 
 // FundingKeys couples our multi-sig key along with the remote party's key.

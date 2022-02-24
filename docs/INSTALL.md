@@ -1,7 +1,10 @@
 # Table of Contents
 * [Installation](#installation)
-    * [Preliminaries](#preliminaries)
-    * [Installing lnd](#installing-lnd)
+  * [Installing a binary release](#installing-a-binary-release)
+  * [Building a tagged version with Docker](#building-a-tagged-version-with-docker)
+  * [Building a development version from source](#building-a-development-version-from-source)
+    * [Preliminaries](#preliminaries-for-installing-from-source)
+    * [Installing lnd](#installing-lnd-from-source)
 * [Available Backend Operating Modes](#available-backend-operating-modes)
   * [ltcd Options](#ltcd-options)
   * [Neutrino Options](#neutrino-options)
@@ -20,53 +23,116 @@
 
 # Installation
 
-### Preliminaries
+There are multiple ways to install `lnd`. For most users the easiest way is to
+[download and install an official release binary](#installing-a-binary-release).
+Those release binaries are always built with production in mind and have all
+RPC subservers enabled.
+
+More advanced users that want to build `lnd` from source also have multiple
+options. To build a tagged version, there is a docker build helper script that
+allows users to
+[build `lnd` from source without needing to install `golang`](#building-a-tagged-version-with-docker).
+That is also the preferred way to build and verify the reproducible builds that
+are released by the team. See
+[release.md for more information about reproducible builds](release.md).
+
+Finally, there is the option to build `lnd` fully manually. This requires more
+tooling to be set up first but allows to produce non-production (debug,
+development) builds.
+
+## Installing a binary release
+
+Downloading and installing an official release binary is recommended for use on
+mainnet.
+[Visit the release page on GitHub](https://github.com/ltcsuite/lnd/releases)
+and select the latest version that does not have the "Pre-release" label set
+(unless you explicitly want to help test a Release Candidate, RC).
+
+Choose the package that best fits your operating system and system architecture.
+It is recommended to choose 64bit versions over 32bit ones, if your operating
+system supports both.
+
+Extract the package and place the two binaries (`lnd` and `lncli` or `lnd.exe`
+and `lncli.exe` on Windows) somewhere where the operating system can find them.
+
+## Building a tagged version with Docker
+
+To use the Docker build helper, you need to have the following software
+installed and set up on your machine:
+ - Docker
+ - `make`
+ - `bash`
+
+To build a specific git tag of `lnd`, simply run the following steps (assuming
+`v0.x.y-beta` is the tagged version to build):
+
+```shell
+⛰  git clone https://github.com/ltcsuite/lnd
+⛰  cd lnd
+⛰  git checkout v0.x.y-beta
+⛰  make docker-release tag=v0.x.y-beta
+```
+
+This will create a directory called `lnd-v0.x.y-beta` that contains the release
+binaries for all operating system and architecture pairs. A single pair can also
+be selected by specifying the `sys=linux-amd64` flag for example. See
+[release.md for more information on reproducible builds](release.md).
+
+## Building a development version from source
+
+Building and installing `lnd` from source is only recommended for advanced users
+and/or developers. Running the latest commit from the `master` branch is not
+recommended for mainnet. The `master` branch can at times be unstable and
+running your node off of it can prevent it to go back to a previous, stable
+version if there are database migrations present.
+
+### Preliminaries for installing from source
   In order to work with [`lnd`](https://github.com/ltcsuite/lnd), the
   following build dependencies are required:
 
   * **Go:** `lnd` is written in Go. To install, run one of the following commands:
 
 
-    **Note**: The minimum version of Go supported is Go 1.13. We recommend that
+    **Note**: The minimum version of Go supported is Go 1.16. We recommend that
     users use the latest version of Go, which at the time of writing is
-    [`1.13`](https://blog.golang.org/go1.13).
+    [`1.17.1`](https://blog.golang.org/go1.17.1).
 
 
     On Linux:
 
     (x86-64)
     ```
-    wget https://dl.google.com/go/go1.13.linux-amd64.tar.gz
-    sha256sum go1.13.linux-amd64.tar.gz | awk -F " " '{ print $1 }'
+    wget https://dl.google.com/go/go1.17.1.linux-amd64.tar.gz
+    sha256sum go1.17.1.linux-amd64.tar.gz | awk -F " " '{ print $1 }'
     ```
 
     The final output of the command above should be
-    `68a2297eb099d1a76097905a2ce334e3155004ec08cdea85f24527be3c48e856`. If it
+    `dab7d9c34361dc21ec237d584590d72500652e7c909bf082758fb63064fca0ef`. If it
     isn't, then the target REPO HAS BEEN MODIFIED, and you shouldn't install
     this version of Go. If it matches, then proceed to install Go:
     ```
-    tar -C /usr/local -xzf go1.13.linux-amd64.tar.gz
+    sudo tar -C /usr/local -xzf go1.17.1.linux-amd64.tar.gz
     export PATH=$PATH:/usr/local/go/bin
     ```
 
     (ARMv6)
     ```
-    wget https://dl.google.com/go/go1.13.linux-armv6l.tar.gz
-    sha256sum go1.13.linux-armv6l.tar.gz | awk -F " " '{ print $1 }'
+    wget https://dl.google.com/go/go1.17.1.linux-armv6l.tar.gz
+    sha256sum go1.17.1.linux-armv6l.tar.gz | awk -F " " '{ print $1 }'
     ```
 
     The final output of the command above should be
-    `931906d67cae1222f501e7be26e0ee73ba89420be0c4591925901cb9a4e156f0`. If it
+    `ed3e4dbc9b80353f6482c441d65b51808290e94ff1d15d56da5f4a7be7353758`. If it
     isn't, then the target REPO HAS BEEN MODIFIED, and you shouldn't install
     this version of Go. If it matches, then proceed to install Go:
     ```
-    tar -C /usr/local -xzf go1.13.linux-armv6l.tar.gz
+    tar -C /usr/local -xzf go1.17.1.linux-armv6l.tar.gz
     export PATH=$PATH:/usr/local/go/bin
     ```
 
     On Mac OS X:
     ```
-    brew install go@1.13
+    brew install go@1.17.1
     ```
 
     On FreeBSD:
@@ -84,9 +150,9 @@
     `~/go`. You will also need to add `$GOPATH/bin` to your `PATH`. This ensures
     that your shell will be able to detect the binaries you install.
 
-    ```bash
-    export GOPATH=~/gocode
-    export PATH=$PATH:$GOPATH/bin
+    ```shell
+    ⛰  export GOPATH=~/gocode
+    ⛰  export PATH=$PATH:$GOPATH/bin
     ```
 
     We recommend placing the above in your .bashrc or in a setup script so that
@@ -99,14 +165,14 @@
     `lnd` into your `$GOPATH` for development purposes. Instead, your `lnd`
     repo can now live anywhere!
 
-### Installing lnd
+### Installing lnd from source
 
 With the preliminary steps completed, to install `lnd`, `lncli`, and all
 related dependencies run the following commands:
-```
-git clone https://github.com/ltcsuite/lnd
-cd lnd
-make install
+```shell
+⛰  git clone https://github.com/ltcsuite/lnd
+⛰  cd lnd
+⛰  make install
 ```
 
 The command above will install the current _master_ branch of `lnd`. If you
@@ -115,11 +181,11 @@ unstable), then [visit then release page to locate the latest
 release](https://github.com/ltcsuite/lnd/releases). Assuming the name
 of the release is `v0.x.x`, then you can compile this release from source with
 a small modification to the above command: 
-```
-git clone https://github.com/ltcsuite/lnd
-cd lnd
-git checkout v0.x.x
-make install
+```shell
+⛰  git clone https://github.com/ltcsuite/lnd
+⛰  cd lnd
+⛰  git checkout v0.x.x
+⛰  make install
 ```
 
 
@@ -131,45 +197,45 @@ For Windows WSL users, make will need to be referenced directly via
 /usr/bin/make/, or alternatively by wrapping quotation marks around make,
 like so:
 
-```
-/usr/bin/make && /usr/bin/make install
+```shell
+⛰  /usr/bin/make && /usr/bin/make install
 
-"make" && "make" install
+⛰  "make" && "make" install
 ```
 
 On FreeBSD, use gmake instead of make.
 
 Alternatively, if one doesn't wish to use `make`, then the `go` commands can be
 used directly:
-```
-GO111MODULE=on go install -v ./...
+```shell
+⛰  go install -v ./...
 ```
 
 **Updating**
 
 To update your version of `lnd` to the latest version run the following
 commands:
-```
-cd $GOPATH/src/github.com/ltcsuite/lnd
-git pull
-make clean && make && make install
+```shell
+⛰  cd $GOPATH/src/github.com/ltcsuite/lnd
+⛰  git pull
+⛰  make clean && make && make install
 ```
 
 On FreeBSD, use gmake instead of make.
 
 Alternatively, if one doesn't wish to use `make`, then the `go` commands can be
 used directly:
-```
-cd $GOPATH/src/github.com/ltcsuite/lnd
-git pull
-GO111MODULE=on go install -v ./...
+```shell
+⛰  cd $GOPATH/src/github.com/ltcsuite/lnd
+⛰  git pull
+⛰  go install -v ./...
 ```
 
 **Tests**
 
 To check that `lnd` was installed properly run the following command:
-```
-make check
+```shell
+⛰   make check
 ```
 
 This command requires `bitcoind` (almost any version should do) to be available
@@ -179,50 +245,47 @@ in the system's `$PATH` variable. Otherwise some of the tests will fail.
 
 In order to run, `lnd` requires, that the user specify a chain backend. At the
 time of writing of this document, there are three available chain backends:
-`ltcd`, `neutrino`, `bitcoind`. All but neutrino (atm) can run on mainnet with
+`btcd`, `neutrino`, `bitcoind`. All including neutrino can run on mainnet with
 an out of the box `lnd` instance. We don't require `--txindex` when running
-with `bitcoind` or `ltcd` but activating the `txindex` will generally make
-`lnd` run faster.
-
-**NOTE: WE DO NOT FULLY SUPPORT PRUNED OPERATING MODES FOR FULL NODES.** It's
-possible to run a node in a pruned mode and have it serve lnd, however one must
-take care to ensure that `lnd` has all blocks on disk since the birth of the
-wallet, and the age of the earliest channels (which were created around March
-2018).
+with `bitcoind` or `btcd` but activating the `txindex` will generally make
+`lnd` run faster. Note that since version 0.13 pruned nodes are supported
+although they cause performance penalty and higher network usage.
 
 The set of arguments for each of the backend modes is as follows:
 
-## ltcd Options
-```
-ltcd:
-      --ltcd.dir=                                             The base directory that contains the node's data, logs, configuration file, etc. (default: /Users/roasbeef/Library/Application Support/ltcd)
-      --ltcd.rpchost=                                         The daemon's rpc listening address. If a port is omitted, then the default port for the selected chain parameters will be used. (default: localhost)
-      --ltcd.rpcuser=                                         Username for RPC connections
-      --ltcd.rpcpass=                                         Password for RPC connections
-      --ltcd.rpccert=                                         File containing the daemon's certificate file (default: /Users/roasbeef/Library/Application Support/ltcd/rpc.cert)
-      --ltcd.rawrpccert=                                      The raw bytes of the daemon's PEM-encoded certificate chain which will be used to authenticate the RPC connection.
+## btcd Options
+```text
+btcd:
+      --btcd.dir=                                             The base directory that contains the node's data, logs, configuration file, etc. (default: /Users/roasbeef/Library/Application Support/Btcd)
+      --btcd.rpchost=                                         The daemon's rpc listening address. If a port is omitted, then the default port for the selected chain parameters will be used. (default: localhost)
+      --btcd.rpcuser=                                         Username for RPC connections
+      --btcd.rpcpass=                                         Password for RPC connections
+      --btcd.rpccert=                                         File containing the daemon's certificate file (default: /Users/roasbeef/Library/Application Support/Btcd/rpc.cert)
+      --btcd.rawrpccert=                                      The raw bytes of the daemon's PEM-encoded certificate chain which will be used to authenticate the RPC connection.
 ```
 
 ## Neutrino Options
-```
+```text
 neutrino:
   -a, --neutrino.addpeer=                                     Add a peer to connect with at startup
       --neutrino.connect=                                     Connect only to the specified peers at startup
       --neutrino.maxpeers=                                    Max number of inbound and outbound peers
       --neutrino.banduration=                                 How long to ban misbehaving peers.  Valid time units are {s, m, h}.  Minimum 1 second
       --neutrino.banthreshold=                                Maximum allowed ban score before disconnecting and banning misbehaving peers.
+      --neutrino.useragentname=                               Used to help identify ourselves to other bitcoin peers.
+      --neutrino.useragentversion=                            Used to help identify ourselves to other bitcoin peers.
 ```
 
-## litecoind Options
-```
-litecoind:
-      --litecoind.dir=                                         The base directory that contains the node's data, logs, configuration file, etc. (default: /Users/roasbeef/Library/Application Support/Bitcoin)
-      --litecoind.rpchost=                                     The daemon's rpc listening address. If a port is omitted, then the default port for the selected chain parameters will be used. (default: localhost)
-      --litecoind.rpcuser=                                     Username for RPC connections
-      --litecoind.rpcpass=                                     Password for RPC connections
-      --litecoind.zmqpubrawblock=                              The address listening for ZMQ connections to deliver raw block notifications
-      --litecoind.zmqpubrawtx=                                 The address listening for ZMQ connections to deliver raw transaction notifications
-      --litecoind.estimatemode=                                The fee estimate mode. Must be either "ECONOMICAL" or "CONSERVATIVE". (default: CONSERVATIVE)
+## Bitcoind Options
+```text
+bitcoind:
+      --bitcoind.dir=                                         The base directory that contains the node's data, logs, configuration file, etc. (default: /Users/roasbeef/Library/Application Support/Bitcoin)
+      --bitcoind.rpchost=                                     The daemon's rpc listening address. If a port is omitted, then the default port for the selected chain parameters will be used. (default: localhost)
+      --bitcoind.rpcuser=                                     Username for RPC connections
+      --bitcoind.rpcpass=                                     Password for RPC connections
+      --bitcoind.zmqpubrawblock=                              The address listening for ZMQ connections to deliver raw block notifications
+      --bitcoind.zmqpubrawtx=                                 The address listening for ZMQ connections to deliver raw transaction notifications
+      --bitcoind.estimatemode=                                The fee estimate mode. Must be either "ECONOMICAL" or "CONSERVATIVE". (default: CONSERVATIVE)
 ```
 
 ## Using ltcd
@@ -233,9 +296,9 @@ On FreeBSD, use gmake instead of make.
 
 To install ltcd, run the following commands:
 
-Install **ltcd**:
-```
-make ltcd
+Install **btcd**:
+```shell
+⛰   make btcd
 ```
 
 Alternatively, you can install [`ltcd` directly from its
@@ -245,8 +308,8 @@ repo](https://github.com/ltcsuite/ltcd).
 
 Running the following command will create `rpc.cert` and default `ltcd.conf`.
 
-```
-ltcd --testnet --rpcuser=REPLACEME --rpcpass=REPLACEME
+```shell
+⛰   btcd --testnet --rpcuser=REPLACEME --rpcpass=REPLACEME
 ```
 If you want to use `lnd` on testnet, `ltcd` needs to first fully sync the
 testnet blockchain. Depending on your hardware, this may take up to a few
@@ -258,8 +321,8 @@ directly, rather than scanning blocks or BIP 158 filters for relevant items.
 
 While `ltcd` is syncing you can check on its progress using ltcd's `getinfo`
 RPC command:
-```
-btcctl --testnet --rpcuser=REPLACEME --rpcpass=REPLACEME getinfo
+```shell
+⛰   btcctl --testnet --rpcuser=REPLACEME --rpcpass=REPLACEME getinfo
 {
   "version": 120000,
   "protocolversion": 70002,
@@ -277,9 +340,9 @@ btcctl --testnet --rpcuser=REPLACEME --rpcpass=REPLACEME getinfo
 Additionally, you can monitor ltcd's logs to track its syncing progress in real
 time.
 
-You can test your `ltcd` node's connectivity using the `getpeerinfo` command:
-```
-btcctl --testnet --rpcuser=REPLACEME --rpcpass=REPLACEME getpeerinfo | more
+You can test your `btcd` node's connectivity using the `getpeerinfo` command:
+```shell
+⛰   btcctl --testnet --rpcuser=REPLACEME --rpcpass=REPLACEME getpeerinfo | more
 ```
 
 ### Running lnd using the ltcd backend
@@ -288,8 +351,9 @@ If you are on testnet, run this command after `ltcd` has finished syncing.
 Otherwise, replace `--bitcoin.testnet` with `--bitcoin.simnet`. If you are
 installing `lnd` in preparation for the
 [tutorial](https://dev.lightning.community/tutorial), you may skip this step.
-```
-lnd --bitcoin.active --bitcoin.testnet --debuglevel=debug --ltcd.rpcuser=kek --ltcd.rpcpass=kek --externalip=X.X.X.X
+```shell
+⛰   lnd --bitcoin.active --bitcoin.testnet --debuglevel=debug \
+       --btcd.rpcuser=kek --btcd.rpcpass=kek --externalip=X.X.X.X
 ```
 
 ## Using Neutrino
@@ -302,9 +366,10 @@ mode.  A public instance of such a node can be found at
 `faucet.lightning.community`.
 
 To run lnd in neutrino mode, run `lnd` with the following arguments, (swapping
-in `--bitcoin.simnet` if needed), and also your own `ltcd` node if available:
-```
-lnd --bitcoin.active --bitcoin.testnet --debuglevel=debug --bitcoin.node=neutrino --neutrino.connect=faucet.lightning.community
+in `--bitcoin.simnet` if needed), and also your own `btcd` node if available:
+```shell
+⛰   lnd --bitcoin.active --bitcoin.testnet --debuglevel=debug \
+       --bitcoin.node=neutrino --neutrino.connect=faucet.lightning.community
 ```
 
 
@@ -339,7 +404,7 @@ the following:
   the testnet chain (alternatively, use `--bitcoind.regtest` instead).
 
 Here's a sample `bitcoin.conf` for use with lnd:
-```
+```text
 testnet=1
 server=1
 daemon=1
@@ -353,8 +418,13 @@ updated with the latest blocks on testnet, run the command below to launch
 `lnd.conf` to save these options, more info on that is described further
 below):
 
-```
-lnd --bitcoin.active --bitcoin.testnet --debuglevel=debug --bitcoin.node=bitcoind --bitcoind.rpcuser=REPLACEME --bitcoind.rpcpass=REPLACEME --bitcoind.zmqpubrawblock=tcp://127.0.0.1:28332 --bitcoind.zmqpubrawtx=tcp://127.0.0.1:28333 --externalip=X.X.X.X
+```shell
+⛰   lnd --bitcoin.active --bitcoin.testnet --debuglevel=debug \
+       --bitcoin.node=bitcoind --bitcoind.rpcuser=REPLACEME \
+       --bitcoind.rpcpass=REPLACEME \
+       --bitcoind.zmqpubrawblock=tcp://127.0.0.1:28332 \
+       --bitcoind.zmqpubrawtx=tcp://127.0.0.1:28333 \
+       --externalip=X.X.X.X
 ```
 
 *NOTE:*
@@ -389,8 +459,8 @@ lnd --bitcoin.active --bitcoin.testnet --debuglevel=debug --bitcoin.node=bitcoin
 
 # Creating a wallet
 If `lnd` is being run for the first time, create a new wallet with:
-```
-lncli create
+```shell
+⛰   lncli create
 ```
 This will prompt for a wallet password, and optionally a cipher seed
 passphrase.
@@ -399,6 +469,8 @@ passphrase.
 recover the wallet in case of data loss. The user should write this down and
 keep in a safe place.
 
+More [information about managing wallets can be found in the wallet management
+document](wallet.md).
 
 # Macaroons
 
@@ -459,8 +531,8 @@ at the command line, you can create an `lnd.conf`.
 **On Linux, located at:**
 `~/.lnd/lnd.conf`
 
-Here's a sample `lnd.conf` for `ltcd` to get you started:
-```
+Here's a sample `lnd.conf` for `btcd` to get you started:
+```text
 [Application Options]
 debuglevel=trace
 maxpendingchannels=10

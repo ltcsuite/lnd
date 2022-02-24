@@ -1,5 +1,5 @@
 module github.com/ltcsuite/lnd/cert
 
-go 1.13
+go 1.16
 
-replace github.com/ltcsuite/lnd/cert => ./
+require github.com/stretchr/testify v1.5.1

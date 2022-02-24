@@ -7,7 +7,7 @@ import (
 	prand "math/rand"
 
 	"github.com/ltcsuite/lnd/lnwire"
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 func TestConstraintsChannelBudget(t *testing.T) {
@@ -37,7 +37,7 @@ func TestConstraintsChannelBudget(t *testing.T) {
 	}
 
 	testCases := []struct {
-		channels  []Channel
+		channels  []LocalChannel
 		walletAmt ltcutil.Amount
 
 		needMore     bool
@@ -47,18 +47,18 @@ func TestConstraintsChannelBudget(t *testing.T) {
 		// Many available funds, but already have too many active open
 		// channels.
 		{
-			[]Channel{
+			[]LocalChannel{
 				{
-					ChanID:   randChanID(),
-					Capacity: ltcutil.Amount(prand.Int31()),
+					ChanID:  randChanID(),
+					Balance: ltcutil.Amount(prand.Int31()),
 				},
 				{
-					ChanID:   randChanID(),
-					Capacity: ltcutil.Amount(prand.Int31()),
+					ChanID:  randChanID(),
+					Balance: ltcutil.Amount(prand.Int31()),
 				},
 				{
-					ChanID:   randChanID(),
-					Capacity: ltcutil.Amount(prand.Int31()),
+					ChanID:  randChanID(),
+					Balance: ltcutil.Amount(prand.Int31()),
 				},
 			},
 			ltcutil.Amount(ltcutil.SatoshiPerBitcoin * 10),
@@ -70,14 +70,14 @@ func TestConstraintsChannelBudget(t *testing.T) {
 		// Ratio of funds in channels and total funds meets the
 		// threshold.
 		{
-			[]Channel{
+			[]LocalChannel{
 				{
-					ChanID:   randChanID(),
-					Capacity: ltcutil.Amount(ltcutil.SatoshiPerBitcoin),
+					ChanID:  randChanID(),
+					Balance: ltcutil.Amount(ltcutil.SatoshiPerBitcoin),
 				},
 				{
-					ChanID:   randChanID(),
-					Capacity: ltcutil.Amount(ltcutil.SatoshiPerBitcoin),
+					ChanID:  randChanID(),
+					Balance: ltcutil.Amount(ltcutil.SatoshiPerBitcoin),
 				},
 			},
 			ltcutil.Amount(ltcutil.SatoshiPerBitcoin * 2),
@@ -93,10 +93,10 @@ func TestConstraintsChannelBudget(t *testing.T) {
 		// recommended. We should also request 2 more channels as the
 		// limit is 3.
 		{
-			[]Channel{
+			[]LocalChannel{
 				{
-					ChanID:   randChanID(),
-					Capacity: ltcutil.Amount(ltcutil.SatoshiPerBitcoin),
+					ChanID:  randChanID(),
+					Balance: ltcutil.Amount(ltcutil.SatoshiPerBitcoin),
 				},
 			},
 			ltcutil.Amount(ltcutil.SatoshiPerBitcoin * 9),
@@ -113,14 +113,14 @@ func TestConstraintsChannelBudget(t *testing.T) {
 		// to be committed. We should only request a single additional
 		// channel as the limit is 3.
 		{
-			[]Channel{
+			[]LocalChannel{
 				{
-					ChanID:   randChanID(),
-					Capacity: ltcutil.Amount(ltcutil.SatoshiPerBitcoin),
+					ChanID:  randChanID(),
+					Balance: ltcutil.Amount(ltcutil.SatoshiPerBitcoin),
 				},
 				{
-					ChanID:   randChanID(),
-					Capacity: ltcutil.Amount(ltcutil.SatoshiPerBitcoin * 3),
+					ChanID:  randChanID(),
+					Balance: ltcutil.Amount(ltcutil.SatoshiPerBitcoin * 3),
 				},
 			},
 			ltcutil.Amount(ltcutil.SatoshiPerBitcoin * 10),
@@ -132,14 +132,14 @@ func TestConstraintsChannelBudget(t *testing.T) {
 		// Ratio of funds in channels and total funds is above the
 		// threshold.
 		{
-			[]Channel{
+			[]LocalChannel{
 				{
-					ChanID:   randChanID(),
-					Capacity: ltcutil.Amount(ltcutil.SatoshiPerBitcoin),
+					ChanID:  randChanID(),
+					Balance: ltcutil.Amount(ltcutil.SatoshiPerBitcoin),
 				},
 				{
-					ChanID:   randChanID(),
-					Capacity: ltcutil.Amount(ltcutil.SatoshiPerBitcoin),
+					ChanID:  randChanID(),
+					Balance: ltcutil.Amount(ltcutil.SatoshiPerBitcoin),
 				},
 			},
 			ltcutil.Amount(ltcutil.SatoshiPerBitcoin),

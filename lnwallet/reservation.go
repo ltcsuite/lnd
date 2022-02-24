@@ -1,18 +1,20 @@
 package lnwallet
 
 import (
+	"errors"
 	"net"
 	"sync"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/lnd/lnwallet/chanfunding"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // CommitmentType is an enum indicating the commitment type we should use for
@@ -28,11 +30,44 @@ const (
 	// to_remote key is static.
 	CommitmentTypeTweakless
 
-	// CommitmentTypeAnchors is a commitment type that is tweakless, and
-	// has extra anchor ouputs in order to bump the fee of the commitment
-	// transaction.
-	CommitmentTypeAnchors
+	// CommitmentTypeAnchorsZeroFeeHtlcTx is a commitment type that is an
+	// extension of the outdated CommitmentTypeAnchors, which in addition
+	// requires second-level HTLC transactions to be signed using a
+	// zero-fee.
+	CommitmentTypeAnchorsZeroFeeHtlcTx
+
+	// CommitmentTypeScriptEnforcedLease is a commitment type that builds
+	// upon CommitmentTypeTweakless and CommitmentTypeAnchorsZeroFeeHtlcTx,
+	// which in addition requires a CLTV clause to spend outputs paying to
+	// the channel initiator. This is intended for use on leased channels to
+	// guarantee that the channel initiator has no incentives to close a
+	// leased channel before its maturity date.
+	CommitmentTypeScriptEnforcedLease
 )
+
+// HasStaticRemoteKey returns whether the commitment type supports remote
+// outputs backed by static keys.
+func (c CommitmentType) HasStaticRemoteKey() bool {
+	switch c {
+	case CommitmentTypeTweakless,
+		CommitmentTypeAnchorsZeroFeeHtlcTx,
+		CommitmentTypeScriptEnforcedLease:
+		return true
+	default:
+		return false
+	}
+}
+
+// HasAnchors returns whether the commitment type supports anchor outputs.
+func (c CommitmentType) HasAnchors() bool {
+	switch c {
+	case CommitmentTypeAnchorsZeroFeeHtlcTx,
+		CommitmentTypeScriptEnforcedLease:
+		return true
+	default:
+		return false
+	}
+}
 
 // String returns the name of the CommitmentType.
 func (c CommitmentType) String() string {
@@ -41,8 +76,10 @@ func (c CommitmentType) String() string {
 		return "legacy"
 	case CommitmentTypeTweakless:
 		return "tweakless"
-	case CommitmentTypeAnchors:
-		return "anchors"
+	case CommitmentTypeAnchorsZeroFeeHtlcTx:
+		return "anchors-zero-fee-second-level"
+	case CommitmentTypeScriptEnforcedLease:
+		return "script-enforced-lease"
 	default:
 		return "invalid"
 	}
@@ -160,6 +197,10 @@ type ChannelReservation struct {
 	chanFunder chanfunding.Assembler
 
 	fundingIntent chanfunding.Intent
+
+	// nextRevocationKeyLoc stores the key locator information for this
+	// channel.
+	nextRevocationKeyLoc keychain.KeyLocator
 }
 
 // NewChannelReservation creates a new channel reservation. This function is
@@ -182,8 +223,8 @@ func NewChannelReservation(capacity, localFundingAmt ltcutil.Amount,
 	// Based on the channel type, we determine the initial commit weight
 	// and fee.
 	commitWeight := int64(input.CommitWeight)
-	if commitType == CommitmentTypeAnchors {
-		commitWeight = input.AnchorCommitWeight
+	if commitType.HasAnchors() {
+		commitWeight = int64(input.AnchorCommitWeight)
 	}
 	commitFee := commitFeePerKw.FeeForWeight(commitWeight)
 
@@ -195,9 +236,12 @@ func NewChannelReservation(capacity, localFundingAmt ltcutil.Amount,
 	// The total fee paid by the initiator will be the commitment fee in
 	// addition to the two anchor outputs.
 	feeMSat := lnwire.NewMSatFromSatoshis(commitFee)
-	if commitType == CommitmentTypeAnchors {
+	if commitType.HasAnchors() {
 		feeMSat += 2 * lnwire.NewMSatFromSatoshis(anchorSize)
 	}
+
+	// Used to cut down on verbosity.
+	defaultDust := wallet.Cfg.DefaultConstraints.DustLimit
 
 	// If we're the responder to a single-funder reservation, then we have
 	// no initial balance in the channel unless the remote party is pushing
@@ -212,7 +256,7 @@ func NewChannelReservation(capacity, localFundingAmt ltcutil.Amount,
 		if int64(theirBalance) < 0 {
 			return nil, ErrFunderBalanceDust(
 				int64(commitFee), int64(theirBalance.ToSatoshis()),
-				int64(2*DefaultDustLimit()),
+				int64(2*defaultDust),
 			)
 		}
 	} else {
@@ -241,7 +285,7 @@ func NewChannelReservation(capacity, localFundingAmt ltcutil.Amount,
 		if int64(ourBalance) < 0 {
 			return nil, ErrFunderBalanceDust(
 				int64(commitFee), int64(ourBalance),
-				int64(2*DefaultDustLimit()),
+				int64(2*defaultDust),
 			)
 		}
 	}
@@ -251,21 +295,21 @@ func NewChannelReservation(capacity, localFundingAmt ltcutil.Amount,
 	// reject this channel creation request.
 	//
 	// TODO(roasbeef): reject if 30% goes to fees? dust channel
-	if initiator && ourBalance.ToSatoshis() <= 2*DefaultDustLimit() {
+	if initiator && ourBalance.ToSatoshis() <= 2*defaultDust {
 		return nil, ErrFunderBalanceDust(
 			int64(commitFee),
 			int64(ourBalance.ToSatoshis()),
-			int64(2*DefaultDustLimit()),
+			int64(2*defaultDust),
 		)
 	}
 
 	// Similarly we ensure their balance is reasonable if we are not the
 	// initiator.
-	if !initiator && theirBalance.ToSatoshis() <= 2*DefaultDustLimit() {
+	if !initiator && theirBalance.ToSatoshis() <= 2*defaultDust {
 		return nil, ErrFunderBalanceDust(
 			int64(commitFee),
 			int64(theirBalance.ToSatoshis()),
-			int64(2*DefaultDustLimit()),
+			int64(2*defaultDust),
 		)
 	}
 
@@ -279,9 +323,7 @@ func NewChannelReservation(capacity, localFundingAmt ltcutil.Amount,
 	if ourBalance == 0 || theirBalance == 0 || pushMSat != 0 {
 		// Both the tweakless type and the anchor type is tweakless,
 		// hence set the bit.
-		if commitType == CommitmentTypeTweakless ||
-			commitType == CommitmentTypeAnchors {
-
+		if commitType.HasStaticRemoteKey() {
 			chanType |= channeldb.SingleFunderTweaklessBit
 		} else {
 			chanType |= channeldb.SingleFunderBit
@@ -315,14 +357,22 @@ func NewChannelReservation(capacity, localFundingAmt ltcutil.Amount,
 		chanType |= channeldb.DualFunderBit
 	}
 
-	// We are adding anchor outputs to our commitment.
-	if commitType == CommitmentTypeAnchors {
+	// We are adding anchor outputs to our commitment. We only support this
+	// in combination with zero-fee second-levels HTLCs.
+	if commitType.HasAnchors() {
 		chanType |= channeldb.AnchorOutputsBit
+		chanType |= channeldb.ZeroHtlcTxFeeBit
 	}
 
-	// If the channel is meant to be frozen, then we'll set the frozen bit
-	// now so once the channel is open, it can be interpreted properly.
-	if thawHeight != 0 {
+	// Set the appropriate LeaseExpiration/Frozen bit based on the
+	// reservation parameters.
+	if commitType == CommitmentTypeScriptEnforcedLease {
+		if thawHeight == 0 {
+			return nil, errors.New("missing absolute expiration " +
+				"for script enforced lease commitment type")
+		}
+		chanType |= channeldb.LeaseExpirationBit
+	} else if thawHeight > 0 {
 		chanType |= channeldb.FrozenBit
 	}
 
@@ -383,21 +433,27 @@ func (r *ChannelReservation) SetNumConfsRequired(numConfs uint16) {
 // of satoshis that can be transferred in a single commitment. This function
 // will also attempt to verify the constraints for sanity, returning an error
 // if the parameters are seemed unsound.
-func (r *ChannelReservation) CommitConstraints(c *channeldb.ChannelConstraints) error {
+func (r *ChannelReservation) CommitConstraints(c *channeldb.ChannelConstraints,
+	maxLocalCSVDelay uint16, responder bool) error {
 	r.Lock()
 	defer r.Unlock()
 
-	// Fail if we consider csvDelay excessively large.
-	// TODO(halseth): find a more scientific choice of value.
-	const maxDelay = 10000
-	if c.CsvDelay > maxDelay {
-		return ErrCsvDelayTooLarge(c.CsvDelay, maxDelay)
+	// Fail if the csv delay for our funds exceeds our maximum.
+	if c.CsvDelay > maxLocalCSVDelay {
+		return ErrCsvDelayTooLarge(c.CsvDelay, maxLocalCSVDelay)
 	}
 
 	// The channel reserve should always be greater or equal to the dust
 	// limit. The reservation request should be denied if otherwise.
 	if c.DustLimit > c.ChanReserve {
 		return ErrChanReserveTooSmall(c.ChanReserve, c.DustLimit)
+	}
+
+	// Validate against the maximum-sized witness script dust limit, and
+	// also ensure that the DustLimit is not too large.
+	maxWitnessLimit := DustLimitForSize(input.UnknownWitnessSize)
+	if c.DustLimit < maxWitnessLimit || c.DustLimit > 3*maxWitnessLimit {
+		return ErrInvalidDustLimit(c.DustLimit)
 	}
 
 	// Fail if we consider the channel reserve to be too large.  We
@@ -440,7 +496,7 @@ func (r *ChannelReservation) CommitConstraints(c *channeldb.ChannelConstraints) 
 
 	// Our dust limit should always be less than or equal to our proposed
 	// channel reserve.
-	if r.ourContribution.DustLimit > c.ChanReserve {
+	if responder && r.ourContribution.DustLimit > c.ChanReserve {
 		r.ourContribution.DustLimit = c.ChanReserve
 	}
 
@@ -451,6 +507,31 @@ func (r *ChannelReservation) CommitConstraints(c *channeldb.ChannelConstraints) 
 	r.ourContribution.CsvDelay = c.CsvDelay
 
 	return nil
+}
+
+// validateReserveBounds checks that both ChannelReserve values are above both
+// DustLimit values. This not only avoids stuck channels, but is also mandated
+// by BOLT#02 even if it's not explicit. This returns true if the bounds are
+// valid. This function should be called with the lock held.
+func (r *ChannelReservation) validateReserveBounds() bool {
+	ourDustLimit := r.ourContribution.DustLimit
+	ourRequiredReserve := r.ourContribution.ChanReserve
+	theirDustLimit := r.theirContribution.DustLimit
+	theirRequiredReserve := r.theirContribution.ChanReserve
+
+	// We take the smaller of the two ChannelReserves and compare it
+	// against the larger of the two DustLimits.
+	minChanReserve := ourRequiredReserve
+	if minChanReserve > theirRequiredReserve {
+		minChanReserve = theirRequiredReserve
+	}
+
+	maxDustLimit := ourDustLimit
+	if maxDustLimit < theirDustLimit {
+		maxDustLimit = theirDustLimit
+	}
+
+	return minChanReserve >= maxDustLimit
 }
 
 // OurContribution returns the wallet's fully populated contribution to the
@@ -489,6 +570,13 @@ func (r *ChannelReservation) ProcessContribution(theirContribution *ChannelContr
 // reservation.
 func (r *ChannelReservation) IsPsbt() bool {
 	_, ok := r.fundingIntent.(*chanfunding.PsbtIntent)
+	return ok
+}
+
+// IsCannedShim returns true if there is a canned shim funding intent mapped to
+// this reservation.
+func (r *ChannelReservation) IsCannedShim() bool {
+	_, ok := r.fundingIntent.(*chanfunding.ShimIntent)
 	return ok
 }
 
@@ -669,6 +757,16 @@ func (r *ChannelReservation) Capacity() ltcutil.Amount {
 	r.RLock()
 	defer r.RUnlock()
 	return r.partialState.Capacity
+}
+
+// LeaseExpiry returns the absolute expiration height for a leased channel using
+// the script enforced commitment type. A zero value is returned when the
+// channel is not using a script enforced lease commitment type.
+func (r *ChannelReservation) LeaseExpiry() uint32 {
+	if !r.partialState.ChanType.HasLeaseExpiration() {
+		return 0
+	}
+	return r.partialState.ThawHeight
 }
 
 // Cancel abandons this channel reservation. This method should be called in

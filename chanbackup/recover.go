@@ -6,7 +6,7 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/keychain"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
 // ChannelRestorer is an interface that allows the Recover method to map the

@@ -1,6 +1,7 @@
 package lnwire
 
 import (
+	"bytes"
 	"io"
 )
 
@@ -52,6 +53,11 @@ type UpdateAddHTLC struct {
 	// should strip off a layer of encryption, exposing the next hop to be
 	// used in the subsequent UpdateAddHTLC message.
 	OnionBlob [OnionPacketSize]byte
+
+	// ExtraData is the set of data that was appended to this message to
+	// fill out the full maximum transport message size. These fields can
+	// be used to specify optional data such as custom TLV fields.
+	ExtraData ExtraOpaqueData
 }
 
 // NewUpdateAddHTLC returns a new empty UpdateAddHTLC message.
@@ -75,22 +81,40 @@ func (c *UpdateAddHTLC) Decode(r io.Reader, pver uint32) error {
 		c.PaymentHash[:],
 		&c.Expiry,
 		c.OnionBlob[:],
+		&c.ExtraData,
 	)
 }
 
-// Encode serializes the target UpdateAddHTLC into the passed io.Writer observing
-// the protocol version specified.
+// Encode serializes the target UpdateAddHTLC into the passed io.Writer
+// observing the protocol version specified.
 //
 // This is part of the lnwire.Message interface.
-func (c *UpdateAddHTLC) Encode(w io.Writer, pver uint32) error {
-	return WriteElements(w,
-		c.ChanID,
-		c.ID,
-		c.Amount,
-		c.PaymentHash[:],
-		c.Expiry,
-		c.OnionBlob[:],
-	)
+func (c *UpdateAddHTLC) Encode(w *bytes.Buffer, pver uint32) error {
+	if err := WriteChannelID(w, c.ChanID); err != nil {
+		return err
+	}
+
+	if err := WriteUint64(w, c.ID); err != nil {
+		return err
+	}
+
+	if err := WriteMilliSatoshi(w, c.Amount); err != nil {
+		return err
+	}
+
+	if err := WriteBytes(w, c.PaymentHash[:]); err != nil {
+		return err
+	}
+
+	if err := WriteUint32(w, c.Expiry); err != nil {
+		return err
+	}
+
+	if err := WriteBytes(w, c.OnionBlob[:]); err != nil {
+		return err
+	}
+
+	return WriteBytes(w, c.ExtraData)
 }
 
 // MsgType returns the integer uniquely identifying this message type on the
@@ -99,15 +123,6 @@ func (c *UpdateAddHTLC) Encode(w io.Writer, pver uint32) error {
 // This is part of the lnwire.Message interface.
 func (c *UpdateAddHTLC) MsgType() MessageType {
 	return MsgUpdateAddHTLC
-}
-
-// MaxPayloadLength returns the maximum allowed payload size for an UpdateAddHTLC
-// complete message observing the specified protocol version.
-//
-// This is part of the lnwire.Message interface.
-func (c *UpdateAddHTLC) MaxPayloadLength(uint32) uint32 {
-	// 1450
-	return 32 + 8 + 4 + 8 + 32 + 1366
 }
 
 // TargetChanID returns the channel id of the link for which this message is

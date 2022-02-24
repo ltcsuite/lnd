@@ -1,6 +1,7 @@
 package lnwire
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"io"
 )
@@ -24,6 +25,11 @@ type UpdateFailMalformedHTLC struct {
 
 	// FailureCode the exact reason why onion blob haven't been parsed.
 	FailureCode FailCode
+
+	// ExtraData is the set of data that was appended to this message to
+	// fill out the full maximum transport message size. These fields can
+	// be used to specify optional data such as custom TLV fields.
+	ExtraData ExtraOpaqueData
 }
 
 // A compile time check to ensure UpdateFailMalformedHTLC implements the
@@ -40,6 +46,7 @@ func (c *UpdateFailMalformedHTLC) Decode(r io.Reader, pver uint32) error {
 		&c.ID,
 		c.ShaOnionBlob[:],
 		&c.FailureCode,
+		&c.ExtraData,
 	)
 }
 
@@ -47,13 +54,26 @@ func (c *UpdateFailMalformedHTLC) Decode(r io.Reader, pver uint32) error {
 // io.Writer observing the protocol version specified.
 //
 // This is part of the lnwire.Message interface.
-func (c *UpdateFailMalformedHTLC) Encode(w io.Writer, pver uint32) error {
-	return WriteElements(w,
-		c.ChanID,
-		c.ID,
-		c.ShaOnionBlob[:],
-		c.FailureCode,
-	)
+func (c *UpdateFailMalformedHTLC) Encode(w *bytes.Buffer,
+	pver uint32) error {
+
+	if err := WriteChannelID(w, c.ChanID); err != nil {
+		return err
+	}
+
+	if err := WriteUint64(w, c.ID); err != nil {
+		return err
+	}
+
+	if err := WriteBytes(w, c.ShaOnionBlob[:]); err != nil {
+		return err
+	}
+
+	if err := WriteFailCode(w, c.FailureCode); err != nil {
+		return err
+	}
+
+	return WriteBytes(w, c.ExtraData)
 }
 
 // MsgType returns the integer uniquely identifying this message type on the
@@ -62,16 +82,6 @@ func (c *UpdateFailMalformedHTLC) Encode(w io.Writer, pver uint32) error {
 // This is part of the lnwire.Message interface.
 func (c *UpdateFailMalformedHTLC) MsgType() MessageType {
 	return MsgUpdateFailMalformedHTLC
-}
-
-// MaxPayloadLength returns the maximum allowed payload size for a
-// UpdateFailMalformedHTLC complete message observing the specified protocol
-// version.
-//
-// This is part of the lnwire.Message interface.
-func (c *UpdateFailMalformedHTLC) MaxPayloadLength(uint32) uint32 {
-	// 32 +  8 + 32 + 2
-	return 74
 }
 
 // TargetChanID returns the channel id of the link for which this message is

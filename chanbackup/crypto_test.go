@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/ltcsuite/lnd/keychain"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
 var (
@@ -30,7 +30,7 @@ func (m *mockKeyRing) DeriveKey(keyLoc keychain.KeyLocator) (keychain.KeyDescrip
 		return keychain.KeyDescriptor{}, fmt.Errorf("fail")
 	}
 
-	_, pub := btcec.PrivKeyFromBytes(btcec.S256(), testWalletPrivKey)
+	_, pub := btcec.PrivKeyFromBytes(testWalletPrivKey)
 	return keychain.KeyDescriptor{
 		PubKey: pub,
 	}, nil

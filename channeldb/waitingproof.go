@@ -2,6 +2,7 @@ package channeldb
 
 import (
 	"encoding/binary"
+	"fmt"
 	"sync"
 
 	"io"
@@ -9,7 +10,7 @@ import (
 	"bytes"
 
 	"github.com/go-errors/errors"
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/lnwire"
 )
 
@@ -35,20 +36,21 @@ type WaitingProofStore struct {
 	// cache is used in order to reduce the number of redundant get
 	// calls, when object isn't stored in it.
 	cache map[WaitingProofKey]struct{}
-	db    *DB
+	db    kvdb.Backend
 	mu    sync.RWMutex
 }
 
 // NewWaitingProofStore creates new instance of proofs storage.
-func NewWaitingProofStore(db *DB) (*WaitingProofStore, error) {
+func NewWaitingProofStore(db kvdb.Backend) (*WaitingProofStore, error) {
 	s := &WaitingProofStore{
-		db:    db,
-		cache: make(map[WaitingProofKey]struct{}),
+		db: db,
 	}
 
 	if err := s.ForAll(func(proof *WaitingProof) error {
 		s.cache[proof.Key()] = struct{}{}
 		return nil
+	}, func() {
+		s.cache = make(map[WaitingProofKey]struct{})
 	}); err != nil && err != ErrWaitingProofNotFound {
 		return nil, err
 	}
@@ -79,7 +81,7 @@ func (s *WaitingProofStore) Add(proof *WaitingProof) error {
 		key := proof.Key()
 
 		return bucket.Put(key[:], b.Bytes())
-	})
+	}, func() {})
 	if err != nil {
 		return err
 	}
@@ -108,7 +110,7 @@ func (s *WaitingProofStore) Remove(key WaitingProofKey) error {
 		}
 
 		return bucket.Delete(key[:])
-	})
+	}, func() {})
 	if err != nil {
 		return err
 	}
@@ -122,7 +124,9 @@ func (s *WaitingProofStore) Remove(key WaitingProofKey) error {
 
 // ForAll iterates thought all waiting proofs and passing the waiting proof
 // in the given callback.
-func (s *WaitingProofStore) ForAll(cb func(*WaitingProof) error) error {
+func (s *WaitingProofStore) ForAll(cb func(*WaitingProof) error,
+	reset func()) error {
+
 	return kvdb.View(s.db, func(tx kvdb.RTx) error {
 		bucket := tx.ReadBucket(waitingProofsBucketKey)
 		if bucket == nil {
@@ -144,12 +148,12 @@ func (s *WaitingProofStore) ForAll(cb func(*WaitingProof) error) error {
 
 			return cb(proof)
 		})
-	})
+	}, reset)
 }
 
 // Get returns the object which corresponds to the given index.
 func (s *WaitingProofStore) Get(key WaitingProofKey) (*WaitingProof, error) {
-	proof := &WaitingProof{}
+	var proof *WaitingProof
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -172,6 +176,8 @@ func (s *WaitingProofStore) Get(key WaitingProofKey) (*WaitingProof, error) {
 
 		r := bytes.NewReader(v)
 		return proof.Decode(r)
+	}, func() {
+		proof = &WaitingProof{}
 	})
 
 	return proof, err
@@ -227,7 +233,14 @@ func (p *WaitingProof) Encode(w io.Writer) error {
 		return err
 	}
 
-	if err := p.AnnounceSignatures.Encode(w, 0); err != nil {
+	// TODO(yy): remove the type assertion when we finished refactoring db
+	// into using write buffer.
+	buf, ok := w.(*bytes.Buffer)
+	if !ok {
+		return fmt.Errorf("expect io.Writer to be *bytes.Buffer")
+	}
+
+	if err := p.AnnounceSignatures.Encode(buf, 0); err != nil {
 		return err
 	}
 

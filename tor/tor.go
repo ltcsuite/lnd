@@ -1,11 +1,13 @@
 package tor
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"net"
 	"strconv"
+	"time"
 
 	"github.com/ltcsuite/ltcd/connmgr"
 	"github.com/miekg/dns"
@@ -38,6 +40,15 @@ var (
 		22: "bad truncation",
 		23: "bad/missing server cookie",
 	}
+
+	// onionPrefixBytes is a special purpose IPv6 prefix to encode Onion v2
+	// addresses with. Because Neutrino uses the address manager of btcd
+	// which only understands net.IP addresses instead of net.Addr, we need
+	// to convert any .onion addresses into fake IPv6 addresses if we want
+	// to use a Tor hidden service as a Neutrino backend. This is the same
+	// range used by OnionCat, which is part part of the RFC4193 unique
+	// local IPv6 unicast address range.
+	onionPrefixBytes = []byte{0xfd, 0x87, 0xd8, 0x7e, 0xeb, 0x43}
 )
 
 // proxyConn is a wrapper around net.Conn that allows us to expose the actual
@@ -54,10 +65,16 @@ func (c *proxyConn) RemoteAddr() net.Addr {
 // Dial is a wrapper over the non-exported dial function that returns a wrapper
 // around net.Conn in order to expose the actual remote address we're dialing,
 // rather than the proxy's address.
-func Dial(address, socksAddr string, streamIsolation bool) (net.Conn, error) {
-	conn, err := dial(address, socksAddr, streamIsolation)
+func Dial(address, socksAddr string, streamIsolation bool,
+	skipProxyForClearNetTargets bool,
+	timeout time.Duration) (net.Conn, error) {
+
+	conn, err := dialProxy(
+		address, socksAddr, streamIsolation,
+		skipProxyForClearNetTargets, timeout,
+	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("dial proxy failed: %w", err)
 	}
 
 	// Now that the connection is established, we'll create our internal
@@ -74,12 +91,20 @@ func Dial(address, socksAddr string, streamIsolation bool) (net.Conn, error) {
 	}, nil
 }
 
-// dial establishes a connection to the address via Tor's SOCKS proxy. Only TCP
-// is supported over Tor. The final argument determines if we should force
-// stream isolation for this new connection. If we do, then this means this new
-// connection will use a fresh circuit, rather than possibly re-using an
-// existing circuit.
-func dial(address, socksAddr string, streamIsolation bool) (net.Conn, error) {
+// dialProxy establishes a connection to the address via the provided TOR SOCKS
+// proxy. Only TCP traffic may be routed via Tor.
+//
+// streamIsolation determines if we should force stream isolation for this new
+// connection. If enabled, new connections will use a fresh circuit, rather than
+// possibly re-using an existing circuit.
+//
+// skipProxyForClearNetTargets argument allows the dialer to directly connect
+// to the provided address if it does not represent an union service, skipping
+// the SOCKS proxy.
+func dialProxy(address, socksAddr string, streamIsolation bool,
+	skipProxyForClearNetTargets bool,
+	timeout time.Duration) (net.Conn, error) {
+
 	// If we were requested to force stream isolation for this connection,
 	// we'll populate the authentication credentials with random data as
 	// Tor will create a new circuit for each set of credentials.
@@ -96,10 +121,24 @@ func dial(address, socksAddr string, streamIsolation bool) (net.Conn, error) {
 		}
 	}
 
+	clearDialer := &net.Dialer{Timeout: timeout}
+	if skipProxyForClearNetTargets {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+
+		// The SOCKS proxy is skipped if the target
+		// is not an union address.
+		if !IsOnionHost(host) {
+			return clearDialer.Dial("tcp", address)
+		}
+	}
+
 	// Establish the connection through Tor's SOCKS proxy.
-	dialer, err := proxy.SOCKS5("tcp", socksAddr, auth, proxy.Direct)
+	dialer, err := proxy.SOCKS5("tcp", socksAddr, auth, clearDialer)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("establish sock proxy: %w", err)
 	}
 
 	return dialer.Dial("tcp", address)
@@ -121,11 +160,15 @@ func LookupHost(host, socksAddr string) ([]string, error) {
 // natively support SRV queries so we must route all SRV queries through the
 // proxy by connecting directly to a DNS server and querying it. The DNS server
 // must have TCP resolution enabled for the given port.
-func LookupSRV(service, proto, name, socksAddr, dnsServer string,
-	streamIsolation bool) (string, []*net.SRV, error) {
+func LookupSRV(service, proto, name, socksAddr,
+	dnsServer string, streamIsolation bool, skipProxyForClearNetTargets bool,
+	timeout time.Duration) (string, []*net.SRV, error) {
 
 	// Connect to the DNS server we'll be using to query SRV records.
-	conn, err := dial(dnsServer, socksAddr, streamIsolation)
+	conn, err := dialProxy(
+		dnsServer, socksAddr, streamIsolation,
+		skipProxyForClearNetTargets, timeout,
+	)
 	if err != nil {
 		return "", nil, err
 	}
@@ -240,4 +283,61 @@ func IsOnionHost(host string) bool {
 	}
 
 	return true
+}
+
+// IsOnionFakeIP checks whether a given net.Addr is a fake IPv6 address that
+// encodes an Onion v2 address.
+func IsOnionFakeIP(addr net.Addr) bool {
+	_, err := FakeIPToOnionHost(addr)
+	return err == nil
+}
+
+// OnionHostToFakeIP encodes an Onion v2 address into a fake IPv6 address that
+// encodes the same information but can be used for libraries that operate on an
+// IP address base only, like btcd's address manager. For example, this will
+// turn the onion host ld47qlr6h2b7hrrf.onion into the ip6 address
+// fd87:d87e:eb43:58f9:f82e:3e3e:83f3:c625.
+func OnionHostToFakeIP(host string) (net.IP, error) {
+	if len(host) != V2Len {
+		return nil, fmt.Errorf("invalid onion v2 host: %v", host)
+	}
+
+	data, err := Base32Encoding.DecodeString(host[:V2Len-OnionSuffixLen])
+	if err != nil {
+		return nil, err
+	}
+
+	ip := make([]byte, len(onionPrefixBytes)+len(data))
+	copy(ip, onionPrefixBytes)
+	copy(ip[len(onionPrefixBytes):], data)
+	return ip, nil
+}
+
+// FakeIPToOnionHost turns a fake IPv6 address that encodes an Onion v2 address
+// back into its onion host address representation. For example, this will turn
+// the fake tcp6 address [fd87:d87e:eb43:58f9:f82e:3e3e:83f3:c625]:8333 back
+// into ld47qlr6h2b7hrrf.onion:8333.
+func FakeIPToOnionHost(fakeIP net.Addr) (net.Addr, error) {
+	tcpAddr, ok := fakeIP.(*net.TCPAddr)
+	if !ok {
+		return nil, fmt.Errorf("invalid fake onion IP address: %v",
+			fakeIP)
+	}
+
+	ip := tcpAddr.IP
+	if len(ip) != len(onionPrefixBytes)+V2DecodedLen {
+		return nil, fmt.Errorf("invalid fake onion IP address length: "+
+			"%v", fakeIP)
+	}
+
+	if !bytes.Equal(ip[:len(onionPrefixBytes)], onionPrefixBytes) {
+		return nil, fmt.Errorf("invalid fake onion IP address prefix: "+
+			"%v", fakeIP)
+	}
+
+	host := Base32Encoding.EncodeToString(ip[len(onionPrefixBytes):])
+	return &OnionAddr{
+		OnionService: host + ".onion",
+		Port:         tcpAddr.Port,
+	}, nil
 }

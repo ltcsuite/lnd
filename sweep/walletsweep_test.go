@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/ltcsuite/lnd/lntest/mock"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 )
 
 // TestDetermineFeePerKw tests that given a fee preference, the
@@ -118,7 +119,7 @@ func newMockUtxoSource(utxos []*lnwallet.Utxo) *mockUtxoSource {
 	}
 }
 
-func (m *mockUtxoSource) ListUnspentWitness(minConfs int32,
+func (m *mockUtxoSource) ListUnspentWitnessFromDefaultAccount(minConfs int32,
 	maxConfs int32) ([]*lnwallet.Utxo, error) {
 
 	return m.outputs, nil
@@ -287,7 +288,8 @@ func TestCraftSweepAllTxCoinSelectFail(t *testing.T) {
 	utxoLocker := newMockOutpointLocker()
 
 	_, err := CraftSweepAllTx(
-		0, 100, nil, coinSelectLocker, utxoSource, utxoLocker, nil, nil,
+		0, 10, nil, nil, coinSelectLocker, utxoSource, utxoLocker, nil,
+		nil, 0,
 	)
 
 	// Since we instructed the coin select locker to fail above, we should
@@ -312,7 +314,8 @@ func TestCraftSweepAllTxUnknownWitnessType(t *testing.T) {
 	utxoLocker := newMockOutpointLocker()
 
 	_, err := CraftSweepAllTx(
-		0, 100, nil, coinSelectLocker, utxoSource, utxoLocker, nil, nil,
+		0, 10, nil, nil, coinSelectLocker, utxoSource, utxoLocker, nil,
+		nil, 0,
 	)
 
 	// Since passed in a p2wsh output, which is unknown, we should fail to
@@ -335,7 +338,7 @@ func TestCraftSweepAllTx(t *testing.T) {
 
 	// First, we'll make a mock signer along with a fee estimator, We'll
 	// use zero fees to we can assert a precise output value.
-	signer := &mockSigner{}
+	signer := &mock.DummySigner{}
 	feeEstimator := newMockFeeEstimator(0, 0)
 
 	// For our UTXO source, we'll pass in all the UTXOs that we know of,
@@ -346,8 +349,8 @@ func TestCraftSweepAllTx(t *testing.T) {
 	utxoLocker := newMockOutpointLocker()
 
 	sweepPkg, err := CraftSweepAllTx(
-		0, 100, deliveryAddr, coinSelectLocker, utxoSource, utxoLocker,
-		feeEstimator, signer,
+		0, 10, nil, deliveryAddr, coinSelectLocker, utxoSource,
+		utxoLocker, feeEstimator, signer, 0,
 	)
 	if err != nil {
 		t.Fatalf("unable to make sweep tx: %v", err)

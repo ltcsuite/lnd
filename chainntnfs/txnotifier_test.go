@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -1138,7 +1140,7 @@ func TestTxNotifierCancelConf(t *testing.T) {
 	hintCache := newMockHintCache()
 	n := chainntnfs.NewTxNotifier(startingHeight, 100, hintCache, hintCache)
 
-	// We'll register three notification requests. The last two will be
+	// We'll register four notification requests. The last three will be
 	// canceled.
 	tx1 := wire.NewMsgTx(1)
 	tx1.AddTxOut(&wire.TxOut{PkScript: testRawScript})
@@ -1159,7 +1161,12 @@ func TestTxNotifierCancelConf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unable to register spend ntfn: %v", err)
 	}
-	cancelConfRequest := ntfn2.HistoricalDispatch.ConfRequest
+
+	// This request will have a three block num confs.
+	ntfn4, err := n.RegisterConf(&tx2Hash, testRawScript, 3, 1)
+	if err != nil {
+		t.Fatalf("unable to register spend ntfn: %v", err)
+	}
 
 	// Extend the chain with a block that will confirm both transactions.
 	// This will queue confirmation notifications to dispatch once their
@@ -1175,7 +1182,7 @@ func TestTxNotifierCancelConf(t *testing.T) {
 	}
 
 	// Cancel the second notification before connecting the block.
-	n.CancelConf(cancelConfRequest, 2)
+	ntfn2.Event.Cancel()
 
 	err = n.ConnectTip(block.Hash(), startingHeight+1, block.Transactions())
 	if err != nil {
@@ -1184,7 +1191,7 @@ func TestTxNotifierCancelConf(t *testing.T) {
 
 	// Cancel the third notification before notifying to ensure its queued
 	// confirmation notification gets removed as well.
-	n.CancelConf(cancelConfRequest, 3)
+	ntfn3.Event.Cancel()
 
 	if err := n.NotifyHeight(startingHeight + 1); err != nil {
 		t.Fatalf("unable to dispatch notifications: %v", err)
@@ -1217,6 +1224,54 @@ func TestTxNotifierCancelConf(t *testing.T) {
 		}
 	default:
 		t.Fatal("expected Confirmed channel to be closed")
+	}
+
+	// Connect yet another block.
+	block1 := ltcutil.NewBlock(&wire.MsgBlock{
+		Transactions: []*wire.MsgTx{},
+	})
+
+	err = n.ConnectTip(block1.Hash(), startingHeight+2, block1.Transactions())
+	if err != nil {
+		t.Fatalf("unable to connect block: %v", err)
+	}
+
+	if err := n.NotifyHeight(startingHeight + 2); err != nil {
+		t.Fatalf("unable to dispatch notifications: %v", err)
+	}
+
+	// Since neither it reached the set confirmation height or was
+	// canceled, nothing should happen to ntfn4 in this block.
+	select {
+	case <-ntfn4.Event.Confirmed:
+		t.Fatal("expected nothing to happen")
+	case <-time.After(10 * time.Millisecond):
+	}
+
+	// Now cancel the notification.
+	ntfn4.Event.Cancel()
+	select {
+	case _, ok := <-ntfn4.Event.Confirmed:
+		if ok {
+			t.Fatal("expected Confirmed channel to be closed")
+		}
+	default:
+		t.Fatal("expected Confirmed channel to be closed")
+	}
+
+	// Finally, confirm a block that would trigger ntfn4 confirmation
+	// hadn't it already been canceled.
+	block2 := ltcutil.NewBlock(&wire.MsgBlock{
+		Transactions: []*wire.MsgTx{},
+	})
+
+	err = n.ConnectTip(block2.Hash(), startingHeight+3, block2.Transactions())
+	if err != nil {
+		t.Fatalf("unable to connect block: %v", err)
+	}
+
+	if err := n.NotifyHeight(startingHeight + 3); err != nil {
+		t.Fatalf("unable to dispatch notifications: %v", err)
 	}
 }
 
@@ -1786,6 +1841,97 @@ func TestTxNotifierSpendReorg(t *testing.T) {
 	case <-ntfn1.Event.Spend:
 		t.Fatal("received unexpected spend notification")
 	default:
+	}
+}
+
+// TestTxNotifierUpdateSpendReorg tests that a call to RegisterSpend after the
+// spend has been confirmed, and then UpdateSpendDetails (called by historical
+// dispatch), followed by a chain re-org will notify on the Reorg channel. This
+// was not always the case and has since been fixed.
+func TestTxNotifierSpendReorgMissed(t *testing.T) {
+	t.Parallel()
+
+	const startingHeight = 10
+	hintCache := newMockHintCache()
+	n := chainntnfs.NewTxNotifier(
+		startingHeight, chainntnfs.ReorgSafetyLimit, hintCache,
+		hintCache,
+	)
+
+	// We'll create a spending transaction that spends the outpoint we'll
+	// watch.
+	op := wire.OutPoint{Index: 1}
+	spendTx := wire.NewMsgTx(2)
+	spendTx.AddTxIn(&wire.TxIn{
+		PreviousOutPoint: op,
+		SignatureScript:  testSigScript,
+	})
+	spendTxHash := spendTx.TxHash()
+
+	// Create the spend details that we'll call UpdateSpendDetails with.
+	spendDetails := &chainntnfs.SpendDetail{
+		SpentOutPoint:     &op,
+		SpenderTxHash:     &spendTxHash,
+		SpendingTx:        spendTx,
+		SpenderInputIndex: 0,
+		SpendingHeight:    startingHeight + 1,
+	}
+
+	// Now confirm the spending transaction.
+	block := ltcutil.NewBlock(&wire.MsgBlock{
+		Transactions: []*wire.MsgTx{spendTx},
+	})
+	err := n.ConnectTip(block.Hash(), startingHeight+1, block.Transactions())
+	if err != nil {
+		t.Fatalf("unable to connect block: %v", err)
+	}
+	if err := n.NotifyHeight(startingHeight + 1); err != nil {
+		t.Fatalf("unable to dispatch notifications: %v", err)
+	}
+
+	// We register for the spend now and will not get a spend notification
+	// until we call UpdateSpendDetails.
+	ntfn, err := n.RegisterSpend(&op, testRawScript, 1)
+	if err != nil {
+		t.Fatalf("unable to register spend: %v", err)
+	}
+
+	// Assert that the HistoricalDispatch variable is non-nil. We'll use
+	// the SpendRequest member to update the spend details.
+	require.NotEmpty(t, ntfn.HistoricalDispatch)
+
+	select {
+	case <-ntfn.Event.Spend:
+		t.Fatalf("did not expect to receive spend ntfn")
+	default:
+	}
+
+	// We now call UpdateSpendDetails with our generated spend details to
+	// simulate a historical spend dispatch being performed. This should
+	// result in a notification being received on the Spend channel.
+	err = n.UpdateSpendDetails(
+		ntfn.HistoricalDispatch.SpendRequest, spendDetails,
+	)
+	require.Empty(t, err)
+
+	// Assert that we receive a Spend notification.
+	select {
+	case <-ntfn.Event.Spend:
+	default:
+		t.Fatalf("expected to receive spend ntfn")
+	}
+
+	// We will now re-org the spending transaction out of the chain, and we
+	// should receive a notification on the Reorg channel.
+	err = n.DisconnectTip(startingHeight + 1)
+	require.Empty(t, err)
+
+	select {
+	case <-ntfn.Event.Spend:
+		t.Fatalf("received unexpected spend ntfn")
+	case <-ntfn.Event.Reorg:
+	default:
+		t.Fatalf("expected spend reorg ntfn")
 	}
 }
 

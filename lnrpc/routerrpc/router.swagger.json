@@ -4,6 +4,11 @@
     "title": "routerrpc/router.proto",
     "version": "version not set"
   },
+  "tags": [
+    {
+      "name": "Router"
+    }
+  ],
   "consumes": [
     "application/json"
   ],
@@ -14,7 +19,7 @@
     "/v2/router/htlcevents": {
       "get": {
         "summary": "SubscribeHtlcEvents creates a uni-directional stream from the server to\nthe client which delivers a stream of htlc events.",
-        "operationId": "SubscribeHtlcEvents",
+        "operationId": "Router_SubscribeHtlcEvents",
         "responses": {
           "200": {
             "description": "A successful response.(streaming responses)",
@@ -25,16 +30,16 @@
                   "$ref": "#/definitions/routerrpcHtlcEvent"
                 },
                 "error": {
-                  "$ref": "#/definitions/runtimeStreamError"
+                  "$ref": "#/definitions/rpcStatus"
                 }
               },
               "title": "Stream result of routerrpcHtlcEvent"
             }
           },
           "default": {
-            "description": "An unexpected error response",
+            "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -43,10 +48,53 @@
         ]
       }
     },
+    "/v2/router/htlcinterceptor": {
+      "post": {
+        "summary": "*\nHtlcInterceptor dispatches a bi-directional streaming RPC in which\nForwarded HTLC requests are sent to the client and the client responds with\na boolean that tells LND if this htlc should be intercepted.\nIn case of interception, the htlc can be either settled, cancelled or\nresumed later by using the ResolveHoldForward endpoint.",
+        "operationId": "Router_HtlcInterceptor",
+        "responses": {
+          "200": {
+            "description": "A successful response.(streaming responses)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/routerrpcForwardHtlcInterceptRequest"
+                },
+                "error": {
+                  "$ref": "#/definitions/rpcStatus"
+                }
+              },
+              "title": "Stream result of routerrpcForwardHtlcInterceptRequest"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": " (streaming inputs)",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/routerrpcForwardHtlcInterceptResponse"
+            }
+          }
+        ],
+        "tags": [
+          "Router"
+        ]
+      }
+    },
     "/v2/router/mc": {
       "get": {
         "summary": "QueryMissionControl exposes the internal mission control state to callers.\nIt is a development feature.",
-        "operationId": "QueryMissionControl",
+        "operationId": "Router_QueryMissionControl",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -55,9 +103,9 @@
             }
           },
           "default": {
-            "description": "An unexpected error response",
+            "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -69,7 +117,7 @@
     "/v2/router/mc/probability/{from_node}/{to_node}/{amt_msat}": {
       "get": {
         "summary": "QueryProbability returns the current success probability estimate for a\ngiven node pair and amount.",
-        "operationId": "QueryProbability",
+        "operationId": "Router_QueryProbability",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -78,9 +126,9 @@
             }
           },
           "default": {
-            "description": "An unexpected error response",
+            "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -118,7 +166,7 @@
     "/v2/router/mc/reset": {
       "post": {
         "summary": "ResetMissionControl clears all mission control state and starts with a clean\nslate.",
-        "operationId": "ResetMissionControl",
+        "operationId": "Router_ResetMissionControl",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -127,9 +175,9 @@
             }
           },
           "default": {
-            "description": "An unexpected error response",
+            "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -148,10 +196,64 @@
         ]
       }
     },
+    "/v2/router/mccfg": {
+      "get": {
+        "summary": "GetMissionControlConfig returns mission control's current config.",
+        "operationId": "Router_GetMissionControlConfig",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/routerrpcGetMissionControlConfigResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "tags": [
+          "Router"
+        ]
+      },
+      "post": {
+        "summary": "SetMissionControlConfig will set mission control's config, if the config\nprovided is valid.",
+        "operationId": "Router_SetMissionControlConfig",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/routerrpcSetMissionControlConfigResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/routerrpcSetMissionControlConfigRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Router"
+        ]
+      }
+    },
     "/v2/router/route": {
       "post": {
         "summary": "BuildRoute builds a fully specified route based on a list of hop public\nkeys. It retrieves the relevant channel policies from the graph in order to\ncalculate the correct fees and time locks.",
-        "operationId": "BuildRoute",
+        "operationId": "Router_BuildRoute",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -160,9 +262,9 @@
             }
           },
           "default": {
-            "description": "An unexpected error response",
+            "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -184,7 +286,7 @@
     "/v2/router/route/estimatefee": {
       "post": {
         "summary": "EstimateRouteFee allows callers to obtain a lower bound w.r.t how much it\nmay cost to send an HTLC to the target end destination.",
-        "operationId": "EstimateRouteFee",
+        "operationId": "Router_EstimateRouteFee",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -193,9 +295,9 @@
             }
           },
           "default": {
-            "description": "An unexpected error response",
+            "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -217,7 +319,7 @@
     "/v2/router/route/send": {
       "post": {
         "summary": "SendToRouteV2 attempts to make a payment via the specified route. This\nmethod differs from SendPayment in that it allows users to specify a full\nroute manually. This can be used for things like rebalancing, and atomic\nswaps.",
-        "operationId": "SendToRouteV2",
+        "operationId": "Router_SendToRouteV2",
         "responses": {
           "200": {
             "description": "A successful response.",
@@ -226,9 +328,9 @@
             }
           },
           "default": {
-            "description": "An unexpected error response",
+            "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -250,7 +352,7 @@
     "/v2/router/send": {
       "post": {
         "summary": "SendPaymentV2 attempts to route a payment described by the passed\nPaymentRequest to the final destination. The call returns a stream of\npayment updates.",
-        "operationId": "SendPaymentV2",
+        "operationId": "Router_SendPaymentV2",
         "responses": {
           "200": {
             "description": "A successful response.(streaming responses)",
@@ -261,16 +363,16 @@
                   "$ref": "#/definitions/lnrpcPayment"
                 },
                 "error": {
-                  "$ref": "#/definitions/runtimeStreamError"
+                  "$ref": "#/definitions/rpcStatus"
                 }
               },
               "title": "Stream result of lnrpcPayment"
             }
           },
           "default": {
-            "description": "An unexpected error response",
+            "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -292,7 +394,7 @@
     "/v2/router/track/{payment_hash}": {
       "get": {
         "summary": "TrackPaymentV2 returns an update stream for the payment identified by the\npayment hash.",
-        "operationId": "TrackPaymentV2",
+        "operationId": "Router_TrackPaymentV2",
         "responses": {
           "200": {
             "description": "A successful response.(streaming responses)",
@@ -303,16 +405,16 @@
                   "$ref": "#/definitions/lnrpcPayment"
                 },
                 "error": {
-                  "$ref": "#/definitions/runtimeStreamError"
+                  "$ref": "#/definitions/rpcStatus"
                 }
               },
               "title": "Stream result of lnrpcPayment"
             }
           },
           "default": {
-            "description": "An unexpected error response",
+            "description": "An unexpected error response.",
             "schema": {
-              "$ref": "#/definitions/runtimeError"
+              "$ref": "#/definitions/rpcStatus"
             }
           }
         },
@@ -330,8 +432,73 @@
             "description": "If set, only the final payment update is streamed back. Intermediate updates\nthat show which htlcs are still in flight are suppressed.",
             "in": "query",
             "required": false,
-            "type": "boolean",
-            "format": "boolean"
+            "type": "boolean"
+          }
+        ],
+        "tags": [
+          "Router"
+        ]
+      }
+    },
+    "/v2/router/updatechanstatus": {
+      "post": {
+        "summary": "UpdateChanStatus attempts to manually set the state of a channel\n(enabled, disabled, or auto). A manual \"disable\" request will cause the\nchannel to stay disabled until a subsequent manual request of either\n\"enable\" or \"auto\".",
+        "operationId": "Router_UpdateChanStatus",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/routerrpcUpdateChanStatusResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/routerrpcUpdateChanStatusRequest"
+            }
+          }
+        ],
+        "tags": [
+          "Router"
+        ]
+      }
+    },
+    "/v2/router/x/importhistory": {
+      "post": {
+        "summary": "XImportMissionControl is an experimental API that imports the state provided\nto the internal mission control's state, using all results which are more\nrecent than our existing values. These values will only be imported\nin-memory, and will not be persisted across restarts.",
+        "operationId": "Router_XImportMissionControl",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/routerrpcXImportMissionControlResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/routerrpcXImportMissionControlRequest"
+            }
           }
         ],
         "tags": [
@@ -368,6 +535,7 @@
         "PERMANENT_CHANNEL_FAILURE",
         "EXPIRY_TOO_FAR",
         "MPP_TIMEOUT",
+        "INVALID_ONION_PAYLOAD",
         "INTERNAL_FAILURE",
         "UNKNOWN_FAILURE",
         "UNREADABLE_FAILURE"
@@ -383,6 +551,42 @@
         "FAILED"
       ],
       "default": "IN_FLIGHT"
+    },
+    "lnrpcAMPRecord": {
+      "type": "object",
+      "properties": {
+        "root_share": {
+          "type": "string",
+          "format": "byte"
+        },
+        "set_id": {
+          "type": "string",
+          "format": "byte"
+        },
+        "child_index": {
+          "type": "integer",
+          "format": "int64"
+        }
+      }
+    },
+    "lnrpcChannelPoint": {
+      "type": "object",
+      "properties": {
+        "funding_txid_bytes": {
+          "type": "string",
+          "format": "byte",
+          "description": "Txid of the funding transaction. When using REST, this field must be\nencoded as base64."
+        },
+        "funding_txid_str": {
+          "type": "string",
+          "description": "Hex-encoded string representing the byte-reversed hash of the funding\ntransaction."
+        },
+        "output_index": {
+          "type": "integer",
+          "format": "int64",
+          "title": "The index of the output of the funding transaction"
+        }
+      }
     },
     "lnrpcChannelUpdate": {
       "type": "object",
@@ -511,13 +715,26 @@
         "PAYMENT_ADDR_REQ",
         "PAYMENT_ADDR_OPT",
         "MPP_REQ",
-        "MPP_OPT"
+        "MPP_OPT",
+        "WUMBO_CHANNELS_REQ",
+        "WUMBO_CHANNELS_OPT",
+        "ANCHORS_REQ",
+        "ANCHORS_OPT",
+        "ANCHORS_ZERO_FEE_HTLC_REQ",
+        "ANCHORS_ZERO_FEE_HTLC_OPT",
+        "AMP_REQ",
+        "AMP_OPT"
       ],
       "default": "DATALOSS_PROTECT_REQ"
     },
     "lnrpcHTLCAttempt": {
       "type": "object",
       "properties": {
+        "attempt_id": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The unique ID that is used for this attempt."
+        },
         "status": {
           "$ref": "#/definitions/HTLCAttemptHTLCStatus",
           "description": "The status of the HTLC."
@@ -585,12 +802,15 @@
         },
         "tlv_payload": {
           "type": "boolean",
-          "format": "boolean",
           "description": "If set to true, then this hop will be encoded using the new variable length\nTLV format. Note that if any custom tlv_records below are specified, then\nthis field MUST be set to true for them to be encoded properly."
         },
         "mpp_record": {
           "$ref": "#/definitions/lnrpcMPPRecord",
-          "description": "An optional TLV record that signals the use of an MPP payment. If present,\nthe receiver will enforce that that the same mpp_record is included in the\nfinal hop payload of all non-zero payments in the HTLC set. If empty, a\nregular single-shot payment is or was attempted."
+          "description": "An optional TLV record that signals the use of an MPP payment. If present,\nthe receiver will enforce that the same mpp_record is included in the final\nhop payload of all non-zero payments in the HTLC set. If empty, a regular\nsingle-shot payment is or was attempted."
+        },
+        "amp_record": {
+          "$ref": "#/definitions/lnrpcAMPRecord",
+          "description": "An optional TLV record that signals the use of an AMP payment. If present,\nthe receiver will treat all received payments including the same\n(payment_addr, set_id) pair  as being part of one logical payment. The\npayment will be settled by XORing the root_share's together and deriving the\nchild hashes and preimages according to BOLT XX. Must be used in conjunction\nwith mpp_record."
         },
         "custom_records": {
           "type": "object",
@@ -832,6 +1052,11 @@
             "format": "byte"
           },
           "description": "A list of hops that defines the route. This does not include the source hop\npubkey."
+        },
+        "payment_addr": {
+          "type": "string",
+          "format": "byte",
+          "description": "An optional payment addr to be included within the last hop of the route."
         }
       }
     },
@@ -843,6 +1068,15 @@
           "description": "Fully specified route that can be used to execute the payment."
         }
       }
+    },
+    "routerrpcChanStatusAction": {
+      "type": "string",
+      "enum": [
+        "ENABLE",
+        "DISABLE",
+        "AUTO"
+      ],
+      "default": "ENABLE"
     },
     "routerrpcCircuitKey": {
       "type": "object",
@@ -944,6 +1178,39 @@
             "format": "byte"
           },
           "description": "Any custom records that were present in the payload."
+        },
+        "onion_blob": {
+          "type": "string",
+          "format": "byte",
+          "title": "The onion blob for the next hop"
+        }
+      }
+    },
+    "routerrpcForwardHtlcInterceptResponse": {
+      "type": "object",
+      "properties": {
+        "incoming_circuit_key": {
+          "$ref": "#/definitions/routerrpcCircuitKey",
+          "description": "*\nThe key of this forwarded htlc. It defines the incoming channel id and\nthe index in this channel."
+        },
+        "action": {
+          "$ref": "#/definitions/routerrpcResolveHoldForwardAction",
+          "description": "The resolve action for this intercepted htlc."
+        },
+        "preimage": {
+          "type": "string",
+          "format": "byte",
+          "description": "The preimage in case the resolve action is Settle."
+        }
+      },
+      "description": "*\nForwardHtlcInterceptResponse enables the caller to resolve a previously hold\nforward. The caller can choose either to:\n- `Resume`: Execute the default behavior (usually forward).\n- `Reject`: Fail the htlc backwards.\n- `Settle`: Settle this htlc with a given preimage."
+    },
+    "routerrpcGetMissionControlConfigResponse": {
+      "type": "object",
+      "properties": {
+        "config": {
+          "$ref": "#/definitions/routerrpcMissionControlConfig",
+          "description": "Mission control's currently active config."
         }
       }
     },
@@ -1047,6 +1314,36 @@
         "failure_string": {
           "type": "string",
           "description": "A string representation of the link failure."
+        }
+      }
+    },
+    "routerrpcMissionControlConfig": {
+      "type": "object",
+      "properties": {
+        "half_life_seconds": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The amount of time mission control will take to restore a penalized node\nor channel back to 50% success probability, expressed in seconds. Setting\nthis value to a higher value will penalize failures for longer, making\nmission control less likely to route through nodes and channels that we\nhave previously recorded failures for."
+        },
+        "hop_probability": {
+          "type": "number",
+          "format": "float",
+          "description": "The probability of success mission control should assign to hop in a route\nwhere it has no other information available. Higher values will make mission\ncontrol more willing to try hops that we have no information about, lower\nvalues will discourage trying these hops."
+        },
+        "weight": {
+          "type": "number",
+          "format": "float",
+          "description": "The importance that mission control should place on historical results,\nexpressed as a value in [0;1]. Setting this value to 1 will ignore all\nhistorical payments and just use the hop probability to assess the\nprobability of success for each hop. A zero value ignores hop probability\ncompletely and relies entirely on historical results, unless none are\navailable."
+        },
+        "maximum_payment_results": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The maximum number of payment results that mission control will store."
+        },
+        "minimum_failure_relax_interval": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The minimum time that must have passed since the previously recorded failure\nbefore we raise the failure amount."
         }
       }
     },
@@ -1239,6 +1536,11 @@
           "format": "int32",
           "description": "The CLTV delta from the current height that should be used to set the\ntimelock for the final hop."
         },
+        "payment_addr": {
+          "type": "string",
+          "format": "byte",
+          "description": "An optional payment addr to be included within the last hop of the route."
+        },
         "payment_request": {
           "type": "string",
           "description": "A bare-bones invoice for a payment within the Lightning Network.  With the\ndetails of the invoice, the sender has all the data necessary to send a\npayment to the recipient. The amount in the payment request may be zero. In\nthat case it is required to set the amt field as well. If no payment request\nis specified, the following fields are required: dest, amt and payment_hash."
@@ -1298,7 +1600,6 @@
         },
         "allow_self_payment": {
           "type": "boolean",
-          "format": "boolean",
           "description": "If set, circular payments to self are permitted."
         },
         "dest_features": {
@@ -1315,8 +1616,16 @@
         },
         "no_inflight_updates": {
           "type": "boolean",
-          "format": "boolean",
           "description": "If set, only the final payment update is streamed back. Intermediate updates\nthat show which htlcs are still in flight are suppressed."
+        },
+        "max_shard_size_msat": {
+          "type": "string",
+          "format": "uint64",
+          "description": "The largest payment split that should be attempted when making a payment if\nsplitting is necessary. Setting this value will effectively cause lnd to\nsplit more aggressively, vs only when it thinks it needs to. Note that this\nvalue is in milli-satoshis."
+        },
+        "amp": {
+          "type": "boolean",
+          "description": "If set, an AMP-payment will be attempted."
         }
       }
     },
@@ -1348,45 +1657,69 @@
         }
       }
     },
-    "routerrpcSettleEvent": {
-      "type": "object"
-    },
-    "runtimeError": {
+    "routerrpcSetMissionControlConfigRequest": {
       "type": "object",
       "properties": {
-        "error": {
-          "type": "string"
+        "config": {
+          "$ref": "#/definitions/routerrpcMissionControlConfig",
+          "description": "The config to set for mission control. Note that all values *must* be set,\nbecause the full config will be applied."
+        }
+      }
+    },
+    "routerrpcSetMissionControlConfigResponse": {
+      "type": "object"
+    },
+    "routerrpcSettleEvent": {
+      "type": "object",
+      "properties": {
+        "preimage": {
+          "type": "string",
+          "format": "byte",
+          "description": "The revealed preimage."
+        }
+      }
+    },
+    "routerrpcUpdateChanStatusRequest": {
+      "type": "object",
+      "properties": {
+        "chan_point": {
+          "$ref": "#/definitions/lnrpcChannelPoint"
         },
+        "action": {
+          "$ref": "#/definitions/routerrpcChanStatusAction"
+        }
+      }
+    },
+    "routerrpcUpdateChanStatusResponse": {
+      "type": "object"
+    },
+    "routerrpcXImportMissionControlRequest": {
+      "type": "object",
+      "properties": {
+        "pairs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/routerrpcPairHistory"
+          },
+          "description": "Node pair-level mission control state to be imported."
+        },
+        "force": {
+          "type": "boolean",
+          "description": "Whether to force override MC pair history. Note that even with force\noverride the failure pair is imported before the success pair and both\nstill clamp existing failure/success amounts."
+        }
+      }
+    },
+    "routerrpcXImportMissionControlResponse": {
+      "type": "object"
+    },
+    "rpcStatus": {
+      "type": "object",
+      "properties": {
         "code": {
           "type": "integer",
           "format": "int32"
         },
         "message": {
-          "type": "string"
-        },
-        "details": {
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/protobufAny"
-          }
-        }
-      }
-    },
-    "runtimeStreamError": {
-      "type": "object",
-      "properties": {
-        "grpc_code": {
-          "type": "integer",
-          "format": "int32"
-        },
-        "http_code": {
-          "type": "integer",
-          "format": "int32"
-        },
-        "message": {
-          "type": "string"
-        },
-        "http_status": {
           "type": "string"
         },
         "details": {

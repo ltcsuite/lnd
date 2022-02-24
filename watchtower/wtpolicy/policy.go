@@ -4,11 +4,12 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/lnd/watchtower/blob"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 const (
@@ -120,6 +121,11 @@ func (p Policy) String() string {
 		p.SweepFeeRate)
 }
 
+// IsAnchorChannel returns true if the session policy requires anchor channels.
+func (p Policy) IsAnchorChannel() bool {
+	return p.TxPolicy.BlobType.IsAnchorChannel()
+}
+
 // Validate ensures that the policy satisfies some minimal correctness
 // constraints.
 func (p Policy) Validate() error {
@@ -160,10 +166,9 @@ func (p *Policy) ComputeAltruistOutput(totalAmt ltcutil.Amount,
 	sweepAmt := totalAmt - txFee
 
 	// TODO(conner): replace w/ configurable dust limit
-	dustLimit := lnwallet.DefaultDustLimit()
-
-	// Check that the created outputs won't be dusty.
-	if sweepAmt <= dustLimit {
+	// Check that the created outputs won't be dusty. The sweep pkscript is
+	// currently a p2wpkh, so we'll use that script's dust limit.
+	if sweepAmt < lnwallet.DustLimitForSize(input.P2WPKHSize) {
 		return 0, ErrCreatesDust
 	}
 
@@ -194,10 +199,9 @@ func (p *Policy) ComputeRewardOutputs(totalAmt ltcutil.Amount,
 	sweepAmt := totalAmt - rewardAmt - txFee
 
 	// TODO(conner): replace w/ configurable dust limit
-	dustLimit := lnwallet.DefaultDustLimit()
-
-	// Check that the created outputs won't be dusty.
-	if sweepAmt <= dustLimit {
+	// Check that the created outputs won't be dusty. The sweep pkscript is
+	// currently a p2wpkh, so we'll use that script's dust limit.
+	if sweepAmt < lnwallet.DustLimitForSize(input.P2WPKHSize) {
 		return 0, 0, ErrCreatesDust
 	}
 

@@ -7,8 +7,8 @@ import (
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/stretchr/testify/assert"
 )
 

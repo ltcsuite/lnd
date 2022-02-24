@@ -3,7 +3,7 @@ package channeldb
 import (
 	"fmt"
 
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/lntypes"
 )
 
@@ -174,6 +174,8 @@ func (w *WitnessCache) lookupWitness(wType WitnessType, witnessKey []byte) ([]by
 		copy(witness[:], dbWitness)
 
 		return nil
+	}, func() {
+		witness = nil
 	})
 	if err != nil {
 		return nil, err

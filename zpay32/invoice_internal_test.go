@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/ltcsuite/lnd/lnwire"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/chaincfg"
-	"github.com/ltcsuite/ltcutil"
-	"github.com/ltcsuite/ltcutil/bech32"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil/bech32"
 )
 
 // TestDecodeAmount ensures that the amount string in the hrp of the Invoice

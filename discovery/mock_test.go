@@ -8,7 +8,7 @@ import (
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/lnpeer"
 	"github.com/ltcsuite/lnd/lnwire"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/wire"
 )
 

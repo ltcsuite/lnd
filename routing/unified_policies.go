@@ -4,7 +4,7 @@ import (
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/routing/route"
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 // unifiedPolicies holds all unified policies for connections towards a node.
@@ -40,7 +40,7 @@ func newUnifiedPolicies(sourceNode, toNode route.Vertex,
 // addPolicy adds a single channel policy. Capacity may be zero if unknown
 // (light clients).
 func (u *unifiedPolicies) addPolicy(fromNode route.Vertex,
-	edge *channeldb.ChannelEdgePolicy, capacity ltcutil.Amount) {
+	edge *channeldb.CachedEdgePolicy, capacity ltcutil.Amount) {
 
 	localChan := fromNode == u.sourceNode
 
@@ -69,24 +69,18 @@ func (u *unifiedPolicies) addPolicy(fromNode route.Vertex,
 // addGraphPolicies adds all policies that are known for the toNode in the
 // graph.
 func (u *unifiedPolicies) addGraphPolicies(g routingGraph) error {
-	cb := func(edgeInfo *channeldb.ChannelEdgeInfo, _,
-		inEdge *channeldb.ChannelEdgePolicy) error {
-
+	cb := func(channel *channeldb.DirectedChannel) error {
 		// If there is no edge policy for this candidate node, skip.
 		// Note that we are searching backwards so this node would have
 		// come prior to the pivot node in the route.
-		if inEdge == nil {
+		if channel.InPolicy == nil {
 			return nil
 		}
 
-		// The node on the other end of this channel is the from node.
-		fromNode, err := edgeInfo.OtherNodeKeyBytes(u.toNode[:])
-		if err != nil {
-			return err
-		}
-
 		// Add this policy to the unified policies map.
-		u.addPolicy(fromNode, inEdge, edgeInfo.Capacity)
+		u.addPolicy(
+			channel.OtherNode, channel.InPolicy, channel.Capacity,
+		)
 
 		return nil
 	}
@@ -98,7 +92,7 @@ func (u *unifiedPolicies) addGraphPolicies(g routingGraph) error {
 // unifiedPolicyEdge is the individual channel data that is kept inside an
 // unifiedPolicy object.
 type unifiedPolicyEdge struct {
-	policy   *channeldb.ChannelEdgePolicy
+	policy   *channeldb.CachedEdgePolicy
 	capacity ltcutil.Amount
 }
 
@@ -139,7 +133,7 @@ type unifiedPolicy struct {
 // specific amount to send. It differentiates between local and network
 // channels.
 func (u *unifiedPolicy) getPolicy(amt lnwire.MilliSatoshi,
-	bandwidthHints map[uint64]lnwire.MilliSatoshi) *channeldb.ChannelEdgePolicy {
+	bandwidthHints bandwidthHints) *channeldb.CachedEdgePolicy {
 
 	if u.localChan {
 		return u.getPolicyLocal(amt, bandwidthHints)
@@ -151,10 +145,10 @@ func (u *unifiedPolicy) getPolicy(amt lnwire.MilliSatoshi,
 // getPolicyLocal returns the optimal policy to use for this local connection
 // given a specific amount to send.
 func (u *unifiedPolicy) getPolicyLocal(amt lnwire.MilliSatoshi,
-	bandwidthHints map[uint64]lnwire.MilliSatoshi) *channeldb.ChannelEdgePolicy {
+	bandwidthHints bandwidthHints) *channeldb.CachedEdgePolicy {
 
 	var (
-		bestPolicy   *channeldb.ChannelEdgePolicy
+		bestPolicy   *channeldb.CachedEdgePolicy
 		maxBandwidth lnwire.MilliSatoshi
 	)
 
@@ -175,7 +169,9 @@ func (u *unifiedPolicy) getPolicyLocal(amt lnwire.MilliSatoshi,
 		// TODO(joostjager): Possibly change to skipping this
 		// channel. The bandwidth hint is expected to be
 		// available.
-		bandwidth, ok := bandwidthHints[edge.policy.ChannelID]
+		bandwidth, ok := bandwidthHints.availableChanBandwidth(
+			edge.policy.ChannelID, amt,
+		)
 		if !ok {
 			bandwidth = lnwire.MaxMilliSatoshi
 		}
@@ -206,10 +202,10 @@ func (u *unifiedPolicy) getPolicyLocal(amt lnwire.MilliSatoshi,
 // a specific amount to send. The goal is to return a policy that maximizes the
 // probability of a successful forward in a non-strict forwarding context.
 func (u *unifiedPolicy) getPolicyNetwork(
-	amt lnwire.MilliSatoshi) *channeldb.ChannelEdgePolicy {
+	amt lnwire.MilliSatoshi) *channeldb.CachedEdgePolicy {
 
 	var (
-		bestPolicy  *channeldb.ChannelEdgePolicy
+		bestPolicy  *channeldb.CachedEdgePolicy
 		maxFee      lnwire.MilliSatoshi
 		maxTimelock uint16
 	)

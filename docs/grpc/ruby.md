@@ -14,43 +14,45 @@ the `lnd` proto file in Ruby before you can use it to communicate with `lnd`.
 
 Install gRPC rubygems:
 
-```
-$ gem install grpc
-$ gem install grpc-tools
+```shell
+⛰  gem install grpc
+⛰  gem install grpc-tools
 ```
 
 Clone the Google APIs repository:
 
-```
-$ git clone https://github.com/googleapis/googleapis.git
+```shell
+⛰  git clone https://github.com/googleapis/googleapis.git
 ```
 
-Fetch the `rpc.proto` file (or copy it from your local source directory):
+Fetch the `lightning.proto` file (or copy it from your local source directory):
 
-```
-$ curl -o rpc.proto -s https://raw.githubusercontent.com/ltcsuite/lnd/master/lnrpc/rpc.proto
+```shell
+⛰  curl -o lightning.proto -s https://raw.githubusercontent.com/ltcsuite/lnd/master/lnrpc/lightning.proto
 ```
 
 Compile the proto file:
 
-```
-$ grpc_tools_ruby_protoc --proto_path googleapis:. --ruby_out=. --grpc_out=. rpc.proto
+```shell
+⛰  grpc_tools_ruby_protoc --proto_path googleapis:. --ruby_out=. --grpc_out=. lightning.proto
 ```
 
 Two files will be generated in the current directory: 
 
-* `rpc_pb.rb`
-* `rpc_services_pb.rb`
+* `lightning_pb.rb`
+* `lightning_services_pb.rb`
 
 ### Examples
 
 #### Simple client to display wallet balance
 
-Every time you use the Ruby gRPC you need to require the `rpc_services_pb` file.
+Every time you use the Ruby gRPC you need to require the `lightning_services_pb` file.
 
 We assume that `lnd` runs on the default `localhost:10009`.
 
 We further assume you run `lnd` with `--no-macaroons`.
+
+Note that when an IP address is used to connect to the node (e.g. 192.168.1.21 instead of localhost) you need to add `--tlsextraip=192.168.1.21` to your `lnd` configuration and re-generate the certificate (delete tls.cert and tls.key and restart lnd).
 
 ```ruby
 #!/usr/bin/env ruby
@@ -58,7 +60,7 @@ We further assume you run `lnd` with `--no-macaroons`.
 $:.unshift(File.dirname(__FILE__))
 
 require 'grpc'
-require 'rpc_services_pb'
+require 'lightning_services_pb'
 
 # Due to updated ECDSA generated tls.cert we need to let gprc know that
 # we need to use that cipher suite otherwise there will be a handhsake
@@ -83,7 +85,7 @@ This will show the `total_balance` of the wallet.
 $:.unshift(File.dirname(__FILE__))
 
 require 'grpc'
-require 'rpc_services_pb'
+require 'lightning_services_pb'
 
 ENV['GRPC_SSL_CIPHER_SUITES'] = "HIGH+ECDSA"
 
@@ -98,8 +100,8 @@ end
 
 Now, create an invoice on your node:
 
-```bash
-$ lncli addinvoice --amt=590
+```shell
+⛰  lncli addinvoice --amt=590
 {
 	"r_hash": <R_HASH>,
 	"pay_req": <PAY_REQ>
@@ -108,8 +110,8 @@ $ lncli addinvoice --amt=590
 
 Next send a payment to it from another node:
 
-```
-$ lncli sendpayment --pay_req=<PAY_REQ>
+```shell
+⛰  lncli sendpayment --pay_req=<PAY_REQ>
 ```
 
 You should now see the details of the settled invoice appear.

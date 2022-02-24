@@ -1,7 +1,6 @@
 package chanfunding
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -9,11 +8,12 @@ import (
 
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/keychain"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil/psbt"
+	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
-	"github.com/ltcsuite/ltcutil/psbt"
 )
 
 // PsbtState is a type for the state of the PSBT intent state machine.
@@ -125,6 +125,11 @@ type PsbtIntent struct {
 	// Only witness data should be added after the verification process.
 	PendingPsbt *psbt.Packet
 
+	// FinalTX is the final, signed and ready to be published wire format
+	// transaction. This is only set after the PsbtFinalize step was
+	// completed successfully.
+	FinalTX *wire.MsgTx
+
 	// PsbtReady is an error channel the funding manager will listen for
 	// a signal about the PSBT being ready to continue the funding flow. In
 	// the normal, happy flow, this channel is only ever closed. If a
@@ -133,6 +138,11 @@ type PsbtIntent struct {
 	//
 	// NOTE: This channel must always be buffered.
 	PsbtReady chan error
+
+	// shouldPublish specifies if the intent assumes its assembler should
+	// publish the transaction once the channel funding has completed. If
+	// this is set to false then the finalize step can be skipped.
+	shouldPublish bool
 
 	// signalPsbtReady is a Once guard to make sure the PsbtReady channel is
 	// only closed exactly once.
@@ -203,7 +213,7 @@ func (i *PsbtIntent) FundingParams() (ltcutil.Address, int64, *psbt.Packet,
 // Verify makes sure the PSBT that is given to the intent has an output that
 // sends to the channel funding multisig address with the correct amount. A
 // simple check that at least a single input has been specified is performed.
-func (i *PsbtIntent) Verify(packet *psbt.Packet) error {
+func (i *PsbtIntent) Verify(packet *psbt.Packet, skipFinalize bool) error {
 	if packet == nil {
 		return fmt.Errorf("PSBT is nil")
 	}
@@ -221,7 +231,7 @@ func (i *PsbtIntent) Verify(packet *psbt.Packet) error {
 	outputSum := int64(0)
 	for _, out := range packet.UnsignedTx.TxOut {
 		outputSum += out.Value
-		if txOutsEqual(out, expectedOutput) {
+		if psbt.TxOutsEqual(out, expectedOutput) {
 			outputFound = true
 		}
 	}
@@ -236,7 +246,7 @@ func (i *PsbtIntent) Verify(packet *psbt.Packet) error {
 	if len(packet.UnsignedTx.TxIn) == 0 {
 		return fmt.Errorf("PSBT has no inputs")
 	}
-	sum, err := sumUtxoInputValues(packet)
+	sum, err := psbt.SumUtxoInputValues(packet)
 	if err != nil {
 		return fmt.Errorf("error determining input sum: %v", err)
 	}
@@ -245,7 +255,31 @@ func (i *PsbtIntent) Verify(packet *psbt.Packet) error {
 			"output amount sum")
 	}
 
+	// To avoid possible malleability, all inputs to a funding transaction
+	// must be SegWit spends.
+	err = verifyAllInputsSegWit(packet.UnsignedTx.TxIn, packet.Inputs)
+	if err != nil {
+		return fmt.Errorf("cannot use TX for channel funding, "+
+			"not all inputs are SegWit spends, risk of "+
+			"malleability: %v", err)
+	}
+
+	// In case we aren't going to publish any transaction, we now have
+	// everything we need and can skip the Finalize step.
 	i.PendingPsbt = packet
+	if !i.shouldPublish && skipFinalize {
+		i.FinalTX = packet.UnsignedTx
+		i.State = PsbtFinalized
+
+		// Signal the funding manager that it can now continue with its
+		// funding flow as the PSBT is now complete .
+		i.signalPsbtReady.Do(func() {
+			close(i.PsbtReady)
+		})
+
+		return nil
+	}
+
 	i.State = PsbtVerified
 	return nil
 }
@@ -270,12 +304,29 @@ func (i *PsbtIntent) Finalize(packet *psbt.Packet) error {
 	if err != nil {
 		return fmt.Errorf("error finalizing PSBT: %v", err)
 	}
-	_, err = psbt.Extract(packet)
+	rawTx, err := psbt.Extract(packet)
 	if err != nil {
 		return fmt.Errorf("unable to extract funding TX: %v", err)
 	}
 
-	// Do a basic check that this is still the same PSBT that we verified in
+	return i.FinalizeRawTX(rawTx)
+}
+
+// FinalizeRawTX makes sure the final raw transaction that is given to the
+// intent is fully valid and signed but still contains the same UTXOs and
+// outputs as the pending transaction we previously verified. If everything
+// checks out, the funding manager is informed that the channel can now be
+// opened and the funding transaction be broadcast.
+func (i *PsbtIntent) FinalizeRawTX(rawTx *wire.MsgTx) error {
+	if rawTx == nil {
+		return fmt.Errorf("raw transaction is nil")
+	}
+	if i.State != PsbtVerified {
+		return fmt.Errorf("invalid state. got %v expected %v", i.State,
+			PsbtVerified)
+	}
+
+	// Do a basic check that this is still the same TX that we verified in
 	// the previous step. This is to protect the user from unwanted
 	// modifications. We only check the outputs and previous outpoints of
 	// the inputs of the wire transaction because the fields in the PSBT
@@ -283,23 +334,31 @@ func (i *PsbtIntent) Finalize(packet *psbt.Packet) error {
 	if i.PendingPsbt == nil {
 		return fmt.Errorf("PSBT was not verified first")
 	}
-	err = verifyOutputsEqual(
-		packet.UnsignedTx.TxOut, i.PendingPsbt.UnsignedTx.TxOut,
+	err := psbt.VerifyOutputsEqual(
+		rawTx.TxOut, i.PendingPsbt.UnsignedTx.TxOut,
 	)
 	if err != nil {
 		return fmt.Errorf("outputs differ from verified PSBT: %v", err)
 	}
-	err = verifyInputPrevOutpointsEqual(
-		packet.UnsignedTx.TxIn, i.PendingPsbt.UnsignedTx.TxIn,
+	err = psbt.VerifyInputPrevOutpointsEqual(
+		rawTx.TxIn, i.PendingPsbt.UnsignedTx.TxIn,
 	)
 	if err != nil {
 		return fmt.Errorf("inputs differ from verified PSBT: %v", err)
 	}
 
-	// As far as we can tell, this PSBT is ok to be used as a funding
+	// We also check that we have a signed TX. This is only necessary if the
+	// FinalizeRawTX is called directly with a wire format TX instead of
+	// extracting the TX from a PSBT.
+	err = verifyInputsSigned(rawTx.TxIn)
+	if err != nil {
+		return fmt.Errorf("inputs not signed: %v", err)
+	}
+
+	// As far as we can tell, this TX is ok to be used as a funding
 	// transaction.
-	i.PendingPsbt = packet
 	i.State = PsbtFinalized
+	i.FinalTX = rawTx
 
 	// Signal the funding manager that it can now finally continue with its
 	// funding flow as the PSBT is now ready to be converted into a real
@@ -319,32 +378,22 @@ func (i *PsbtIntent) CompileFundingTx() (*wire.MsgTx, error) {
 			i.State, PsbtFinalized)
 	}
 
-	// Make sure the PSBT can be finalized and extracted.
-	err := psbt.MaybeFinalizeAll(i.PendingPsbt)
-	if err != nil {
-		return nil, fmt.Errorf("error finalizing PSBT: %v", err)
-	}
-	fundingTx, err := psbt.Extract(i.PendingPsbt)
-	if err != nil {
-		return nil, fmt.Errorf("unable to extract funding TX: %v", err)
-	}
-
 	// Identify our funding outpoint now that we know everything's ready.
 	_, txOut, err := i.FundingOutput()
 	if err != nil {
 		return nil, fmt.Errorf("cannot get funding output: %v", err)
 	}
-	ok, idx := input.FindScriptOutputIndex(fundingTx, txOut.PkScript)
+	ok, idx := input.FindScriptOutputIndex(i.FinalTX, txOut.PkScript)
 	if !ok {
 		return nil, fmt.Errorf("funding output not found in PSBT")
 	}
 	i.chanPoint = &wire.OutPoint{
-		Hash:  fundingTx.TxHash(),
+		Hash:  i.FinalTX.TxHash(),
 		Index: idx,
 	}
 	i.State = PsbtFundingTxCompiled
 
-	return fundingTx, nil
+	return i.FinalTX, nil
 }
 
 // RemoteCanceled informs the listener of the PSBT ready channel that the
@@ -371,6 +420,59 @@ func (i *PsbtIntent) Cancel() {
 		i.State = PsbtInitiatorCanceled
 	})
 	i.ShimIntent.Cancel()
+}
+
+// Inputs returns all inputs to the final funding transaction that we know
+// about. These are only known after the PSBT has been verified.
+func (i *PsbtIntent) Inputs() []wire.OutPoint {
+	var inputs []wire.OutPoint
+
+	switch i.State {
+
+	// We return the inputs to the pending psbt.
+	case PsbtVerified:
+		for _, in := range i.PendingPsbt.UnsignedTx.TxIn {
+			inputs = append(inputs, in.PreviousOutPoint)
+		}
+
+	// We return the inputs to the final funding tx.
+	case PsbtFinalized, PsbtFundingTxCompiled:
+		for _, in := range i.FinalTX.TxIn {
+			inputs = append(inputs, in.PreviousOutPoint)
+		}
+
+	// In all other states we cannot know the inputs to the funding tx, and
+	// return an empty list.
+	default:
+	}
+
+	return inputs
+}
+
+// Outputs returns all outputs of the final funding transaction that we
+// know about. These are only known after the PSBT has been verified.
+func (i *PsbtIntent) Outputs() []*wire.TxOut {
+	switch i.State {
+
+	// We return the outputs of the pending psbt.
+	case PsbtVerified:
+		return i.PendingPsbt.UnsignedTx.TxOut
+
+	// We return the outputs of the final funding tx.
+	case PsbtFinalized, PsbtFundingTxCompiled:
+		return i.FinalTX.TxOut
+
+	// In all other states we cannot know the final outputs, and return an
+	// empty list.
+	default:
+		return nil
+	}
+}
+
+// ShouldPublishFundingTX returns true if the intent assumes that its assembler
+// should publish the funding TX once the funding negotiation is complete.
+func (i *PsbtIntent) ShouldPublishFundingTX() bool {
+	return i.shouldPublish
 }
 
 // PsbtAssembler is a type of chanfunding.Assembler wherein the funding
@@ -424,10 +526,11 @@ func (p *PsbtAssembler) ProvisionChannel(req *Request) (Intent, error) {
 		ShimIntent: ShimIntent{
 			localFundingAmt: p.fundingAmt,
 		},
-		State:     PsbtShimRegistered,
-		BasePsbt:  p.basePsbt,
-		PsbtReady: make(chan error, 1),
-		netParams: p.netParams,
+		State:         PsbtShimRegistered,
+		BasePsbt:      p.basePsbt,
+		PsbtReady:     make(chan error, 1),
+		shouldPublish: p.shouldPublish,
+		netParams:     p.netParams,
 	}
 
 	// A simple sanity check to ensure the provisioned request matches the
@@ -454,78 +557,69 @@ func (p *PsbtAssembler) ShouldPublishFundingTx() bool {
 // ConditionalPublishAssembler interface.
 var _ ConditionalPublishAssembler = (*PsbtAssembler)(nil)
 
-// sumUtxoInputValues tries to extract the sum of all inputs specified in the
-// UTXO fields of the PSBT. An error is returned if an input is specified that
-// does not contain any UTXO information.
-func sumUtxoInputValues(packet *psbt.Packet) (int64, error) {
-	// We take the TX ins of the unsigned TX as the truth for how many
-	// inputs there should be, as the fields in the extra data part of the
-	// PSBT can be empty.
-	if len(packet.UnsignedTx.TxIn) != len(packet.Inputs) {
-		return 0, fmt.Errorf("TX input length doesn't match PSBT " +
-			"input length")
+// verifyInputsSigned verifies that the given list of inputs is non-empty and
+// that all the inputs either contain a script signature or a witness stack.
+func verifyInputsSigned(ins []*wire.TxIn) error {
+	if len(ins) == 0 {
+		return fmt.Errorf("no inputs in transaction")
 	}
-	inputSum := int64(0)
-	for idx, in := range packet.Inputs {
+	for idx, in := range ins {
+		if len(in.SignatureScript) == 0 && len(in.Witness) == 0 {
+			return fmt.Errorf("input %d has no signature data "+
+				"attached", idx)
+		}
+	}
+	return nil
+}
+
+// verifyAllInputsSegWit makes sure all inputs to a transaction are SegWit
+// spends. This is a bit tricky because the PSBT spec doesn't require the
+// WitnessUtxo field to be set. Therefore if only a NonWitnessUtxo is given, we
+// need to look at it and make sure it's either a witness pkScript or a nested
+// SegWit spend.
+func verifyAllInputsSegWit(txIns []*wire.TxIn, ins []psbt.PInput) error {
+	for idx, in := range ins {
 		switch {
+		// The optimal case is that the witness UTXO is set explicitly.
 		case in.WitnessUtxo != nil:
-			// Witness UTXOs only need to reference the TxOut.
-			inputSum += in.WitnessUtxo.Value
 
+		// Only the non witness UTXO field is set, we need to inspect it
+		// to make sure it's not P2PKH or bare P2SH.
 		case in.NonWitnessUtxo != nil:
-			// Non-witness UTXOs reference to the whole transaction
-			// the UTXO resides in.
-			utxOuts := in.NonWitnessUtxo.TxOut
-			txIn := packet.UnsignedTx.TxIn[idx]
-			inputSum += utxOuts[txIn.PreviousOutPoint.Index].Value
+			utxo := in.NonWitnessUtxo
+			txIn := txIns[idx]
+			txOut := utxo.TxOut[txIn.PreviousOutPoint.Index]
 
+			if !isSegWitScript(txOut.PkScript) &&
+				!isSegWitScript(in.RedeemScript) {
+
+				return fmt.Errorf("input %d is non-SegWit "+
+					"spend or missing redeem script", idx)
+			}
+
+		// This should've already been caught by a previous check but we
+		// keep it in for completeness' sake.
 		default:
-			return 0, fmt.Errorf("input %d has no UTXO information",
+			return fmt.Errorf("input %d has no UTXO information",
 				idx)
 		}
 	}
-	return inputSum, nil
-}
 
-// txOutsEqual returns true if two transaction outputs are equal.
-func txOutsEqual(out1, out2 *wire.TxOut) bool {
-	if out1 == nil || out2 == nil {
-		return out1 == out2
-	}
-	return out1.Value == out2.Value &&
-		bytes.Equal(out1.PkScript, out2.PkScript)
-}
-
-// verifyOutputsEqual verifies that the two slices of transaction outputs are
-// deep equal to each other. We do the length check and manual loop to provide
-// better error messages to the user than just returning "not equal".
-func verifyOutputsEqual(outs1, outs2 []*wire.TxOut) error {
-	if len(outs1) != len(outs2) {
-		return fmt.Errorf("number of outputs are different")
-	}
-	for idx, out := range outs1 {
-		// There is a byte slice in the output so we can't use the
-		// equality operator.
-		if !txOutsEqual(out, outs2[idx]) {
-			return fmt.Errorf("output %d is different", idx)
-		}
-	}
 	return nil
 }
 
-// verifyInputPrevOutpointsEqual verifies that the previous outpoints of the
-// two slices of transaction inputs are deep equal to each other. We do the
-// length check and manual loop to provide better error messages to the user
-// than just returning "not equal".
-func verifyInputPrevOutpointsEqual(ins1, ins2 []*wire.TxIn) error {
-	if len(ins1) != len(ins2) {
-		return fmt.Errorf("number of inputs are different")
+// isSegWitScript returns true if the given pkScript can be parsed successfully
+// as a SegWit v0 spend.
+func isSegWitScript(pkScript []byte) bool {
+	if len(pkScript) == 0 {
+		return false
 	}
-	for idx, in := range ins1 {
-		if in.PreviousOutPoint != ins2[idx].PreviousOutPoint {
-			return fmt.Errorf("previous outpoint of input %d is "+
-				"different", idx)
-		}
+
+	parsed, err := txscript.ParsePkScript(pkScript)
+	if err != nil {
+		return false
 	}
-	return nil
+
+	return parsed.Class() == txscript.WitnessV0PubKeyHashTy ||
+		parsed.Class() == txscript.WitnessV0ScriptHashTy
 }

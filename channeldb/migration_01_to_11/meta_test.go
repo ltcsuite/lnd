@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/go-errors/errors"
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/kvdb"
 )
 
 // applyMigration is a helper test function that encapsulates the general steps
@@ -51,7 +51,7 @@ func applyMigration(t *testing.T, beforeMigration, afterMigration func(d *DB),
 	// Apply migration.
 	err = kvdb.Update(cdb, func(tx kvdb.RwTx) error {
 		return migrationFunc(tx)
-	})
+	}, func() {})
 	if err != nil {
 		log.Error(err)
 	}

@@ -22,11 +22,11 @@ import (
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/shachain"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/stretchr/testify/require"
 )
 
@@ -511,15 +511,15 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	// Each side currently has 1 BTC within the channel, with a total
 	// channel capacity of 2BTC.
 	aliceKeyPriv, aliceKeyPub := btcec.PrivKeyFromBytes(
-		btcec.S256(), testWalletPrivKey,
+		testWalletPrivKey,
 	)
 	bobKeyPriv, bobKeyPub := btcec.PrivKeyFromBytes(
-		btcec.S256(), bobsPrivKey,
+		bobsPrivKey,
 	)
 
 	revocationPreimage := testHdSeed.CloneBytes()
 	commitSecret, commitPoint := btcec.PrivKeyFromBytes(
-		btcec.S256(), revocationPreimage,
+		revocationPreimage,
 	)
 	revokePubKey := input.DeriveRevocationPubkey(bobKeyPub, commitPoint)
 
@@ -542,16 +542,19 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 		Privkeys: []*btcec.PrivateKey{aliceKeyPriv},
 	}
 
+	// Calculate the dust limit we'll use for the test.
+	dustLimit := DustLimitForSize(input.UnknownWitnessSize)
+
 	aliceChanCfg := &channeldb.ChannelConfig{
 		ChannelConstraints: channeldb.ChannelConstraints{
-			DustLimit: DefaultDustLimit(),
+			DustLimit: dustLimit,
 			CsvDelay:  csvTimeout,
 		},
 	}
 
 	bobChanCfg := &channeldb.ChannelConfig{
 		ChannelConstraints: channeldb.ChannelConstraints{
-			DustLimit: DefaultDustLimit(),
+			DustLimit: dustLimit,
 			CsvDelay:  csvTimeout,
 		},
 	}
@@ -570,7 +573,7 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	}
 	commitmentTx, err := CreateCommitTx(
 		channelType, *fakeFundingTxIn, keyRing, aliceChanCfg,
-		bobChanCfg, channelBalance, channelBalance, 0,
+		bobChanCfg, channelBalance, channelBalance, 0, true, 0,
 	)
 	if err != nil {
 		t.Fatalf("unable to create commitment transaction: %v", nil)
@@ -780,7 +783,7 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 		&remoteDummy1, &remoteDummy2, &localDummy1, &localDummy2,
 	}
 	for _, keyRef := range generateKeys {
-		privkey, err := btcec.NewPrivateKey(btcec.S256())
+		privkey, err := btcec.NewPrivateKey()
 		require.NoError(t, err)
 		*keyRef = privkey
 	}
@@ -886,7 +889,7 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 	remoteCommitTx, localCommitTx, err := CreateCommitmentTxns(
 		remoteBalance, localBalance-commitFee,
 		&remoteCfg, &localCfg, remoteCommitPoint,
-		localCommitPoint, *fundingTxIn, chanType,
+		localCommitPoint, *fundingTxIn, chanType, true, 0,
 	)
 	require.NoError(t, err)
 
@@ -937,7 +940,7 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 		RevocationStore:         shachain.NewRevocationStore(),
 		LocalCommitment:         remoteCommit,
 		RemoteCommitment:        remoteCommit,
-		Db:                      dbRemote,
+		Db:                      dbRemote.ChannelStateDB(),
 		Packager:                channeldb.NewChannelPackager(shortChanID),
 		FundingTxn:              tc.fundingTx.MsgTx(),
 	}
@@ -955,7 +958,7 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 		RevocationStore:         shachain.NewRevocationStore(),
 		LocalCommitment:         localCommit,
 		RemoteCommitment:        localCommit,
-		Db:                      dbLocal,
+		Db:                      dbLocal.ChannelStateDB(),
 		Packager:                channeldb.NewChannelPackager(shortChanID),
 		FundingTxn:              tc.fundingTx.MsgTx(),
 	}

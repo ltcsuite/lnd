@@ -6,13 +6,13 @@ import (
 	"io"
 	"net"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
+	lnwire "github.com/ltcsuite/lnd/channeldb/migration/lnwire21"
 	"github.com/ltcsuite/lnd/keychain"
-	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/shachain"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // writeOutpoint writes an outpoint to the passed writer using the minimal
@@ -324,7 +324,7 @@ func ReadElement(r io.Reader, element interface{}) error {
 			return err
 		}
 
-		priv, _ := btcec.PrivKeyFromBytes(btcec.S256(), b[:])
+		priv, _ := btcec.PrivKeyFromBytes(b[:])
 		*e = priv
 
 	case **btcec.PublicKey:
@@ -333,7 +333,7 @@ func ReadElement(r io.Reader, element interface{}) error {
 			return err
 		}
 
-		pubKey, err := btcec.ParsePubKey(b[:], btcec.S256())
+		pubKey, err := btcec.ParsePubKey(b[:])
 		if err != nil {
 			return err
 		}

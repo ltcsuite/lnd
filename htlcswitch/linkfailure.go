@@ -5,6 +5,9 @@ import "github.com/go-errors/errors"
 var (
 	// ErrLinkShuttingDown signals that the link is shutting down.
 	ErrLinkShuttingDown = errors.New("link shutting down")
+
+	// ErrLinkFailedShutdown signals that a requested shutdown failed.
+	ErrLinkFailedShutdown = errors.New("link failed to shutdown")
 )
 
 // errorCode encodes the possible types of errors that will make us fail the
@@ -56,6 +59,10 @@ type LinkFailureError struct {
 	// ForceClose indicates whether we should force close the channel
 	// because of this error.
 	ForceClose bool
+
+	// PermanentFailure indicates whether this failure is permanent, and
+	// the channel should not be attempted loaded again.
+	PermanentFailure bool
 
 	// SendData is a byte slice that will be sent to the peer. If nil a
 	// generic error will be sent.

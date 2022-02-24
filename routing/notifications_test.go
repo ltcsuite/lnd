@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"bytes"
 	"fmt"
 	"image/color"
 	"net"
@@ -10,17 +11,19 @@ import (
 
 	prand "math/rand"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/go-errors/errors"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwallet/btcwallet"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/routing/chainview"
 	"github.com/ltcsuite/lnd/routing/route"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -39,17 +42,19 @@ var (
 
 	testTime = time.Date(2018, time.January, 9, 14, 00, 00, 0, time.UTC)
 
-	priv1, _    = btcec.NewPrivateKey(btcec.S256())
+	priv1, _    = btcec.NewPrivateKey()
 	bitcoinKey1 = priv1.PubKey()
 
-	priv2, _    = btcec.NewPrivateKey(btcec.S256())
+	priv2, _    = btcec.NewPrivateKey()
 	bitcoinKey2 = priv2.PubKey()
+
+	timeout = time.Second * 5
 )
 
 func createTestNode() (*channeldb.LightningNode, error) {
 	updateTime := prand.Int63()
 
-	priv, err := btcec.NewPrivateKey(btcec.S256())
+	priv, err := btcec.NewPrivateKey()
 	if err != nil {
 		return nil, errors.Errorf("unable create private key: %v", err)
 	}
@@ -119,8 +124,9 @@ func createChannelEdge(ctx *testCtx, bitcoinKey1, bitcoinKey2 []byte,
 }
 
 type mockChain struct {
-	blocks     map[chainhash.Hash]*wire.MsgBlock
-	blockIndex map[uint32]chainhash.Hash
+	blocks           map[chainhash.Hash]*wire.MsgBlock
+	blockIndex       map[uint32]chainhash.Hash
+	blockHeightIndex map[chainhash.Hash]uint32
 
 	utxos map[wire.OutPoint]wire.TxOut
 
@@ -135,10 +141,11 @@ var _ lnwallet.BlockChainIO = (*mockChain)(nil)
 
 func newMockChain(currentHeight uint32) *mockChain {
 	return &mockChain{
-		bestHeight: int32(currentHeight),
-		blocks:     make(map[chainhash.Hash]*wire.MsgBlock),
-		utxos:      make(map[wire.OutPoint]wire.TxOut),
-		blockIndex: make(map[uint32]chainhash.Hash),
+		bestHeight:       int32(currentHeight),
+		blocks:           make(map[chainhash.Hash]*wire.MsgBlock),
+		utxos:            make(map[wire.OutPoint]wire.TxOut),
+		blockIndex:       make(map[uint32]chainhash.Hash),
+		blockHeightIndex: make(map[chainhash.Hash]uint32),
 	}
 }
 
@@ -168,8 +175,8 @@ func (m *mockChain) GetBlockHash(blockHeight int64) (*chainhash.Hash, error) {
 
 	hash, ok := m.blockIndex[uint32(blockHeight)]
 	if !ok {
-		return nil, fmt.Errorf("can't find block hash, for "+
-			"height %v", blockHeight)
+		return nil, fmt.Errorf("block number out of range: %v",
+			blockHeight)
 	}
 
 	return &hash, nil
@@ -180,6 +187,13 @@ func (m *mockChain) addUtxo(op wire.OutPoint, out *wire.TxOut) {
 	m.utxos[op] = *out
 	m.Unlock()
 }
+
+func (m *mockChain) delUtxo(op wire.OutPoint) {
+	m.Lock()
+	delete(m.utxos, op)
+	m.Unlock()
+}
+
 func (m *mockChain) GetUtxo(op *wire.OutPoint, _ []byte, _ uint32,
 	_ <-chan struct{}) (*wire.TxOut, error) {
 	m.RLock()
@@ -187,7 +201,7 @@ func (m *mockChain) GetUtxo(op *wire.OutPoint, _ []byte, _ uint32,
 
 	utxo, ok := m.utxos[*op]
 	if !ok {
-		return nil, fmt.Errorf("utxo not found")
+		return nil, btcwallet.ErrOutputSpent
 	}
 
 	return &utxo, nil
@@ -199,8 +213,10 @@ func (m *mockChain) addBlock(block *wire.MsgBlock, height uint32, nonce uint32) 
 	hash := block.Header.BlockHash()
 	m.blocks[hash] = block
 	m.blockIndex[height] = hash
+	m.blockHeightIndex[hash] = height
 	m.Unlock()
 }
+
 func (m *mockChain) GetBlock(blockHash *chainhash.Hash) (*wire.MsgBlock, error) {
 	m.RLock()
 	defer m.RUnlock()
@@ -216,8 +232,10 @@ func (m *mockChain) GetBlock(blockHash *chainhash.Hash) (*wire.MsgBlock, error) 
 type mockChainView struct {
 	sync.RWMutex
 
-	newBlocks   chan *chainview.FilteredBlock
-	staleBlocks chan *chainview.FilteredBlock
+	newBlocks           chan *chainview.FilteredBlock
+	staleBlocks         chan *chainview.FilteredBlock
+	notifyBlockAck      chan struct{}
+	notifyStaleBlockAck chan struct{}
 
 	chain lnwallet.BlockChainIO
 
@@ -259,7 +277,7 @@ func (m *mockChainView) UpdateFilter(ops []channeldb.EdgePoint, updateHeight uin
 }
 
 func (m *mockChainView) notifyBlock(hash chainhash.Hash, height uint32,
-	txns []*wire.MsgTx) {
+	txns []*wire.MsgTx, t *testing.T) {
 
 	m.RLock()
 	defer m.RUnlock()
@@ -273,10 +291,23 @@ func (m *mockChainView) notifyBlock(hash chainhash.Hash, height uint32,
 	case <-m.quit:
 		return
 	}
+
+	// Do not ack the block if our notify channel is nil.
+	if m.notifyBlockAck == nil {
+		return
+	}
+
+	select {
+	case m.notifyBlockAck <- struct{}{}:
+	case <-time.After(timeout):
+		t.Fatal("expected block to be delivered")
+	case <-m.quit:
+		return
+	}
 }
 
 func (m *mockChainView) notifyStaleBlock(hash chainhash.Hash, height uint32,
-	txns []*wire.MsgTx) {
+	txns []*wire.MsgTx, t *testing.T) {
 
 	m.RLock()
 	defer m.RUnlock()
@@ -287,6 +318,19 @@ func (m *mockChainView) notifyStaleBlock(hash chainhash.Hash, height uint32,
 		Height:       height,
 		Transactions: txns,
 	}:
+	case <-m.quit:
+		return
+	}
+
+	// Do not ack the block if our notify channel is nil.
+	if m.notifyStaleBlockAck == nil {
+		return
+	}
+
+	select {
+	case m.notifyStaleBlockAck <- struct{}{}:
+	case <-time.After(timeout):
+		t.Fatal("expected stale block to be delivered")
 	case <-m.quit:
 		return
 	}
@@ -307,7 +351,14 @@ func (m *mockChainView) FilterBlock(blockHash *chainhash.Hash) (*chainview.Filte
 		return nil, err
 	}
 
-	filteredBlock := &chainview.FilteredBlock{}
+	chain := m.chain.(*mockChain)
+
+	chain.Lock()
+	filteredBlock := &chainview.FilteredBlock{
+		Hash:   *blockHash,
+		Height: chain.blockHeightIndex[*blockHash],
+	}
+	chain.Unlock()
 	for _, tx := range block.Transactions {
 		for _, txIn := range tx.TxIn {
 			prevOp := txIn.PreviousOutPoint
@@ -342,11 +393,8 @@ func (m *mockChainView) Stop() error {
 func TestEdgeUpdateNotification(t *testing.T) {
 	t.Parallel()
 
-	ctx, cleanUp, err := createTestCtxSingleNode(0)
+	ctx, cleanUp := createTestCtxSingleNode(t, 0)
 	defer cleanUp()
-	if err != nil {
-		t.Fatalf("unable to create router: %v", err)
-	}
 
 	// First we'll create the utxo for the channel to be "closed"
 	const chanValue = 10000
@@ -536,11 +584,8 @@ func TestNodeUpdateNotification(t *testing.T) {
 	t.Parallel()
 
 	const startingBlockHeight = 101
-	ctx, cleanUp, err := createTestCtxSingleNode(startingBlockHeight)
+	ctx, cleanUp := createTestCtxSingleNode(t, startingBlockHeight)
 	defer cleanUp()
-	if err != nil {
-		t.Fatalf("unable to create router: %v", err)
-	}
 
 	// We only accept node announcements from nodes having a known channel,
 	// so create one now.
@@ -571,6 +616,9 @@ func TestNodeUpdateNotification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unable to create test node: %v", err)
 	}
+
+	testFeaturesBuf := new(bytes.Buffer)
+	require.NoError(t, testFeatures.Encode(testFeaturesBuf))
 
 	edge := &channeldb.ChannelEdgeInfo{
 		ChannelID:     chanID.ToUint64(),
@@ -623,6 +671,14 @@ func TestNodeUpdateNotification(t *testing.T) {
 				"got %x", nodeKey.SerializeCompressed(),
 				nodeUpdate.IdentityKey.SerializeCompressed())
 		}
+
+		featuresBuf := new(bytes.Buffer)
+		require.NoError(t, nodeUpdate.Features.Encode(featuresBuf))
+
+		require.Equal(
+			t, testFeaturesBuf.Bytes(), featuresBuf.Bytes(),
+		)
+
 		if nodeUpdate.Alias != ann.Alias {
 			t.Fatalf("node alias doesn't match: expected %v, got %v",
 				ann.Alias, nodeUpdate.Alias)
@@ -718,11 +774,8 @@ func TestNotificationCancellation(t *testing.T) {
 	t.Parallel()
 
 	const startingBlockHeight = 101
-	ctx, cleanUp, err := createTestCtxSingleNode(startingBlockHeight)
+	ctx, cleanUp := createTestCtxSingleNode(t, startingBlockHeight)
 	defer cleanUp()
-	if err != nil {
-		t.Fatalf("unable to create router: %v", err)
-	}
 
 	// Create a new client to receive notifications.
 	ntfnClient, err := ctx.router.SubscribeTopology()
@@ -810,11 +863,8 @@ func TestChannelCloseNotification(t *testing.T) {
 	t.Parallel()
 
 	const startingBlockHeight = 101
-	ctx, cleanUp, err := createTestCtxSingleNode(startingBlockHeight)
+	ctx, cleanUp := createTestCtxSingleNode(t, startingBlockHeight)
 	defer cleanUp()
-	if err != nil {
-		t.Fatalf("unable to create router: %v", err)
-	}
 
 	// First we'll create the utxo for the channel to be "closed"
 	const chanValue = 10000
@@ -886,7 +936,7 @@ func TestChannelCloseNotification(t *testing.T) {
 	}
 	ctx.chain.addBlock(newBlock, blockHeight, blockHeight)
 	ctx.chainView.notifyBlock(newBlock.Header.BlockHash(), blockHeight,
-		newBlock.Transactions)
+		newBlock.Transactions, t)
 
 	// The notification registered above should be sent, if not we'll time
 	// out and mark the test as failed.

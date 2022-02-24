@@ -7,11 +7,10 @@ import (
 
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/input"
-	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/sweep"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 )
 
 // anchorResolver is a resolver that will attempt to sweep our anchor output.
@@ -86,41 +85,36 @@ func (c *anchorResolver) Resolve() (ContractResolver, error) {
 	// situation. We don't want to force sweep anymore, because the anchor
 	// lost its special purpose to get the commitment confirmed. It is just
 	// an output that we want to sweep only if it is economical to do so.
+	//
+	// An exclusive group is not necessary anymore, because we know that
+	// this is the only anchor that can be swept.
+	//
+	// We also clear the parent tx information for cpfp, because the
+	// commitment tx is confirmed.
+	//
+	// After a restart or when the remote force closes, the sweeper is not
+	// yet aware of the anchor. In that case, it will be added as new input
+	// to the sweeper.
 	relayFeeRate := c.Sweeper.RelayFeePerKW()
 
-	resultChan, err := c.Sweeper.UpdateParams(
-		c.anchor,
-		sweep.ParamsUpdate{
+	anchorInput := input.MakeBaseInput(
+		&c.anchor,
+		input.CommitmentAnchor,
+		&c.anchorSignDescriptor,
+		c.broadcastHeight,
+		nil,
+	)
+
+	resultChan, err := c.Sweeper.SweepInput(
+		&anchorInput,
+		sweep.Params{
 			Fee: sweep.FeePreference{
 				FeeRate: relayFeeRate,
 			},
-			Force: false,
 		},
 	)
-
-	// After a restart or when the remote force closes, the sweeper is not
-	// yet aware of the anchor. In that case, offer it as a new input to the
-	// sweeper. An exclusive group is not necessary anymore, because we know
-	// that this is the only anchor that can be swept.
-	if err == lnwallet.ErrNotMine {
-		anchorInput := input.MakeBaseInput(
-			&c.anchor,
-			input.CommitmentAnchor,
-			&c.anchorSignDescriptor,
-			c.broadcastHeight,
-		)
-
-		resultChan, err = c.Sweeper.SweepInput(
-			&anchorInput,
-			sweep.Params{
-				Fee: sweep.FeePreference{
-					FeeRate: relayFeeRate,
-				},
-			},
-		)
-		if err != nil {
-			return nil, err
-		}
+	if err != nil {
+		return nil, err
 	}
 
 	var (
@@ -196,6 +190,13 @@ func (c *anchorResolver) Stop() {
 // NOTE: Part of the ContractResolver interface.
 func (c *anchorResolver) IsResolved() bool {
 	return c.resolved
+}
+
+// SupplementState allows the user of a ContractResolver to supplement it with
+// state required for the proper resolution of a contract.
+//
+// NOTE: Part of the ContractResolver interface.
+func (c *anchorResolver) SupplementState(_ *channeldb.OpenChannel) {
 }
 
 // report returns a report on the resolution state of the contract.

@@ -1,3 +1,4 @@
+//go:build walletrpc
 // +build walletrpc
 
 package walletrpc
@@ -9,6 +10,13 @@ import (
 	"github.com/ltcsuite/lnd/macaroons"
 	"github.com/ltcsuite/lnd/sweep"
 	"github.com/ltcsuite/ltcd/chaincfg"
+)
+
+const (
+	// SubServerName is the name of the sub rpc server. We'll use this name
+	// to register ourselves, and we also require that the main
+	// SubServerConfigDispatcher instance recognize as the name of our
+	SubServerName = "WalletKitRPC"
 )
 
 // Config is the primary configuration struct for the WalletKit RPC server. It

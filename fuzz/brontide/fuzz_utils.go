@@ -1,3 +1,4 @@
+//go:build gofuzz
 // +build gofuzz
 
 package brontidefuzz
@@ -8,7 +9,8 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/brontide"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
 var (
@@ -35,7 +37,7 @@ var (
 			return nil, err
 		}
 
-		priv, _ := btcec.PrivKeyFromBytes(btcec.S256(), eBytes)
+		priv, _ := btcec.PrivKeyFromBytes(eBytes)
 		return priv, nil
 	})
 
@@ -48,7 +50,7 @@ var (
 			return nil, err
 		}
 
-		priv, _ := btcec.PrivKeyFromBytes(btcec.S256(), eBytes)
+		priv, _ := btcec.PrivKeyFromBytes(eBytes)
 		return priv, nil
 	})
 )
@@ -97,12 +99,6 @@ func handshake(initiator, responder *brontide.Machine) error {
 // nilAndPanic first nils the initiator and responder's Curve fields and then
 // panics.
 func nilAndPanic(initiator, responder *brontide.Machine, err error) {
-	if initiator != nil {
-		initiator.SetCurveToNil()
-	}
-	if responder != nil {
-		responder.SetCurveToNil()
-	}
 	panic(fmt.Errorf("error: %v, initiator: %v, responder: %v", err,
 		spew.Sdump(initiator), spew.Sdump(responder)))
 }
@@ -110,12 +106,15 @@ func nilAndPanic(initiator, responder *brontide.Machine, err error) {
 // getBrontideMachines returns two brontide machines that use random keys
 // everywhere.
 func getBrontideMachines() (*brontide.Machine, *brontide.Machine) {
-	initPriv, _ := btcec.NewPrivateKey(btcec.S256())
-	respPriv, _ := btcec.NewPrivateKey(btcec.S256())
+	initPriv, _ := btcec.NewPrivateKey()
+	respPriv, _ := btcec.NewPrivateKey()
 	respPub := (*btcec.PublicKey)(&respPriv.PublicKey)
 
-	initiator := brontide.NewBrontideMachine(true, initPriv, respPub)
-	responder := brontide.NewBrontideMachine(false, respPriv, nil)
+	initPrivECDH := &keychain.PrivKeyECDH{PrivKey: initPriv}
+	respPrivECDH := &keychain.PrivKeyECDH{PrivKey: respPriv}
+
+	initiator := brontide.NewBrontideMachine(true, initPrivECDH, respPub)
+	responder := brontide.NewBrontideMachine(false, respPrivECDH, nil)
 
 	return initiator, responder
 }
@@ -123,14 +122,17 @@ func getBrontideMachines() (*brontide.Machine, *brontide.Machine) {
 // getStaticBrontideMachines returns two brontide machines that use static keys
 // everywhere.
 func getStaticBrontideMachines() (*brontide.Machine, *brontide.Machine) {
-	initPriv, _ := btcec.PrivKeyFromBytes(btcec.S256(), initBytes)
-	respPriv, respPub := btcec.PrivKeyFromBytes(btcec.S256(), respBytes)
+	initPriv, _ := btcec.PrivKeyFromBytes(initBytes)
+	respPriv, respPub := btcec.PrivKeyFromBytes(respBytes)
+
+	initPrivECDH := &keychain.PrivKeyECDH{PrivKey: initPriv}
+	respPrivECDH := &keychain.PrivKeyECDH{PrivKey: respPriv}
 
 	initiator := brontide.NewBrontideMachine(
-		true, initPriv, respPub, initEphemeral,
+		true, initPrivECDH, respPub, initEphemeral,
 	)
 	responder := brontide.NewBrontideMachine(
-		false, respPriv, nil, respEphemeral,
+		false, respPrivECDH, nil, respEphemeral,
 	)
 
 	return initiator, responder

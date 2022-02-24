@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/textproto"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/btcsuite/btclog"
 	"github.com/gorilla/websocket"
@@ -31,6 +33,11 @@ const (
 	// additional header field and its value. We use the plus symbol because
 	// the default delimiters aren't allowed in the protocol names.
 	WebSocketProtocolDelimiter = "+"
+
+	// PingContent is the content of the ping message we send out. This is
+	// an arbitrary non-empty message that has no deeper meaning but should
+	// be sent back by the client in the pong message.
+	PingContent = "are you there?"
 )
 
 var (
@@ -49,12 +56,28 @@ var (
 	defaultProtocolsToAllow = map[string]bool{
 		"Grpc-Metadata-Macaroon": true,
 	}
+
+	// DefaultPingInterval is the default number of seconds to wait between
+	// sending ping requests.
+	DefaultPingInterval = time.Second * 30
+
+	// DefaultPongWait is the maximum duration we wait for a pong response
+	// to a ping we sent before we assume the connection died.
+	DefaultPongWait = time.Second * 5
 )
 
 // NewWebSocketProxy attempts to expose the underlying handler as a response-
 // streaming WebSocket stream with newline-delimited JSON as the content
-// encoding.
-func NewWebSocketProxy(h http.Handler, logger btclog.Logger) http.Handler {
+// encoding. If pingInterval is a non-zero duration, a ping message will be
+// sent out periodically and a pong response message is expected from the
+// client. The clientStreamingURIs parameter can hold a list of all patterns
+// for URIs that are mapped to client-streaming RPC methods. We need to keep
+// track of those to make sure we initialize the request body correctly for the
+// underlying grpc-gateway library.
+func NewWebSocketProxy(h http.Handler, logger btclog.Logger,
+	pingInterval, pongWait time.Duration,
+	clientStreamingURIs []*regexp.Regexp) http.Handler {
+
 	p := &WebsocketProxy{
 		backend: h,
 		logger:  logger,
@@ -65,7 +88,14 @@ func NewWebSocketProxy(h http.Handler, logger btclog.Logger) http.Handler {
 				return true
 			},
 		},
+		clientStreamingURIs: clientStreamingURIs,
 	}
+
+	if pingInterval > 0 && pongWait > 0 {
+		p.pingInterval = pingInterval
+		p.pongWait = pongWait
+	}
+
 	return p
 }
 
@@ -74,6 +104,21 @@ type WebsocketProxy struct {
 	backend  http.Handler
 	logger   btclog.Logger
 	upgrader *websocket.Upgrader
+
+	// clientStreamingURIs holds a list of all patterns for URIs that are
+	// mapped to client-streaming RPC methods. We need to keep track of
+	// those to make sure we initialize the request body correctly for the
+	// underlying grpc-gateway library.
+	clientStreamingURIs []*regexp.Regexp
+
+	pingInterval time.Duration
+	pongWait     time.Duration
+}
+
+// pingPongEnabled returns true if a ping interval is set to enable sending and
+// expecting regular ping/pong messages.
+func (p *WebsocketProxy) pingPongEnabled() bool {
+	return p.pingInterval > 0 && p.pongWait > 0
 }
 
 // ServeHTTP handles the incoming HTTP request. If the request is an
@@ -107,12 +152,12 @@ func (p *WebsocketProxy) upgradeToWebSocketProxy(w http.ResponseWriter,
 		}
 	}()
 
-	ctx, cancelFn := context.WithCancel(context.Background())
+	ctx, cancelFn := context.WithCancel(r.Context())
 	defer cancelFn()
 
 	requestForwarder := newRequestForwardingReader()
 	request, err := http.NewRequestWithContext(
-		r.Context(), r.Method, r.URL.String(), requestForwarder,
+		ctx, r.Method, r.URL.String(), requestForwarder,
 	)
 	if err != nil {
 		p.logger.Errorf("WS: error preparing request:", err)
@@ -129,10 +174,19 @@ func (p *WebsocketProxy) upgradeToWebSocketProxy(w http.ResponseWriter,
 		request.Method = m
 	}
 
+	// Is this a call to a client-streaming RPC method?
+	clientStreaming := false
+	for _, pattern := range p.clientStreamingURIs {
+		if pattern.MatchString(r.URL.Path) {
+			clientStreaming = true
+		}
+	}
+
 	responseForwarder := newResponseForwardingWriter()
 	go func() {
 		<-ctx.Done()
 		responseForwarder.Close()
+		requestForwarder.CloseWriter()
 	}()
 
 	go func() {
@@ -140,9 +194,19 @@ func (p *WebsocketProxy) upgradeToWebSocketProxy(w http.ResponseWriter,
 		p.backend.ServeHTTP(responseForwarder, request)
 	}()
 
-	// Read loop: Take messages from websocket and write to http request.
+	// Read loop: Take messages from websocket and write them to the payload
+	// channel. This needs to be its own goroutine because for non-client
+	// streaming RPCs, the requestForwarder.Write() in the second goroutine
+	// will block until the request has fully completed. But for the ping/
+	// pong handler to work, we need to have an active call to
+	// conn.ReadMessage() going on. So we make sure we have such an active
+	// call by starting a second read as soon as the first one has
+	// completed.
+	payloadChannel := make(chan []byte, 1)
 	go func() {
 		defer cancelFn()
+		defer close(payloadChannel)
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -161,6 +225,34 @@ func (p *WebsocketProxy) upgradeToWebSocketProxy(w http.ResponseWriter,
 					err)
 				return
 			}
+
+			select {
+			case payloadChannel <- payload:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Forward loop: Take messages from the incoming payload channel and
+	// write them to the http request.
+	go func() {
+		defer cancelFn()
+		for {
+			var payload []byte
+			select {
+			case <-ctx.Done():
+				return
+			case newPayload, more := <-payloadChannel:
+				if !more {
+					p.logger.Infof("WS: incoming payload " +
+						"chan closed")
+					return
+				}
+
+				payload = newPayload
+			}
+
 			_, err = requestForwarder.Write(payload)
 			if err != nil {
 				p.logger.Errorf("WS: error writing message "+
@@ -169,12 +261,72 @@ func (p *WebsocketProxy) upgradeToWebSocketProxy(w http.ResponseWriter,
 			}
 			_, _ = requestForwarder.Write([]byte{'\n'})
 
-			// We currently only support server-streaming messages.
-			// Therefore we close the request body after the first
-			// incoming message to trigger a response.
-			requestForwarder.CloseWriter()
+			// The grpc-gateway library uses a different request
+			// reader depending on whether it is a client streaming
+			// RPC or not. For a non-streaming request we need to
+			// close with EOF to signal the request was completed.
+			if !clientStreaming {
+				requestForwarder.CloseWriter()
+			}
 		}
 	}()
+
+	// Ping write loop: Send a ping message regularly if ping/pong is
+	// enabled.
+	if p.pingPongEnabled() {
+		// We'll send out our first ping in pingInterval. So the initial
+		// deadline is that interval plus the time we allow for a
+		// response to be sent.
+		initialDeadline := time.Now().Add(p.pingInterval + p.pongWait)
+		_ = conn.SetReadDeadline(initialDeadline)
+
+		// Whenever a pong message comes in, we extend the deadline
+		// until the next read is expected by the interval plus pong
+		// wait time. Since we can never _reach_ any of the deadlines,
+		// we also have to advance the deadline for the next expected
+		// write to happen, in case the next thing we actually write is
+		// the next ping.
+		conn.SetPongHandler(func(appData string) error {
+			nextDeadline := time.Now().Add(
+				p.pingInterval + p.pongWait,
+			)
+			_ = conn.SetReadDeadline(nextDeadline)
+			_ = conn.SetWriteDeadline(nextDeadline)
+
+			return nil
+		})
+		go func() {
+			ticker := time.NewTicker(p.pingInterval)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					p.logger.Debug("WS: ping loop done")
+					return
+
+				case <-ticker.C:
+					// Writing the ping shouldn't take any
+					// longer than we'll wait for a response
+					// in the first place.
+					writeDeadline := time.Now().Add(
+						p.pongWait,
+					)
+					err := conn.WriteControl(
+						websocket.PingMessage,
+						[]byte(PingContent),
+						writeDeadline,
+					)
+					if err != nil {
+						p.logger.Warnf("WS: could not "+
+							"send ping message: %v",
+							err)
+						return
+					}
+				}
+			}
+		}()
+	}
 
 	// Write loop: Take messages from the response forwarder and write them
 	// to the WebSocket.
@@ -346,6 +498,9 @@ func IsClosedConnError(err error) bool {
 		return true
 	}
 	if strings.Contains(str, "broken pipe") {
+		return true
+	}
+	if strings.Contains(str, "connection reset by peer") {
 		return true
 	}
 	return websocket.IsCloseError(

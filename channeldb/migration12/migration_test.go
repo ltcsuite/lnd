@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
 	"github.com/ltcsuite/lnd/channeldb/migration12"
 	"github.com/ltcsuite/lnd/channeldb/migtest"
+	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/lntypes"
 )
 

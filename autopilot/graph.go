@@ -9,20 +9,22 @@ import (
 	"time"
 
 	"github.com/ltcsuite/lnd/channeldb"
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/routing/route"
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/btcec/v2/ecdsa"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 var (
-	testSig = &btcec.Signature{
-		R: new(big.Int),
-		S: new(big.Int),
-	}
-	_, _ = testSig.R.SetString("63724406601629180062774974542967536251589935445068131219452686511677818569431", 10)
-	_, _ = testSig.S.SetString("18801056069249825825291287104931333862866033135609736119018462340006816851118", 10)
+	testR, _    = new(big.Int).SetString("63724406601629180062774974542967536251589935445068131219452686511677818569431", 10)
+	testS, _    = new(big.Int).SetString("18801056069249825825291287104931333862866033135609736119018462340006816851118", 10)
+	testRScalar = new(btcec.ModNScalar)
+	testSScalar = new(btcec.ModNScalar)
+	_           = testRScalar.SetByteSlice(testR.Bytes())
+	_           = testSScalar.SetByteSlice(testS.Bytes())
+	testSig     = ecdsa.NewSignature(testRScalar, testSScalar)
 
 	chanIDCounter uint64 // To be used atomically.
 )
@@ -99,12 +101,8 @@ func (d dbNode) ForEachChannel(cb func(ChannelEdge) error) error {
 		}
 
 		edge := ChannelEdge{
-			Channel: Channel{
-				ChanID:    lnwire.NewShortChanIDFromInt(ep.ChannelID),
-				Capacity:  ei.Capacity,
-				FundedAmt: ei.Capacity,
-				Node:      NodeID(ep.Node.PubKeyBytes),
-			},
+			ChanID:   lnwire.NewShortChanIDFromInt(ep.ChannelID),
+			Capacity: ei.Capacity,
 			Peer: dbNode{
 				tx:   tx,
 				node: ep.Node,
@@ -152,7 +150,7 @@ func (d *databaseChannelGraph) addRandChannel(node1, node2 *btcec.PublicKey,
 				return nil, err
 			}
 
-			dbNode, err := d.db.FetchLightningNode(nil, vertex)
+			dbNode, err := d.db.FetchLightningNode(vertex)
 			switch {
 			case err == channeldb.ErrGraphNodeNotFound:
 				fallthrough
@@ -265,19 +263,15 @@ func (d *databaseChannelGraph) addRandChannel(node1, node2 *btcec.PublicKey,
 	}
 
 	return &ChannelEdge{
-			Channel: Channel{
-				ChanID:   chanID,
-				Capacity: capacity,
-			},
+			ChanID:   chanID,
+			Capacity: capacity,
 			Peer: dbNode{
 				node: vertex1,
 			},
 		},
 		&ChannelEdge{
-			Channel: Channel{
-				ChanID:   chanID,
-				Capacity: capacity,
-			},
+			ChanID:   chanID,
+			Capacity: capacity,
 			Peer: dbNode{
 				node: vertex2,
 			},
@@ -352,7 +346,7 @@ func randChanID() lnwire.ShortChannelID {
 
 // randKey returns a random public key.
 func randKey() (*btcec.PublicKey, error) {
-	priv, err := btcec.NewPrivateKey(btcec.S256())
+	priv, err := btcec.NewPrivateKey()
 	if err != nil {
 		return nil, err
 	}
@@ -425,20 +419,17 @@ func (m *memChannelGraph) addRandChannel(node1, node2 *btcec.PublicKey,
 		}
 	}
 
-	channel := Channel{
+	edge1 := ChannelEdge{
 		ChanID:   randChanID(),
 		Capacity: capacity,
-	}
-
-	edge1 := ChannelEdge{
-		Channel: channel,
-		Peer:    vertex2,
+		Peer:     vertex2,
 	}
 	vertex1.chans = append(vertex1.chans, edge1)
 
 	edge2 := ChannelEdge{
-		Channel: channel,
-		Peer:    vertex1,
+		ChanID:   randChanID(),
+		Capacity: capacity,
+		Peer:     vertex1,
 	}
 	vertex2.chans = append(vertex2.chans, edge2)
 

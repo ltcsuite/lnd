@@ -11,7 +11,7 @@ with lnd in Java. We'll be using Maven as our build tool.
 
 ### Setup and Installation
 #### Project Structure
-```
+```text
 .
 ├── pom.xml
 └── src
@@ -24,23 +24,23 @@ with lnd in Java. We'll be using Maven as our build tool.
           │       ├── annotations.proto
           │       └── http.proto
           └── lnrpc
-              └── rpc.proto
+              └── lightning.proto
 
 ```
 Note the ***proto*** folder, where all the proto files are kept.
 
- - [rpc.proto](https://github.com/ltcsuite/lnd/blob/master/lnrpc/rpc.proto)
+ - [lightning.proto](https://github.com/ltcsuite/lnd/blob/master/lnrpc/lightning.proto)
  - [annotations.proto](https://github.com/grpc-ecosystem/grpc-gateway/blob/master/third_party/googleapis/google/api/annotations.proto)
  - [http.proto](https://github.com/grpc-ecosystem/grpc-gateway/blob/master/third_party/googleapis/google/api/http.proto)
 
 #### pom.xml
-```
+```xml
 <properties>
     <grpc.version>1.8.0</grpc.version>
 </properties>    
 ```
 The following dependencies are required.
-```
+```xml
 <dependencies>
     <dependency>
         <groupId>io.grpc</groupId>
@@ -70,7 +70,7 @@ The following dependencies are required.
 </dependencies>
 ```
 In the build section,  we'll need to configure the following things :
-```
+```xml
 <build>
     <extensions>
         <extension>
@@ -102,6 +102,10 @@ In the build section,  we'll need to configure the following things :
 </build>
 ```
 #### Main.java
+Use the code below to set up a channel and client to connect to your `lnd` node.
+
+Note that when an IP address is used to connect to the node (e.g. 192.168.1.21 instead of localhost) you need to add `--tlsextraip=192.168.1.21` to your `lnd` configuration and re-generate the certificate (delete tls.cert and tls.key and restart lnd).
+
 ```java
 import io.grpc.Attributes;
 import io.grpc.CallCredentials;
@@ -184,11 +188,11 @@ public class Main {
 ```
 #### Running the example
 Execute the following command in the directory where the **pom.xml** file is located.
-```
-mvn compile exec:java -Dexec.mainClass="Main" -Dexec.cleanupDaemonThreads=false
+```shell
+⛰  mvn compile exec:java -Dexec.mainClass="Main" -Dexec.cleanupDaemonThreads=false
 ```
 ##### Sample output
-```
+```text
 [INFO] Scanning for projects...
 [INFO] ------------------------------------------------------------------------
 [INFO] Detecting the operating system and CPU architecture
@@ -233,7 +237,7 @@ mvn compile exec:java -Dexec.mainClass="Main" -Dexec.cleanupDaemonThreads=false
 
 ### Java proto options
 
-There are 2 options available that can be used in the *rpc.proto* file :
+There are 2 options available that can be used in the *lightning.proto* file :
 
 * option java_multiple_files = true;
 * option java_package = "network.lightning.rpc";

@@ -7,57 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/lntest/mock"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/wire"
 )
-
-type mockNotifier struct {
-	spendChan chan *chainntnfs.SpendDetail
-	epochChan chan *chainntnfs.BlockEpoch
-	confChan  chan *chainntnfs.TxConfirmation
-}
-
-func (m *mockNotifier) RegisterConfirmationsNtfn(txid *chainhash.Hash, _ []byte, numConfs,
-	heightHint uint32) (*chainntnfs.ConfirmationEvent, error) {
-	return &chainntnfs.ConfirmationEvent{
-		Confirmed: m.confChan,
-		Cancel:    func() {},
-	}, nil
-}
-
-func (m *mockNotifier) RegisterBlockEpochNtfn(
-	bestBlock *chainntnfs.BlockEpoch) (*chainntnfs.BlockEpochEvent, error) {
-
-	return &chainntnfs.BlockEpochEvent{
-		Epochs: m.epochChan,
-		Cancel: func() {},
-	}, nil
-}
-
-func (m *mockNotifier) Start() error {
-	return nil
-}
-
-func (m *mockNotifier) Started() bool {
-	return true
-}
-
-func (m *mockNotifier) Stop() error {
-	return nil
-}
-func (m *mockNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint, _ []byte,
-	heightHint uint32) (*chainntnfs.SpendEvent, error) {
-
-	return &chainntnfs.SpendEvent{
-		Spend:  m.spendChan,
-		Cancel: func() {},
-	}, nil
-}
 
 // TestChainWatcherRemoteUnilateralClose tests that the chain watcher is able
 // to properly detect a normal unilateral close by the remote node using their
@@ -77,8 +34,10 @@ func TestChainWatcherRemoteUnilateralClose(t *testing.T) {
 
 	// With the channels created, we'll now create a chain watcher instance
 	// which will be watching for any closes of Alice's channel.
-	aliceNotifier := &mockNotifier{
-		spendChan: make(chan *chainntnfs.SpendDetail),
+	aliceNotifier := &mock.ChainNotifier{
+		SpendChan: make(chan *chainntnfs.SpendDetail),
+		EpochChan: make(chan *chainntnfs.BlockEpoch),
+		ConfChan:  make(chan *chainntnfs.TxConfirmation),
 	}
 	aliceChainWatcher, err := newChainWatcher(chainWatcherConfig{
 		chanState:           aliceChannel.State(),
@@ -107,7 +66,7 @@ func TestChainWatcherRemoteUnilateralClose(t *testing.T) {
 		SpenderTxHash: &bobTxHash,
 		SpendingTx:    bobCommit,
 	}
-	aliceNotifier.spendChan <- bobSpend
+	aliceNotifier.SpendChan <- bobSpend
 
 	// We should get a new spend event over the remote unilateral close
 	// event channel.
@@ -166,8 +125,10 @@ func TestChainWatcherRemoteUnilateralClosePendingCommit(t *testing.T) {
 
 	// With the channels created, we'll now create a chain watcher instance
 	// which will be watching for any closes of Alice's channel.
-	aliceNotifier := &mockNotifier{
-		spendChan: make(chan *chainntnfs.SpendDetail),
+	aliceNotifier := &mock.ChainNotifier{
+		SpendChan: make(chan *chainntnfs.SpendDetail),
+		EpochChan: make(chan *chainntnfs.BlockEpoch),
+		ConfChan:  make(chan *chainntnfs.TxConfirmation),
 	}
 	aliceChainWatcher, err := newChainWatcher(chainWatcherConfig{
 		chanState:           aliceChannel.State(),
@@ -216,7 +177,7 @@ func TestChainWatcherRemoteUnilateralClosePendingCommit(t *testing.T) {
 		SpenderTxHash: &bobTxHash,
 		SpendingTx:    bobCommit,
 	}
-	aliceNotifier.spendChan <- bobSpend
+	aliceNotifier.SpendChan <- bobSpend
 
 	// We should get a new spend event over the remote unilateral close
 	// event channel.
@@ -243,9 +204,32 @@ type dlpTestCase struct {
 	NumUpdates        uint8
 }
 
+// executeStateTransitions execute the given number of state transitions.
+// Copies of Alice's channel state before each transition (including initial
+// state) are returned.
 func executeStateTransitions(t *testing.T, htlcAmount lnwire.MilliSatoshi,
 	aliceChannel, bobChannel *lnwallet.LightningChannel,
-	numUpdates uint8) error {
+	numUpdates uint8) ([]*channeldb.OpenChannel, func(), error) {
+
+	// We'll make a copy of the channel state before each transition.
+	var (
+		chanStates   []*channeldb.OpenChannel
+		cleanupFuncs []func()
+	)
+
+	cleanAll := func() {
+		for _, f := range cleanupFuncs {
+			f()
+		}
+	}
+
+	state, f, err := copyChannelState(aliceChannel.State())
+	if err != nil {
+		return nil, nil, err
+	}
+
+	chanStates = append(chanStates, state)
+	cleanupFuncs = append(cleanupFuncs, f)
 
 	for i := 0; i < int(numUpdates); i++ {
 		addFakeHTLC(
@@ -254,11 +238,21 @@ func executeStateTransitions(t *testing.T, htlcAmount lnwire.MilliSatoshi,
 
 		err := lnwallet.ForceStateTransition(aliceChannel, bobChannel)
 		if err != nil {
-			return err
+			cleanAll()
+			return nil, nil, err
 		}
+
+		state, f, err := copyChannelState(aliceChannel.State())
+		if err != nil {
+			cleanAll()
+			return nil, nil, err
+		}
+
+		chanStates = append(chanStates, state)
+		cleanupFuncs = append(cleanupFuncs, f)
 	}
 
-	return nil
+	return chanStates, cleanAll, nil
 }
 
 // TestChainWatcherDataLossProtect tests that if we've lost data (and are
@@ -289,14 +283,34 @@ func TestChainWatcherDataLossProtect(t *testing.T) {
 		}
 		defer cleanUp()
 
+		// Based on the number of random updates for this state, make a
+		// new HTLC to add to the commitment, and then lock in a state
+		// transition.
+		const htlcAmt = 1000
+		states, cleanStates, err := executeStateTransitions(
+			t, htlcAmt, aliceChannel, bobChannel,
+			testCase.BroadcastStateNum,
+		)
+		if err != nil {
+			t.Errorf("unable to trigger state "+
+				"transition: %v", err)
+			return false
+		}
+		defer cleanStates()
+
+		// We'll use the state this test case wants Alice to start at.
+		aliceChanState := states[testCase.NumUpdates]
+
 		// With the channels created, we'll now create a chain watcher
 		// instance which will be watching for any closes of Alice's
 		// channel.
-		aliceNotifier := &mockNotifier{
-			spendChan: make(chan *chainntnfs.SpendDetail),
+		aliceNotifier := &mock.ChainNotifier{
+			SpendChan: make(chan *chainntnfs.SpendDetail),
+			EpochChan: make(chan *chainntnfs.BlockEpoch),
+			ConfChan:  make(chan *chainntnfs.TxConfirmation),
 		}
 		aliceChainWatcher, err := newChainWatcher(chainWatcherConfig{
-			chanState: aliceChannel.State(),
+			chanState: aliceChanState,
 			notifier:  aliceNotifier,
 			signer:    aliceChannel.Signer,
 			extractStateNumHint: func(*wire.MsgTx,
@@ -316,19 +330,6 @@ func TestChainWatcherDataLossProtect(t *testing.T) {
 		}
 		defer aliceChainWatcher.Stop()
 
-		// Based on the number of random updates for this state, make a
-		// new HTLC to add to the commitment, and then lock in a state
-		// transition.
-		const htlcAmt = 1000
-		err = executeStateTransitions(
-			t, htlcAmt, aliceChannel, bobChannel, testCase.NumUpdates,
-		)
-		if err != nil {
-			t.Errorf("unable to trigger state "+
-				"transition: %v", err)
-			return false
-		}
-
 		// We'll request a new channel event subscription from Alice's
 		// chain watcher so we can be notified of our fake close below.
 		chanEvents := aliceChainWatcher.SubscribeChannelEvents()
@@ -336,7 +337,7 @@ func TestChainWatcherDataLossProtect(t *testing.T) {
 		// Otherwise, we'll feed in this new state number as a response
 		// to the query, and insert the expected DLP commit point.
 		dlpPoint := aliceChannel.State().RemoteCurrentRevocation
-		err = aliceChannel.State().MarkDataLoss(dlpPoint)
+		err = aliceChanState.MarkDataLoss(dlpPoint)
 		if err != nil {
 			t.Errorf("unable to insert dlp point: %v", err)
 			return false
@@ -350,7 +351,7 @@ func TestChainWatcherDataLossProtect(t *testing.T) {
 			SpenderTxHash: &bobTxHash,
 			SpendingTx:    bobCommit,
 		}
-		aliceNotifier.spendChan <- bobSpend
+		aliceNotifier.SpendChan <- bobSpend
 
 		// We should get a new uni close resolution that indicates we
 		// processed the DLP scenario.
@@ -445,7 +446,7 @@ func TestChainWatcherLocalForceCloseDetect(t *testing.T) {
 	// table driven tests. We'll assert that for any number of state
 	// updates, and if the commitment transaction has our output or not,
 	// we're able to properly detect a local force close.
-	localForceCloseScenario := func(t *testing.T, numUpdates uint8,
+	localForceCloseScenario := func(t *testing.T, numUpdates, localState uint8,
 		remoteOutputOnly, localOutputOnly bool) bool {
 
 		// First, we'll create two channels which already have
@@ -458,14 +459,34 @@ func TestChainWatcherLocalForceCloseDetect(t *testing.T) {
 		}
 		defer cleanUp()
 
+		// We'll execute a number of state transitions based on the
+		// randomly selected number from testing/quick. We do this to
+		// get more coverage of various state hint encodings beyond 0
+		// and 1.
+		const htlcAmt = 1000
+		states, cleanStates, err := executeStateTransitions(
+			t, htlcAmt, aliceChannel, bobChannel, numUpdates,
+		)
+		if err != nil {
+			t.Errorf("unable to trigger state "+
+				"transition: %v", err)
+			return false
+		}
+		defer cleanStates()
+
+		// We'll use the state this test case wants Alice to start at.
+		aliceChanState := states[localState]
+
 		// With the channels created, we'll now create a chain watcher
 		// instance which will be watching for any closes of Alice's
 		// channel.
-		aliceNotifier := &mockNotifier{
-			spendChan: make(chan *chainntnfs.SpendDetail),
+		aliceNotifier := &mock.ChainNotifier{
+			SpendChan: make(chan *chainntnfs.SpendDetail),
+			EpochChan: make(chan *chainntnfs.BlockEpoch),
+			ConfChan:  make(chan *chainntnfs.TxConfirmation),
 		}
 		aliceChainWatcher, err := newChainWatcher(chainWatcherConfig{
-			chanState:           aliceChannel.State(),
+			chanState:           aliceChanState,
 			notifier:            aliceNotifier,
 			signer:              aliceChannel.Signer,
 			extractStateNumHint: lnwallet.GetStateNumHint,
@@ -477,20 +498,6 @@ func TestChainWatcherLocalForceCloseDetect(t *testing.T) {
 			t.Fatalf("unable to start chain watcher: %v", err)
 		}
 		defer aliceChainWatcher.Stop()
-
-		// We'll execute a number of state transitions based on the
-		// randomly selected number from testing/quick. We do this to
-		// get more coverage of various state hint encodings beyond 0
-		// and 1.
-		const htlcAmt = 1000
-		err = executeStateTransitions(
-			t, htlcAmt, aliceChannel, bobChannel, numUpdates,
-		)
-		if err != nil {
-			t.Errorf("unable to trigger state "+
-				"transition: %v", err)
-			return false
-		}
 
 		// We'll request a new channel event subscription from Alice's
 		// chain watcher so we can be notified of our fake close below.
@@ -517,13 +524,25 @@ func TestChainWatcherLocalForceCloseDetect(t *testing.T) {
 			SpenderTxHash: &aliceTxHash,
 			SpendingTx:    aliceCommit,
 		}
-		aliceNotifier.spendChan <- aliceSpend
+		aliceNotifier.SpendChan <- aliceSpend
 
 		// We should get a local force close event from Alice as she
 		// should be able to detect the close based on the commitment
 		// outputs.
 		select {
-		case <-chanEvents.LocalUnilateralClosure:
+		case summary := <-chanEvents.LocalUnilateralClosure:
+			// Make sure we correctly extracted the commit
+			// resolution if we had a local output.
+			if remoteOutputOnly {
+				if summary.CommitResolution != nil {
+					t.Fatalf("expected no commit resolution")
+				}
+			} else {
+				if summary.CommitResolution == nil {
+					t.Fatalf("expected commit resolution")
+				}
+			}
+
 			return true
 
 		case <-time.After(time.Second * 5):
@@ -537,31 +556,53 @@ func TestChainWatcherLocalForceCloseDetect(t *testing.T) {
 	// present and absent with non or some number of updates in the channel.
 	testCases := []struct {
 		numUpdates       uint8
+		localState       uint8
 		remoteOutputOnly bool
 		localOutputOnly  bool
 	}{
 		{
 			numUpdates:       0,
+			localState:       0,
 			remoteOutputOnly: true,
 		},
 		{
 			numUpdates:       0,
+			localState:       0,
 			remoteOutputOnly: false,
 		},
 		{
 			numUpdates:      0,
+			localState:      0,
 			localOutputOnly: true,
 		},
 		{
 			numUpdates:       20,
+			localState:       20,
 			remoteOutputOnly: false,
 		},
 		{
 			numUpdates:       20,
+			localState:       20,
 			remoteOutputOnly: true,
 		},
 		{
 			numUpdates:      20,
+			localState:      20,
+			localOutputOnly: true,
+		},
+		{
+			numUpdates:       20,
+			localState:       5,
+			remoteOutputOnly: false,
+		},
+		{
+			numUpdates:       20,
+			localState:       5,
+			remoteOutputOnly: true,
+		},
+		{
+			numUpdates:      20,
+			localState:      5,
 			localOutputOnly: true,
 		},
 	}
@@ -577,7 +618,8 @@ func TestChainWatcherLocalForceCloseDetect(t *testing.T) {
 			t.Parallel()
 
 			localForceCloseScenario(
-				t, testCase.numUpdates, testCase.remoteOutputOnly,
+				t, testCase.numUpdates, testCase.localState,
+				testCase.remoteOutputOnly,
 				testCase.localOutputOnly,
 			)
 		})

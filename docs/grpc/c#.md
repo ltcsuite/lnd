@@ -13,76 +13,58 @@ This section enumerates what you need to do to write a client that communicates 
 
 `lnd` uses the `gRPC` protocol for communication with clients like `lncli`.
 
-`gRPC` is based on protocol buffers, and as such, you will need to compile the `lnd` proto file in C# before you can use it to communicate with `lnd`.
+.NET natively supports gRPC proto files and generates the necessary C# classes. You can see the official Microsoft gRPC documentation [here](https://docs.microsoft.com/en-gb/aspnet/core/grpc/?view=aspnetcore-5.0)
 
 This assumes you are using a Windows machine, but it applies equally to Mac and Linux.
 
-Create a new `.net core` console application called `lndclient` at your root directory (On Windows : `C:/`), and install `Grpc.Tools` (1.17.0 at time of writing)
+Create a new `.net core` console application called `lndclient` at your root directory (On Windows : `C:/`).
 
-```bash
-mkdir lndclient
-cd lndclient
-dotnet new console
-dotnet add package Grpc.Tools --version 1.17.0
+Create a folder `Grpc` in the root of your project and fetch the lnd proto files
+
+```shell
+⛰  mkdir Grpc
+⛰  curl -o Grpc/lightning.proto -s https://raw.githubusercontent.com/ltcsuite/lnd/master/lnrpc/lightning.proto
 ```
 
-* Create the necessary folder structure, and then fetch the lnd [rpc.proto](https://github.com/ltcsuite/lnd/blob/master/lnrpc/rpc.proto) file:
-```bash
-mkdir Grpc
-curl -o Grpc/rpc.proto -s https://raw.githubusercontent.com/ltcsuite/lnd/master/lnrpc/rpc.proto
+Install `Grpc.Tools`, `Google.Protobuf`, `Grpc.Net.Client` using NuGet or manually with `dotnet add`:
+
+```shell
+⛰  dotnet add package Grpc.Tools
+⛰  dotnet add package Google.Protobuf
+⛰  dotnet add package Grpc.Net.Client
 ```
 
-* Copy Google's [annotations.proto](https://github.com/googleapis/googleapis/blob/master/google/api/annotations.proto) to the correct folder:
-```bash
-mkdir Grpc/google
-mkdir Grpc/google/api
-curl -o Grpc/google/api/annotations.proto -s https://raw.githubusercontent.com/googleapis/googleapis/master/google/api/annotations.proto
+Add the `lightning.proto` file to the `.csproj` file in an ItemGroup. (In Visual Studio you can do this by unloading the project, editing the `.csproj` file and then reloading it)
+
+```xml
+<ItemGroup>
+   <Protobuf Include="Grpc\lightning.proto" GrpcServices="Client" />
+</ItemGroup>
 ```
 
-* Copy Google's [http.proto](https://github.com/googleapis/googleapis/blob/master/google/api/http.proto) to the correct folder:
-```bash
-curl -o Grpc/google/api/http.proto -s https://raw.githubusercontent.com/googleapis/googleapis/master/google/api/http.proto
+To add a proto that references `lightning.proto` make sure to reference the protoRoot directory (in this case `Grpc`) so it can locate the referenced file.
+
+```xml
+<ItemGroup>
+   <Protobuf Include="Grpc\lightning.proto" GrpcServices="Client" />
+   <Protobuf Include="Grpc\router.proto" GrpcServices="Client" protoRoot="Grpc" />
+</ItemGroup>
 ```
 
-* Copy Google's [descriptor.proto](https://github.com/protocolbuffers/protobuf/blob/master/src/google/protobuf/descriptor.proto) to the correct folder:
-```bash
-mkdir Grpc/google/protobuf
-curl -o Grpc/google/protobuf/descriptor.proto -s https://raw.githubusercontent.com/protocolbuffers/protobuf/master/src/google/protobuf/descriptor.proto
-```
-
-* Compile the proto file using `protoc.exe` from nuget package `Grpc.Tools` (possibly replace "YOUR_USER", version "1.17.0", or your OS in both paths):
-```bash
-# linux + mac nuget package location: ~/.nuget/packages
-cd Grpc
-C:/Users/<YOUR_USER>/.nuget/packages/grpc.tools/1.17.0/tools/windows_x64/protoc.exe --csharp_out . --grpc_out . rpc.proto --plugin=protoc-gen-grpc=C:/Users/<YOUR_USER>/.nuget/packages/grpc.tools/1.17.0/tools/windows_x64/grpc_csharp_plugin.exe
-```
-
-
-After following these steps, two files `Rpc.cs` and `RpcGrpc.cs` will be generated in the `Grpc` folder in your project.
-
-
+You're done! Build the project and verify that it works.
 
 #### Imports and Client
 
-Every time you use C# `gRPC`, you will have to import the generated rpc classes, and use `nuget` package manger to install `Grpc.Core` (1.17.0 at time of writing), `Google.Protobuf` (3.6.1), and `Google.Api.CommonProtos` (1.4.0).
+Use the code below to set up a channel and client to connect to your `lnd` node.
 
-```bash
-# from project root, install packages using nuget 
-cd ../
-dotnet add package Grpc.Core --version 1.17.0
-dotnet add package Google.Protobuf --version 3.6.1
-dotnet add package Google.Api.CommonProtos --version 1.4.0
-```
+Note that when an IP address is used to connect to the node (e.g. 192.168.1.21 instead of localhost) you need to add `--tlsextraip=192.168.1.21` to your `lnd` configuration and re-generate the certificate (delete tls.cert and tls.key and restart lnd).
 
-After installing these, use the code below to set up a channel and client to connect to your `lnd` node:
-
-```c#
-
-using System.Collections.Generic;
+```cs
 using System.IO;
+using System.Net.Http;
+using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks;
-using Grpc.Core;
-using Lnrpc;
+using Grpc.Net.Client;
 ...
 
 // Due to updated ECDSA generated tls.cert we need to let gprc know that
@@ -92,12 +74,23 @@ System.Environment.SetEnvironmentVariable("GRPC_SSL_CIPHER_SUITES", "HIGH+ECDSA"
             
 // Lnd cert is at AppData/Local/Lnd/tls.cert on Windows
 // ~/.lnd/tls.cert on Linux and ~/Library/Application Support/Lnd/tls.cert on Mac
-var cert = File.ReadAllText(<Tls_Cert_Location>);
+var rawCert = File.ReadAllBytes(<Tls_Cert_Location>);
+var x509Cert = new X509Certificate2(rawCert);
+var httpClientHandler = new HttpClientHandler
+{
+    // HttpClientHandler will validate certificate chain trust by default. This won't work for a self-signed cert.
+    // Therefore validate the certificate directly
+    ServerCertificateCustomValidationCallback = (httpRequestMessage, cert, cetChain, policyErrors) 
+        => x509Cert.Equals(cert)
+};
 
-var sslCreds = new SslCredentials(cert);
-var channel = new Grpc.Core.Channel("localhost:10009", sslCreds);
+var channel = GrpcChannel.ForAddress(
+    "localhost:10009",
+    new GrpcChannelOptions
+    {
+        HttpHandler = httpClientHandler,
+    });
 var client = new Lnrpc.Lightning.LightningClient(channel);
-
 ```
 
 ### Examples
@@ -106,7 +99,7 @@ Let's walk through some examples of C# `gRPC` clients. These examples assume tha
 
 #### Simple RPC
 
-```c#
+```cs
 // Retrieve and display the wallet balance
 // Use "WalletBalanceAsync" if in async context
 var response = client.WalletBalance(new WalletBalanceRequest());
@@ -115,7 +108,7 @@ Console.WriteLine(response);
 
 #### Response-streaming RPC
 
-```c#
+```cs
 var request = new InvoiceSubscription();
 using (var call = client.SubscribeInvoices(request))
 {
@@ -128,20 +121,20 @@ using (var call = client.SubscribeInvoices(request))
 ```
 
 Now, create an invoice for your node at `localhost:10009` and send a payment to it from another node.
-```bash
-$ lncli addinvoice --amt=100
+```shell
+⛰  lncli addinvoice --amt=100
 {
     "r_hash": <R_HASH>,
     "pay_req": <PAY_REQ>
 }
-$ lncli sendpayment --pay_req=<PAY_REQ>
+⛰  lncli sendpayment --pay_req=<PAY_REQ>
 ```
 
 Your console should now display the details of the recently satisfied invoice.
 
 #### Bidirectional-streaming RPC
 
-```c#
+```cs
 using (var call = client.SendPayment())
 {
     var responseReaderTask = Task.Run(async () =>
@@ -183,7 +176,7 @@ This example will send a payment of 100 satoshis every 2 seconds.
 
 To authenticate using macaroons you need to include the macaroon in the metadata of the request.
 
-```c#
+```cs
 // Lnd admin macaroon is at <LND_DIR>/data/chain/bitcoin/simnet/admin.macaroon on Windows
 // ~/.lnd/data/chain/bitcoin/simnet/admin.macaroon on Linux and ~/Library/Application Support/Lnd/data/chain/bitcoin/simnet/admin.macaroon on Mac
 byte[] macaroonBytes = File.ReadAllBytes("<LND_DIR>/data/chain/bitcoin/simnet/admin.macaroon");
@@ -192,28 +185,31 @@ var macaroon = BitConverter.ToString(macaroonBytes).Replace("-", ""); // hex for
 
 The simplest approach to use the macaroon is to include the metadata in each request as shown below.
 
-```c#
+```cs
 client.GetInfo(new GetInfoRequest(), new Metadata() { new Metadata.Entry("macaroon", macaroon) });
 ```
 
 However, this can get tiresome to do for each request, so to avoid explicitly including the macaroon we can update the credentials to include it automatically.
 
-```c#
-// build ssl credentials using the cert the same as before
-var sslCreds = new SslCredentials(cert);
-
-// combine the cert credentials and the macaroon auth credentials using interceptors
-// so every call is properly encrypted and authenticated
+```cs
+// add the macaroon auth credentials using an interceptor
+// so every call is properly authenticated
 Task AddMacaroon(AuthInterceptorContext context, Metadata metadata)
 {
     metadata.Add(new Metadata.Entry("macaroon", macaroon));
     return Task.CompletedTask;
 }
-var macaroonInterceptor = new AsyncAuthInterceptor(AddMacaroon);
-var combinedCreds = ChannelCredentials.Create(sslCreds, CallCredentials.FromInterceptor(macaroonInterceptor));
+var credentials = ChannelCredentials.Create(new SslCredentials(), CallCredentials.FromInterceptor(AddMacaroon));
 
-// finally pass in the combined credentials when creating a channel
-var channel = new Grpc.Core.Channel("localhost:10009", combinedCreds);
+// finally pass in the credentials and handler when creating a channel
+var channel = GrpcChannel.ForAddress(
+    "localhost:10009",
+    new GrpcChannelOptions
+    {
+        // Add the HttpClientHandler same as before
+        HttpHandler = httpClientHandler,
+        Credentials = credentials
+    });
 var client = new Lnrpc.Lightning.LightningClient(channel);
 
 // now every call will be made with the macaroon already included

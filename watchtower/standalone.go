@@ -8,7 +8,7 @@ import (
 	"github.com/ltcsuite/lnd/tor"
 	"github.com/ltcsuite/lnd/watchtower/lookout"
 	"github.com/ltcsuite/lnd/watchtower/wtserver"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
 // Standalone encapsulates the server-side functionality required by watchtower

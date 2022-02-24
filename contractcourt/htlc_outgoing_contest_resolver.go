@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 // htlcOutgoingContestResolver is a ContractResolver that's able to resolve an
@@ -17,7 +17,7 @@ import (
 type htlcOutgoingContestResolver struct {
 	// htlcTimeoutResolver is the inner solver that this resolver may turn
 	// into. This only happens if the HTLC expires on-chain.
-	htlcTimeoutResolver
+	*htlcTimeoutResolver
 }
 
 // newOutgoingContestResolver instantiates a new outgoing contested htlc
@@ -31,7 +31,7 @@ func newOutgoingContestResolver(res lnwallet.OutgoingHtlcResolution,
 	)
 
 	return &htlcOutgoingContestResolver{
-		htlcTimeoutResolver: *timeout,
+		htlcTimeoutResolver: timeout,
 	}
 }
 
@@ -131,7 +131,7 @@ func (h *htlcOutgoingContestResolver) Resolve() (ContractResolver, error) {
 					"into timeout resolver", h,
 					h.htlcResolution.ClaimOutpoint,
 					newHeight, h.htlcResolution.Expiry)
-				return &h.htlcTimeoutResolver, nil
+				return h.htlcTimeoutResolver, nil
 			}
 
 		// The output has been spent! This means the preimage has been
@@ -190,6 +190,14 @@ func (h *htlcOutgoingContestResolver) IsResolved() bool {
 	return h.resolved
 }
 
+// SupplementState allows the user of a ContractResolver to supplement it with
+// state required for the proper resolution of a contract.
+//
+// NOTE: Part of the ContractResolver interface.
+func (h *htlcOutgoingContestResolver) SupplementState(state *channeldb.OpenChannel) {
+	h.htlcTimeoutResolver.SupplementState(state)
+}
+
 // Encode writes an encoded version of the ContractResolver into the passed
 // Writer.
 //
@@ -209,7 +217,7 @@ func newOutgoingContestResolverFromReader(r io.Reader, resCfg ResolverConfig) (
 	if err != nil {
 		return nil, err
 	}
-	h.htlcTimeoutResolver = *timeoutResolver
+	h.htlcTimeoutResolver = timeoutResolver
 	return h, nil
 }
 

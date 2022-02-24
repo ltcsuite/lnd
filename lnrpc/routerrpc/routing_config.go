@@ -3,7 +3,7 @@ package routerrpc
 import (
 	"time"
 
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 // RoutingConfig contains the configurable parameters that control routing.
@@ -29,12 +29,22 @@ type RoutingConfig struct {
 	// channel is back at 50% probability.
 	PenaltyHalfLife time.Duration `long:"penaltyhalflife" description:"Defines the duration after which a penalized node or channel is back at 50% probability"`
 
-	// AttemptCost is the virtual cost in path finding weight units of
-	// executing a payment attempt that fails. It is used to trade off
-	// potentially better routes against their probability of succeeding.
-	AttemptCost ltcutil.Amount `long:"attemptcost" description:"The (virtual) cost in sats of a failed payment attempt"`
+	// AttemptCost is the fixed virtual cost in path finding of a failed
+	// payment attempt. It is used to trade off potentially better routes
+	// against their probability of succeeding.
+	AttemptCost ltcutil.Amount `long:"attemptcost" description:"The fixed (virtual) cost in sats of a failed payment attempt"`
+
+	// AttemptCostPPM is the proportional virtual cost in path finding of a
+	// failed payment attempt. It is used to trade off potentially better
+	// routes against their probability of succeeding. This parameter is
+	// expressed in parts per million of the total payment amount.
+	AttemptCostPPM int64 `long:"attemptcostppm" description:"The proportional (virtual) cost in sats of a failed payment attempt expressed in parts per million of the total payment amount"`
 
 	// MaxMcHistory defines the maximum number of payment results that
 	// are held on disk by mission control.
 	MaxMcHistory int `long:"maxmchistory" description:"the maximum number of payment results that are held on disk by mission control"`
+
+	// McFlushInterval defines the timer interval to use to flush mission
+	// control state to the DB.
+	McFlushInterval time.Duration `long:"mcflushinterval" description:"the timer interval to use to flush mission control state to the DB"`
 }

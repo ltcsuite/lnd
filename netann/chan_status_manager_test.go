@@ -15,8 +15,12 @@ import (
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/netann"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/wire"
+)
+
+var (
+	testKeyLoc = keychain.KeyLocator{Family: keychain.KeyFamilyNodeKey}
 )
 
 // randOutpoint creates a random wire.Outpoint.
@@ -76,7 +80,7 @@ func createEdgePolicies(t *testing.T, channel *channeldb.OpenChannel,
 	}
 
 	// Generate and set pubkey2 for THEIR pubkey.
-	privKey2, err := btcec.NewPrivateKey(btcec.S256())
+	privKey2, err := btcec.NewPrivateKey()
 	if err != nil {
 		t.Fatalf("unable to generate key pair: %v", err)
 	}
@@ -306,11 +310,11 @@ func newManagerCfg(t *testing.T, numChannels int,
 
 	t.Helper()
 
-	privKey, err := btcec.NewPrivateKey(btcec.S256())
+	privKey, err := btcec.NewPrivateKey()
 	if err != nil {
 		t.Fatalf("unable to generate key pair: %v", err)
 	}
-	privKeySigner := &keychain.PrivKeyDigestSigner{PrivKey: privKey}
+	privKeySigner := keychain.NewPrivKeyMessageSigner(privKey, testKeyLoc)
 
 	graph := newMockGraph(
 		t, numChannels, startEnabled, startEnabled, privKey.PubKey(),
@@ -322,6 +326,7 @@ func newManagerCfg(t *testing.T, numChannels int,
 		ChanEnableTimeout:        500 * time.Millisecond,
 		ChanDisableTimeout:       time.Second,
 		OurPubKey:                privKey.PubKey(),
+		OurKeyLoc:                testKeyLoc,
 		MessageSigner:            netann.NewNodeSigner(privKeySigner),
 		IsChannelActive:          htlcSwitch.HasActiveLink,
 		ApplyChannelUpdate:       graph.ApplyChannelUpdate,
@@ -405,30 +410,48 @@ func (h *testHarness) markInactive(channels []*channeldb.OpenChannel) {
 
 // assertEnables requests enables for all of the passed channels, and asserts
 // that the errors returned from RequestEnable matches expErr.
-func (h *testHarness) assertEnables(channels []*channeldb.OpenChannel, expErr error) {
+func (h *testHarness) assertEnables(channels []*channeldb.OpenChannel, expErr error,
+	manual bool) {
+
 	h.t.Helper()
 
 	for _, channel := range channels {
-		h.assertEnable(channel.FundingOutpoint, expErr)
+		h.assertEnable(channel.FundingOutpoint, expErr, manual)
 	}
 }
 
 // assertDisables requests disables for all of the passed channels, and asserts
 // that the errors returned from RequestDisable matches expErr.
-func (h *testHarness) assertDisables(channels []*channeldb.OpenChannel, expErr error) {
+func (h *testHarness) assertDisables(channels []*channeldb.OpenChannel, expErr error,
+	manual bool) {
+
 	h.t.Helper()
 
 	for _, channel := range channels {
-		h.assertDisable(channel.FundingOutpoint, expErr)
+		h.assertDisable(channel.FundingOutpoint, expErr, manual)
+	}
+}
+
+// assertAutos requests auto state management for all of the passed channels, and
+// asserts that the errors returned from RequestAuto matches expErr.
+func (h *testHarness) assertAutos(channels []*channeldb.OpenChannel,
+	expErr error) {
+
+	h.t.Helper()
+
+	for _, channel := range channels {
+		h.assertAuto(channel.FundingOutpoint, expErr)
 	}
 }
 
 // assertEnable requests an enable for the given outpoint, and asserts that the
 // returned error matches expErr.
-func (h *testHarness) assertEnable(outpoint wire.OutPoint, expErr error) {
+func (h *testHarness) assertEnable(outpoint wire.OutPoint, expErr error,
+	manual bool) {
+
 	h.t.Helper()
 
-	err := h.mgr.RequestEnable(outpoint)
+	err := h.mgr.RequestEnable(outpoint, manual)
 	if err != expErr {
 		h.t.Fatalf("expected enable error: %v, got %v", expErr, err)
 	}
@@ -436,12 +459,25 @@ func (h *testHarness) assertEnable(outpoint wire.OutPoint, expErr error) {
 
 // assertDisable requests a disable for the given outpoint, and asserts that the
 // returned error matches expErr.
-func (h *testHarness) assertDisable(outpoint wire.OutPoint, expErr error) {
+func (h *testHarness) assertDisable(outpoint wire.OutPoint, expErr error,
+	manual bool) {
+
 	h.t.Helper()
 
-	err := h.mgr.RequestDisable(outpoint)
+	err := h.mgr.RequestDisable(outpoint, manual)
 	if err != expErr {
 		h.t.Fatalf("expected disable error: %v, got %v", expErr, err)
+	}
+}
+
+// assertAuto requests auto state management for the given outpoint, and asserts
+// that the returned error matches expErr.
+func (h *testHarness) assertAuto(outpoint wire.OutPoint, expErr error) {
+	h.t.Helper()
+
+	err := h.mgr.RequestAuto(outpoint)
+	if err != expErr {
+		h.t.Fatalf("expected error: %v, got %v", expErr, err)
 	}
 }
 
@@ -548,7 +584,7 @@ var stateMachineTests = []stateMachineTest{
 		startEnabled: false,
 		fn: func(h testHarness) {
 			// Request enables for all channels.
-			h.assertEnables(h.graph.chans(), nil)
+			h.assertEnables(h.graph.chans(), nil, false)
 			// Expect to see them all enabled on the network.
 			h.assertUpdates(
 				h.graph.chans(), true, h.safeDisableTimeout,
@@ -561,7 +597,7 @@ var stateMachineTests = []stateMachineTest{
 		startEnabled: true,
 		fn: func(h testHarness) {
 			// Request disables for all channels.
-			h.assertDisables(h.graph.chans(), nil)
+			h.assertDisables(h.graph.chans(), nil, false)
 			// Expect to see them all disabled on the network.
 			h.assertUpdates(
 				h.graph.chans(), false, h.safeDisableTimeout,
@@ -574,7 +610,7 @@ var stateMachineTests = []stateMachineTest{
 		startEnabled: true,
 		fn: func(h testHarness) {
 			// Request enables for already enabled channels.
-			h.assertEnables(h.graph.chans(), nil)
+			h.assertEnables(h.graph.chans(), nil, false)
 			// Manager shouldn't send out any updates.
 			h.assertNoUpdates(h.safeDisableTimeout)
 		},
@@ -585,7 +621,7 @@ var stateMachineTests = []stateMachineTest{
 		startEnabled: false,
 		fn: func(h testHarness) {
 			// Request disables for already enabled channels.
-			h.assertDisables(h.graph.chans(), nil)
+			h.assertDisables(h.graph.chans(), nil, false)
 			// Manager shouldn't sent out any updates.
 			h.assertNoUpdates(h.safeDisableTimeout)
 		},
@@ -616,7 +652,7 @@ var stateMachineTests = []stateMachineTest{
 			// Simulate reconnect by making channels active.
 			h.markActive(h.graph.chans())
 			// Request that all channels be reenabled.
-			h.assertEnables(h.graph.chans(), nil)
+			h.assertEnables(h.graph.chans(), nil, false)
 			// Pending disable should have been canceled, and
 			// no updates sent. Channels remain enabled on the
 			// network.
@@ -642,7 +678,7 @@ var stateMachineTests = []stateMachineTest{
 			// Request enable of inactive channels, expect error
 			// indicating that channel was not active.
 			h.assertEnables(
-				h.graph.chans(), netann.ErrEnableInactiveChan,
+				h.graph.chans(), netann.ErrEnableInactiveChan, false,
 			)
 			// No updates should be sent as a result of the failure.
 			h.assertNoUpdates(h.safeDisableTimeout)
@@ -662,7 +698,7 @@ var stateMachineTests = []stateMachineTest{
 			// Request that they be enabled, which should return an
 			// error as the graph doesn't have an edge for them.
 			h.assertEnables(
-				unknownChans, channeldb.ErrEdgeNotFound,
+				unknownChans, channeldb.ErrEdgeNotFound, false,
 			)
 			// No updates should be sent as a result of the failure.
 			h.assertNoUpdates(h.safeDisableTimeout)
@@ -682,7 +718,7 @@ var stateMachineTests = []stateMachineTest{
 			// Request that they be disabled, which should return an
 			// error as the graph doesn't have an edge for them.
 			h.assertDisables(
-				unknownChans, channeldb.ErrEdgeNotFound,
+				unknownChans, channeldb.ErrEdgeNotFound, false,
 			)
 			// No updates should be sent as a result of the failure.
 			h.assertNoUpdates(h.safeDisableTimeout)
@@ -712,7 +748,7 @@ var stateMachineTests = []stateMachineTest{
 
 			// Check that trying to enable the channel with unknown
 			// edges results in a failure.
-			h.assertEnables(newChans, channeldb.ErrEdgeNotFound)
+			h.assertEnables(newChans, channeldb.ErrEdgeNotFound, false)
 
 			// Now, insert edge policies for the channel into the
 			// graph, starting with the channel enabled, and mark
@@ -731,7 +767,7 @@ var stateMachineTests = []stateMachineTest{
 
 			// Finally, assert that enabling the channel doesn't
 			// return an error now that everything is in place.
-			h.assertEnables(newChans, nil)
+			h.assertEnables(newChans, nil, false)
 		},
 	},
 	{
@@ -759,7 +795,7 @@ var stateMachineTests = []stateMachineTest{
 
 			// Check that trying to enable the channel with unknown
 			// edges results in a failure.
-			h.assertDisables(rmChans, channeldb.ErrEdgeNotFound)
+			h.assertDisables(rmChans, channeldb.ErrEdgeNotFound, false)
 		},
 	},
 	{
@@ -777,7 +813,7 @@ var stateMachineTests = []stateMachineTest{
 
 			// Check that trying to enable the channel with unknown
 			// edges results in a failure.
-			h.assertDisables(rmChans, nil)
+			h.assertDisables(rmChans, nil, false)
 
 			// Since the channels are still in the graph, we expect
 			// these channels to be disabled on the network.
@@ -789,6 +825,86 @@ var stateMachineTests = []stateMachineTest{
 				h.graph.removeChannel(c)
 			}
 			h.assertNoUpdates(h.safeDisableTimeout)
+		},
+	},
+	{
+		name:         "request manual enable",
+		startActive:  true,
+		startEnabled: false,
+		fn: func(h testHarness) {
+			// Request manual enables for all channels.
+			h.assertEnables(h.graph.chans(), nil, true)
+
+			// Expect to see them all enabled on the network.
+			h.assertUpdates(
+				h.graph.chans(), true, h.safeDisableTimeout,
+			)
+
+			// Subsequent request disables with manual = false should succeed.
+			h.assertDisables(
+				h.graph.chans(), nil, false,
+			)
+
+			// Expect to see them all disabled on the network again.
+			h.assertUpdates(
+				h.graph.chans(), false, h.safeDisableTimeout,
+			)
+		},
+	},
+	{
+		name:         "request manual disable",
+		startActive:  true,
+		startEnabled: true,
+		fn: func(h testHarness) {
+			// Request manual disables for all channels.
+			h.assertDisables(h.graph.chans(), nil, true)
+
+			// Expect to see them all disabled on the network.
+			h.assertUpdates(
+				h.graph.chans(), false, h.safeDisableTimeout,
+			)
+
+			// Request enables with manual = false should fail.
+			h.assertEnables(
+				h.graph.chans(), netann.ErrEnableManuallyDisabledChan, false,
+			)
+
+			// Request enables with manual = true should succeed.
+			h.assertEnables(h.graph.chans(), nil, true)
+
+			// Expect to see them all enabled on the network again.
+			h.assertUpdates(
+				h.graph.chans(), true, h.safeDisableTimeout,
+			)
+		},
+	},
+	{
+		name:         "restore auto",
+		startActive:  true,
+		startEnabled: true,
+		fn: func(h testHarness) {
+			// Request manual disables for all channels.
+			h.assertDisables(h.graph.chans(), nil, true)
+
+			// Expect to see them all disabled on the network.
+			h.assertUpdates(
+				h.graph.chans(), false, h.safeDisableTimeout,
+			)
+
+			// Request enables with manual = false should fail.
+			h.assertEnables(
+				h.graph.chans(), netann.ErrEnableManuallyDisabledChan, false,
+			)
+
+			// Request enables with manual = false should succeed after
+			// restoring auto state management.
+			h.assertAutos(h.graph.chans(), nil)
+			h.assertEnables(h.graph.chans(), nil, false)
+
+			// Expect to see them all enabled on the network again.
+			h.assertUpdates(
+				h.graph.chans(), true, h.safeDisableTimeout,
+			)
 		},
 	},
 }

@@ -9,10 +9,10 @@ import (
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnwire"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 )
 
 // SingleBackupVersion denotes the version of the single static channel backup.
@@ -36,6 +36,17 @@ const (
 	// implicitly denotes that this channel uses the new anchor commitment
 	// format.
 	AnchorsCommitVersion = 2
+
+	// AnchorsZeroFeeHtlcTxCommitVersion is a version that denotes this
+	// channel is using the zero-fee second-level anchor commitment format.
+	AnchorsZeroFeeHtlcTxCommitVersion = 3
+
+	// ScriptEnforcedLeaseVersion is a version that denotes this channel is
+	// using the zero-fee second-level anchor commitment format along with
+	// an additional CLTV requirement of the channel lease maturity on any
+	// commitment and HTLC outputs that pay directly to the channel
+	// initiator.
+	ScriptEnforcedLeaseVersion = 4
 )
 
 // Single is a static description of an existing channel that can be used for
@@ -112,6 +123,16 @@ type Single struct {
 	// ShaChainRootDesc describes how to derive the private key that was
 	// used as the shachain root for this channel.
 	ShaChainRootDesc keychain.KeyDescriptor
+
+	// LeaseExpiry represents the absolute expiration as a height of the
+	// chain of a channel lease that is applied to every output that pays
+	// directly to the channel initiator in addition to the usual CSV
+	// requirement.
+	//
+	// NOTE: This field will only be present for the following versions:
+	//
+	// - ScriptEnforcedLeaseVersion
+	LeaseExpiry uint32
 }
 
 // NewSingle creates a new static channel backup based on an existing open
@@ -120,19 +141,34 @@ type Single struct {
 func NewSingle(channel *channeldb.OpenChannel,
 	nodeAddrs []net.Addr) Single {
 
-	// TODO(roasbeef): update after we start to store the KeyLoc for
-	// shachain root
+	var shaChainRootDesc keychain.KeyDescriptor
 
-	// We'll need to obtain the shachain root which is derived directly
-	// from a private key in our keychain.
-	var b bytes.Buffer
-	channel.RevocationProducer.Encode(&b) // Can't return an error.
+	// If the channel has a populated RevocationKeyLocator, then we can
+	// just store that instead of the public key.
+	if channel.RevocationKeyLocator.Family == keychain.KeyFamilyRevocationRoot {
+		shaChainRootDesc = keychain.KeyDescriptor{
+			KeyLocator: channel.RevocationKeyLocator,
+		}
+	} else {
+		// If the RevocationKeyLocator is not populated, then we'll need
+		// to obtain a public point for the shachain root and store that.
+		// This is the legacy scheme.
+		var b bytes.Buffer
+		_ = channel.RevocationProducer.Encode(&b) // Can't return an error.
 
-	// Once we have the root, we'll make a public key from it, such that
-	// the backups plaintext don't carry any private information. When we
-	// go to recover, we'll present this in order to derive the private
-	// key.
-	_, shaChainPoint := btcec.PrivKeyFromBytes(btcec.S256(), b.Bytes())
+		// Once we have the root, we'll make a public key from it, such that
+		// the backups plaintext don't carry any private information. When
+		// we go to recover, we'll present this in order to derive the
+		// private key.
+		_, shaChainPoint := btcec.PrivKeyFromBytes(b.Bytes())
+
+		shaChainRootDesc = keychain.KeyDescriptor{
+			PubKey: shaChainPoint,
+			KeyLocator: keychain.KeyLocator{
+				Family: keychain.KeyFamilyRevocationRoot,
+			},
+		}
+	}
 
 	// If a channel is unconfirmed, the block height of the ShortChannelID
 	// is zero. This will lead to problems when trying to restore that
@@ -145,24 +181,26 @@ func NewSingle(channel *channeldb.OpenChannel,
 	}
 
 	single := Single{
-		IsInitiator:     channel.IsInitiator,
-		ChainHash:       channel.ChainHash,
-		FundingOutpoint: channel.FundingOutpoint,
-		ShortChannelID:  chanID,
-		RemoteNodePub:   channel.IdentityPub,
-		Addresses:       nodeAddrs,
-		Capacity:        channel.Capacity,
-		LocalChanCfg:    channel.LocalChanCfg,
-		RemoteChanCfg:   channel.RemoteChanCfg,
-		ShaChainRootDesc: keychain.KeyDescriptor{
-			PubKey: shaChainPoint,
-			KeyLocator: keychain.KeyLocator{
-				Family: keychain.KeyFamilyRevocationRoot,
-			},
-		},
+		IsInitiator:      channel.IsInitiator,
+		ChainHash:        channel.ChainHash,
+		FundingOutpoint:  channel.FundingOutpoint,
+		ShortChannelID:   chanID,
+		RemoteNodePub:    channel.IdentityPub,
+		Addresses:        nodeAddrs,
+		Capacity:         channel.Capacity,
+		LocalChanCfg:     channel.LocalChanCfg,
+		RemoteChanCfg:    channel.RemoteChanCfg,
+		ShaChainRootDesc: shaChainRootDesc,
 	}
 
 	switch {
+	case channel.ChanType.HasLeaseExpiration():
+		single.Version = ScriptEnforcedLeaseVersion
+		single.LeaseExpiry = channel.ThawHeight
+
+	case channel.ChanType.ZeroHtlcTxFee():
+		single.Version = AnchorsZeroFeeHtlcTxCommitVersion
+
 	case channel.ChanType.HasAnchors():
 		single.Version = AnchorsCommitVersion
 
@@ -185,6 +223,8 @@ func (s *Single) Serialize(w io.Writer) error {
 	case DefaultSingleVersion:
 	case TweaklessCommitVersion:
 	case AnchorsCommitVersion:
+	case AnchorsZeroFeeHtlcTxCommitVersion:
+	case ScriptEnforcedLeaseVersion:
 	default:
 		return fmt.Errorf("unable to serialize w/ unknown "+
 			"version: %v", s.Version)
@@ -246,9 +286,22 @@ func (s *Single) Serialize(w io.Writer) error {
 	); err != nil {
 		return err
 	}
+	if s.Version == ScriptEnforcedLeaseVersion {
+		err := lnwire.WriteElements(&singleBytes, s.LeaseExpiry)
+		if err != nil {
+			return err
+		}
+	}
+
+	// TODO(yy): remove the type assertion when we finished refactoring db
+	// into using write buffer.
+	buf, ok := w.(*bytes.Buffer)
+	if !ok {
+		return fmt.Errorf("expect io.Writer to be *bytes.Buffer")
+	}
 
 	return lnwire.WriteElements(
-		w,
+		buf,
 		byte(s.Version),
 		uint16(len(singleBytes.Bytes())),
 		singleBytes.Bytes(),
@@ -316,12 +369,10 @@ func readRemoteKeyDesc(r io.Reader) (keychain.KeyDescriptor, error) {
 		return keychain.KeyDescriptor{}, err
 	}
 
-	keyDesc.PubKey, err = btcec.ParsePubKey(pub[:], btcec.S256())
+	keyDesc.PubKey, err = btcec.ParsePubKey(pub[:])
 	if err != nil {
 		return keychain.KeyDescriptor{}, err
 	}
-
-	keyDesc.PubKey.Curve = nil
 
 	return keyDesc, nil
 }
@@ -344,6 +395,8 @@ func (s *Single) Deserialize(r io.Reader) error {
 	case DefaultSingleVersion:
 	case TweaklessCommitVersion:
 	case AnchorsCommitVersion:
+	case AnchorsZeroFeeHtlcTxCommitVersion:
+	case ScriptEnforcedLeaseVersion:
 	default:
 		return fmt.Errorf("unable to de-serialize w/ unknown "+
 			"version: %v", s.Version)
@@ -425,7 +478,7 @@ func (s *Single) Deserialize(r io.Reader) error {
 	// been specified or not.
 	if !bytes.Equal(shaChainPub[:], zeroPub[:]) {
 		s.ShaChainRootDesc.PubKey, err = btcec.ParsePubKey(
-			shaChainPub[:], btcec.S256(),
+			shaChainPub[:],
 		)
 		if err != nil {
 			return err
@@ -437,8 +490,18 @@ func (s *Single) Deserialize(r io.Reader) error {
 		return err
 	}
 	s.ShaChainRootDesc.KeyLocator.Family = keychain.KeyFamily(shaKeyFam)
+	err = lnwire.ReadElements(r, &s.ShaChainRootDesc.KeyLocator.Index)
+	if err != nil {
+		return err
+	}
 
-	return lnwire.ReadElements(r, &s.ShaChainRootDesc.KeyLocator.Index)
+	if s.Version == ScriptEnforcedLeaseVersion {
+		if err := lnwire.ReadElement(r, &s.LeaseExpiry); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // UnpackFromReader is similar to Deserialize method, but it expects the passed

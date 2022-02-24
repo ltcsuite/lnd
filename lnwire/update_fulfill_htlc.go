@@ -1,6 +1,7 @@
 package lnwire
 
 import (
+	"bytes"
 	"io"
 )
 
@@ -21,6 +22,11 @@ type UpdateFulfillHTLC struct {
 	// PaymentPreimage is the R-value preimage required to fully settle an
 	// HTLC.
 	PaymentPreimage [32]byte
+
+	// ExtraData is the set of data that was appended to this message to
+	// fill out the full maximum transport message size. These fields can
+	// be used to specify optional data such as custom TLV fields.
+	ExtraData ExtraOpaqueData
 }
 
 // NewUpdateFulfillHTLC returns a new empty UpdateFulfillHTLC.
@@ -47,6 +53,7 @@ func (c *UpdateFulfillHTLC) Decode(r io.Reader, pver uint32) error {
 		&c.ChanID,
 		&c.ID,
 		c.PaymentPreimage[:],
+		&c.ExtraData,
 	)
 }
 
@@ -54,12 +61,20 @@ func (c *UpdateFulfillHTLC) Decode(r io.Reader, pver uint32) error {
 // observing the protocol version specified.
 //
 // This is part of the lnwire.Message interface.
-func (c *UpdateFulfillHTLC) Encode(w io.Writer, pver uint32) error {
-	return WriteElements(w,
-		c.ChanID,
-		c.ID,
-		c.PaymentPreimage[:],
-	)
+func (c *UpdateFulfillHTLC) Encode(w *bytes.Buffer, pver uint32) error {
+	if err := WriteChannelID(w, c.ChanID); err != nil {
+		return err
+	}
+
+	if err := WriteUint64(w, c.ID); err != nil {
+		return err
+	}
+
+	if err := WriteBytes(w, c.PaymentPreimage[:]); err != nil {
+		return err
+	}
+
+	return WriteBytes(w, c.ExtraData)
 }
 
 // MsgType returns the integer uniquely identifying this message type on the
@@ -68,15 +83,6 @@ func (c *UpdateFulfillHTLC) Encode(w io.Writer, pver uint32) error {
 // This is part of the lnwire.Message interface.
 func (c *UpdateFulfillHTLC) MsgType() MessageType {
 	return MsgUpdateFulfillHTLC
-}
-
-// MaxPayloadLength returns the maximum allowed payload size for an UpdateFulfillHTLC
-// complete message observing the specified protocol version.
-//
-// This is part of the lnwire.Message interface.
-func (c *UpdateFulfillHTLC) MaxPayloadLength(uint32) uint32 {
-	// 32 + 8 + 32
-	return 72
 }
 
 // TargetChanID returns the channel id of the link for which this message is

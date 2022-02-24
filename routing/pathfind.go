@@ -42,14 +42,25 @@ const (
 type pathFinder = func(g *graphParams, r *RestrictParams,
 	cfg *PathFindingConfig, source, target route.Vertex,
 	amt lnwire.MilliSatoshi, finalHtlcExpiry int32) (
-	[]*channeldb.ChannelEdgePolicy, error)
+	[]*channeldb.CachedEdgePolicy, error)
 
 var (
-	// DefaultPaymentAttemptPenalty is the virtual cost in path finding weight
-	// units of executing a payment attempt that fails. It is used to trade
-	// off potentially better routes against their probability of
-	// succeeding.
-	DefaultPaymentAttemptPenalty = lnwire.NewMSatFromSatoshis(100)
+	// DefaultAttemptCost is the default fixed virtual cost in path finding
+	// of a failed payment attempt. It is used to trade off potentially
+	// better routes against their probability of succeeding.
+	DefaultAttemptCost = lnwire.NewMSatFromSatoshis(100)
+
+	// DefaultAttemptCostPPM is the default proportional virtual cost in
+	// path finding weight units of executing a payment attempt that fails.
+	// It is used to trade off potentially better routes against their
+	// probability of succeeding. This parameter is expressed in parts per
+	// million of the payment amount.
+	//
+	// It is impossible to pick a perfect default value. The current value
+	// of 0.1% is based on the idea that a transaction fee of 1% is within
+	// reasonable territory and that a payment shouldn't need more than 10
+	// attempts.
+	DefaultAttemptCostPPM = int64(1000)
 
 	// DefaultMinRouteProbability is the default minimum probability for routes
 	// returned from findPath.
@@ -65,7 +76,7 @@ var (
 // of the edge.
 type edgePolicyWithSource struct {
 	sourceNode route.Vertex
-	edge       *channeldb.ChannelEdgePolicy
+	edge       *channeldb.CachedEdgePolicy
 }
 
 // finalHopParams encapsulates various parameters for route construction that
@@ -91,7 +102,7 @@ type finalHopParams struct {
 // any feature vectors on all hops have been validated for transitive
 // dependencies.
 func newRoute(sourceVertex route.Vertex,
-	pathEdges []*channeldb.ChannelEdgePolicy, currentHeight uint32,
+	pathEdges []*channeldb.CachedEdgePolicy, currentHeight uint32,
 	finalHop finalHopParams) (*route.Route, error) {
 
 	var (
@@ -133,7 +144,14 @@ func newRoute(sourceVertex route.Vertex,
 		// vector for support for a given feature. We assume at this
 		// point that the feature vectors transitive dependencies have
 		// been validated.
-		supports := edge.Node.Features.HasFeature
+		supports := func(feature lnwire.FeatureBit) bool {
+			// If this edge comes from router hints, the features
+			// could be nil.
+			if edge.ToNodeFeatures == nil {
+				return false
+			}
+			return edge.ToNodeFeatures.HasFeature(feature)
+		}
 
 		// We start by assuming the node doesn't support TLV. We'll now
 		// inspect the node's feature vector to see if we can promote
@@ -176,6 +194,8 @@ func newRoute(sourceVertex route.Vertex,
 			}
 
 			// Otherwise attach the mpp record if it exists.
+			// TODO(halseth): move this to payment life cycle,
+			// where AMP options are set.
 			if finalHop.paymentAddr != nil {
 				mpp = record.NewMPP(
 					finalHop.totalAmt,
@@ -205,7 +225,7 @@ func newRoute(sourceVertex route.Vertex,
 		// each new hop such that, the final slice of hops will be in
 		// the forwards order.
 		currentHop := &route.Hop{
-			PubKeyBytes:      edge.Node.PubKeyBytes,
+			PubKeyBytes:      edge.ToNodePubKey(),
 			ChannelID:        edge.ChannelID,
 			AmtToForward:     amtToForward,
 			OutgoingTimeLock: outgoingTimeLock,
@@ -260,16 +280,16 @@ type graphParams struct {
 	// additionalEdges is an optional set of edges that should be
 	// considered during path finding, that is not already found in the
 	// channel graph.
-	additionalEdges map[route.Vertex][]*channeldb.ChannelEdgePolicy
+	additionalEdges map[route.Vertex][]*channeldb.CachedEdgePolicy
 
-	// bandwidthHints is an optional map from channels to bandwidths that
-	// can be populated if the caller has a better estimate of the current
-	// channel bandwidth than what is found in the graph. If set, it will
-	// override the capacities and disabled flags found in the graph for
-	// local channels when doing path finding. In particular, it should be
-	// set to the current available sending bandwidth for active local
-	// channels, and 0 for inactive channels.
-	bandwidthHints map[uint64]lnwire.MilliSatoshi
+	// bandwidthHints is an interface that provides bandwidth hints that
+	// can provide a better estimate of the current channel bandwidth than
+	// what is found in the graph. It will override the capacities and
+	// disabled flags found in the graph for local channels when doing
+	// path finding if it has updated values for that channel. In
+	// particular, it should be set to the current available sending
+	// bandwidth for active local channels, and 0 for inactive channels.
+	bandwidthHints bandwidthHints
 }
 
 // RestrictParams wraps the set of restrictions passed to findPath that the
@@ -315,11 +335,16 @@ type RestrictParams struct {
 // PathFindingConfig defines global parameters that control the trade-off in
 // path finding between fees and probabiity.
 type PathFindingConfig struct {
-	// PaymentAttemptPenalty is the virtual cost in path finding weight
-	// units of executing a payment attempt that fails. It is used to trade
-	// off potentially better routes against their probability of
-	// succeeding.
-	PaymentAttemptPenalty lnwire.MilliSatoshi
+	// AttemptCost is the fixed virtual cost in path finding of a failed
+	// payment attempt. It is used to trade off potentially better routes
+	// against their probability of succeeding.
+	AttemptCost lnwire.MilliSatoshi
+
+	// AttemptCostPPM is the proportional virtual cost in path finding of a
+	// failed payment attempt. It is used to trade off potentially better
+	// routes against their probability of succeeding. This parameter is
+	// expressed in parts per million of the total payment amount.
+	AttemptCostPPM int64
 
 	// MinProbability defines the minimum success probability of the
 	// returned route.
@@ -330,18 +355,16 @@ type PathFindingConfig struct {
 // channels of the given node. The second return parameters is the total
 // available balance.
 func getOutgoingBalance(node route.Vertex, outgoingChans map[uint64]struct{},
-	bandwidthHints map[uint64]lnwire.MilliSatoshi,
+	bandwidthHints bandwidthHints,
 	g routingGraph) (lnwire.MilliSatoshi, lnwire.MilliSatoshi, error) {
 
 	var max, total lnwire.MilliSatoshi
-	cb := func(edgeInfo *channeldb.ChannelEdgeInfo, outEdge,
-		_ *channeldb.ChannelEdgePolicy) error {
-
-		if outEdge == nil {
+	cb := func(channel *channeldb.DirectedChannel) error {
+		if !channel.OutPolicySet {
 			return nil
 		}
 
-		chanID := outEdge.ChannelID
+		chanID := channel.ChannelID
 
 		// Enforce outgoing channel restriction.
 		if outgoingChans != nil {
@@ -350,15 +373,15 @@ func getOutgoingBalance(node route.Vertex, outgoingChans map[uint64]struct{},
 			}
 		}
 
-		bandwidth, ok := bandwidthHints[chanID]
+		bandwidth, ok := bandwidthHints.availableChanBandwidth(
+			chanID, 0,
+		)
 
 		// If the bandwidth is not available, use the channel capacity.
 		// This can happen when a channel is added to the graph after
 		// we've already queried the bandwidth hints.
 		if !ok {
-			bandwidth = lnwire.NewMSatFromSatoshis(
-				edgeInfo.Capacity,
-			)
+			bandwidth = lnwire.NewMSatFromSatoshis(channel.Capacity)
 		}
 
 		if bandwidth > max {
@@ -391,7 +414,7 @@ func getOutgoingBalance(node route.Vertex, outgoingChans map[uint64]struct{},
 // available bandwidth.
 func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 	source, target route.Vertex, amt lnwire.MilliSatoshi,
-	finalHtlcExpiry int32) ([]*channeldb.ChannelEdgePolicy, error) {
+	finalHtlcExpiry int32) ([]*channeldb.CachedEdgePolicy, error) {
 
 	// Pathfinding can be a significant portion of the total payment
 	// latency, especially on low-powered devices. Log several metrics to
@@ -498,7 +521,7 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 		// Build reverse lookup to find incoming edges. Needed because
 		// search is taken place from target to source.
 		for _, outgoingEdgePolicy := range outgoingEdgePolicies {
-			toVertex := outgoingEdgePolicy.Node.PubKeyBytes
+			toVertex := outgoingEdgePolicy.ToNodePubKey()
 			incomingEdgePolicy := &edgePolicyWithSource{
 				sourceNode: vertex,
 				edge:       outgoingEdgePolicy,
@@ -550,11 +573,19 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 	// if the cltv limit is MaxUint32.
 	absoluteCltvLimit := uint64(r.CltvLimit) + uint64(finalHtlcExpiry)
 
+	// Calculate the absolute attempt cost that is used for probability
+	// estimation.
+	absoluteAttemptCost := int64(cfg.AttemptCost) +
+		int64(amt)*cfg.AttemptCostPPM/1000000
+
+	log.Debugf("Pathfinding absolute attempt cost: %v sats",
+		float64(absoluteAttemptCost)/1000)
+
 	// processEdge is a helper closure that will be used to make sure edges
 	// satisfy our specific requirements.
 	processEdge := func(fromVertex route.Vertex,
 		fromFeatures *lnwire.FeatureVector,
-		edge *channeldb.ChannelEdgePolicy, toNodeDist *nodeWithDist) {
+		edge *channeldb.CachedEdgePolicy, toNodeDist *nodeWithDist) {
 
 		edgesExpanded++
 
@@ -644,7 +675,7 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 		// probability.
 		tempDist := getProbabilityBasedDist(
 			tempWeight, probability,
-			int64(cfg.PaymentAttemptPenalty),
+			absoluteAttemptCost,
 		)
 
 		// If there is already a best route stored, compare this
@@ -850,13 +881,14 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 
 	// Use the distance map to unravel the forward path from source to
 	// target.
-	var pathEdges []*channeldb.ChannelEdgePolicy
+	var pathEdges []*channeldb.CachedEdgePolicy
 	currentNode := source
 	for {
 		// Determine the next hop forward using the next map.
 		currentNodeWithDist, ok := distance[currentNode]
 		if !ok {
-			// If the node doesnt have a next hop it means we didn't find a path.
+			// If the node doesn't have a next hop it means we
+			// didn't find a path.
 			return nil, errNoPathFound
 		}
 
@@ -864,7 +896,7 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 		pathEdges = append(pathEdges, currentNodeWithDist.nextHop)
 
 		// Advance current node.
-		currentNode = currentNodeWithDist.nextHop.Node.PubKeyBytes
+		currentNode = currentNodeWithDist.nextHop.ToNodePubKey()
 
 		// Check stop condition at the end of this loop. This prevents
 		// breaking out too soon for self-payments that have target set
@@ -885,7 +917,7 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 	// route construction does not care where the features are actually
 	// taken from. In the future we may wish to do route construction within
 	// findPath, and avoid using ChannelEdgePolicy altogether.
-	pathEdges[len(pathEdges)-1].Node.Features = features
+	pathEdges[len(pathEdges)-1].ToNodeFeatures = features
 
 	log.Debugf("Found route: probability=%v, hops=%v, fee=%v",
 		distance[source].probability, len(pathEdges),

@@ -3,8 +3,8 @@ package wtmock
 import (
 	"sync"
 
-	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
 // SecretKeyRing is a mock, in-memory implementation for deriving private keys.
@@ -39,7 +39,7 @@ func (m *SecretKeyRing) DeriveKey(
 		}, nil
 	}
 
-	privKey, err := btcec.NewPrivateKey(btcec.S256())
+	privKey, err := btcec.NewPrivateKey()
 	if err != nil {
 		return keychain.KeyDescriptor{}, err
 	}

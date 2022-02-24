@@ -3,8 +3,8 @@ package autopilot
 import (
 	"testing"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/stretchr/testify/require"
 )
 

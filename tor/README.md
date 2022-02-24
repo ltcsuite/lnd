@@ -16,6 +16,6 @@ onion services, asynchronous messages, etc.
 
 ## Installation and Updating
 
-```bash
-$ go get -u github.com/ltcsuite/lnd/tor
+```shell
+⛰  go get -u github.com/ltcsuite/lnd/tor
 ```

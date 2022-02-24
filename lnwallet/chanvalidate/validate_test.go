@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/txscript"
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/btcec/v2/ecdsa"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 var (
@@ -27,8 +28,8 @@ var (
 		0x69, 0x49, 0x18, 0x83, 0x31, 0x98, 0x47, 0x53,
 	}
 
-	alicePriv, alicePub = btcec.PrivKeyFromBytes(btcec.S256(), aliceKey[:])
-	bobPriv, bobPub     = btcec.PrivKeyFromBytes(btcec.S256(), bobKey[:])
+	alicePriv, alicePub = btcec.PrivKeyFromBytes(aliceKey[:])
+	bobPriv, bobPub     = btcec.PrivKeyFromBytes(bobKey[:])
 )
 
 // channelTestCtx holds shared context that will be used in all tests cases
@@ -106,9 +107,7 @@ func newChannelTestCtx(chanSize int64) (*channelTestCtx, error) {
 		return nil, err
 	}
 
-	aliceSig, err := btcec.ParseDERSignature(
-		aliceSigRaw, btcec.S256(),
-	)
+	aliceSig, err := ecdsa.ParseDERSignature(aliceSigRaw)
 	if err != nil {
 		return nil, err
 	}
@@ -121,9 +120,7 @@ func newChannelTestCtx(chanSize int64) (*channelTestCtx, error) {
 		return nil, err
 	}
 
-	bobSig, err := btcec.ParseDERSignature(
-		bobSigRaw, btcec.S256(),
-	)
+	bobSig, err := ecdsa.ParseDERSignature(bobSigRaw)
 	if err != nil {
 		return nil, err
 	}

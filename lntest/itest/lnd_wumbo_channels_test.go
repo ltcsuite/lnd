@@ -1,14 +1,11 @@
-// +build rpctest
-
 package itest
 
 import (
-	"context"
 	"strings"
 
-	"github.com/ltcsuite/lnd"
+	"github.com/ltcsuite/lnd/funding"
 	"github.com/ltcsuite/lnd/lntest"
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 // testWumboChannels tests that only a node that signals wumbo channel
@@ -21,38 +18,25 @@ func testWumboChannels(net *lntest.NetworkHarness, t *harnessTest) {
 	//
 	// We'll make two new nodes, with one of them signalling support for
 	// wumbo channels while the other doesn't.
-	wumboNode, err := net.NewNode(
-		"wumbo", []string{"--protocol.wumbo-channels"},
+	wumboNode := net.NewNode(
+		t.t, "wumbo", []string{"--protocol.wumbo-channels"},
 	)
-	if err != nil {
-		t.Fatalf("unable to create new node: %v", err)
-	}
 	defer shutdownAndAssert(net, t, wumboNode)
-	miniNode, err := net.NewNode("mini", nil)
-	if err != nil {
-		t.Fatalf("unable to create new node: %v", err)
-	}
+	miniNode := net.NewNode(t.t, "mini", nil)
 	defer shutdownAndAssert(net, t, miniNode)
 
 	// We'll send coins to the wumbo node, as it'll be the one imitating
 	// the channel funding.
-	ctxb := context.Background()
-	err = net.SendCoins(ctxb, ltcutil.SatoshiPerBitcoin, wumboNode)
-	if err != nil {
-		t.Fatalf("unable to send coins to carol: %v", err)
-	}
+	net.SendCoins(t.t, ltcutil.SatoshiPerBitcoin, wumboNode)
 
 	// Next we'll connect both nodes, then attempt to make a wumbo channel
 	// funding request to the mini node we created above. The wumbo request
 	// should fail as the node isn't advertising wumbo channels.
-	err = net.EnsureConnected(ctxb, wumboNode, miniNode)
-	if err != nil {
-		t.Fatalf("unable to connect peers: %v", err)
-	}
+	net.EnsureConnected(t.t, wumboNode, miniNode)
 
-	chanAmt := lnd.MaxBtcFundingAmount + 1
-	_, err = net.OpenChannel(
-		ctxb, wumboNode, miniNode, lntest.OpenChannelParams{
+	chanAmt := funding.MaxBtcFundingAmount + 1
+	_, err := net.OpenChannel(
+		wumboNode, miniNode, lntest.OpenChannelParams{
 			Amt: chanAmt,
 		},
 	)
@@ -62,31 +46,25 @@ func testWumboChannels(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// The test should indicate a failure due to the channel being too
 	// large.
-	if !strings.Contains(err.Error(), "channel too large") {
+	if !strings.Contains(err.Error(), "exceeds maximum chan size") {
 		t.Fatalf("channel should be rejected due to size, instead "+
 			"error was: %v", err)
 	}
 
 	// We'll now make another wumbo node to accept our wumbo channel
 	// funding.
-	wumboNode2, err := net.NewNode(
-		"wumbo2", []string{"--protocol.wumbo-channels"},
+	wumboNode2 := net.NewNode(
+		t.t, "wumbo2", []string{"--protocol.wumbo-channels"},
 	)
-	if err != nil {
-		t.Fatalf("unable to create new node: %v", err)
-	}
 	defer shutdownAndAssert(net, t, wumboNode2)
 
 	// Creating a wumbo channel between these two nodes should succeed.
-	err = net.EnsureConnected(ctxb, wumboNode, wumboNode2)
-	if err != nil {
-		t.Fatalf("unable to connect peers: %v", err)
-	}
+	net.EnsureConnected(t.t, wumboNode, wumboNode2)
 	chanPoint := openChannelAndAssert(
-		ctxb, t, net, wumboNode, wumboNode2,
+		t, net, wumboNode, wumboNode2,
 		lntest.OpenChannelParams{
 			Amt: chanAmt,
 		},
 	)
-	closeChannelAndAssert(ctxb, t, net, wumboNode, chanPoint, false)
+	closeChannelAndAssert(t, net, wumboNode, chanPoint, false)
 }

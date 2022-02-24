@@ -61,6 +61,10 @@ const (
 	// invoice that is already canceled.
 	ResultInvoiceAlreadyCanceled
 
+	// ResultInvoiceAlreadySettled is returned when trying to pay an invoice
+	// that is already settled.
+	ResultInvoiceAlreadySettled
+
 	// ResultAmountTooLow is returned when an invoice is underpaid.
 	ResultAmountTooLow
 
@@ -105,6 +109,17 @@ const (
 	// ResultMppInProgress is returned when we are busy receiving a mpp
 	// payment.
 	ResultMppInProgress
+
+	// ResultHtlcInvoiceTypeMismatch is returned when an AMP HTLC targets a
+	// non-AMP invoice and vice versa.
+	ResultHtlcInvoiceTypeMismatch
+
+	// ResultAmpError is returned when we receive invalid AMP parameters.
+	ResultAmpError
+
+	// ResultAmpReconstruction is returned when the derived child
+	// hash/preimage pairs were invalid for at least one HTLC in the set.
+	ResultAmpReconstruction
 )
 
 // String returns a string representation of the result.
@@ -125,6 +140,9 @@ func (f FailResolutionResult) FailureString() string {
 
 	case ResultInvoiceAlreadyCanceled:
 		return "invoice already canceled"
+
+	case ResultInvoiceAlreadySettled:
+		return "invoice alread settled"
 
 	case ResultAmountTooLow:
 		return "amount too low"
@@ -162,8 +180,34 @@ func (f FailResolutionResult) FailureString() string {
 	case ResultMppInProgress:
 		return "mpp reception in progress"
 
+	case ResultHtlcInvoiceTypeMismatch:
+		return "htlc invoice type mismatch"
+
+	case ResultAmpError:
+		return "invalid amp parameters"
+
+	case ResultAmpReconstruction:
+		return "amp reconstruction failed"
+
 	default:
 		return "unknown failure resolution result"
+	}
+}
+
+// IsSetFailure returns true if this failure should result in the entire HTLC
+// set being failed with the same result.
+func (f FailResolutionResult) IsSetFailure() bool {
+	switch f {
+	case
+		ResultAmpReconstruction,
+		ResultHtlcSetTotalTooLow,
+		ResultHtlcSetTotalMismatch,
+		ResultHtlcSetOverpayment:
+
+		return true
+
+	default:
+		return false
 	}
 }
 

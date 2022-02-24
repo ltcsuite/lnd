@@ -12,7 +12,8 @@ import (
 
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnwire"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/lnd/tor"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
 type maybeNetConn struct {
@@ -22,7 +23,7 @@ type maybeNetConn struct {
 
 func makeListener() (*Listener, *lnwire.NetAddress, error) {
 	// First, generate the long-term private keys for the brontide listener.
-	localPriv, err := btcec.NewPrivateKey(btcec.S256())
+	localPriv, err := btcec.NewPrivateKey()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -55,7 +56,7 @@ func establishTestConnection() (net.Conn, net.Conn, func(), error) {
 
 	// Nos, generate the long-term private keys remote end of the connection
 	// within our test.
-	remotePriv, err := btcec.NewPrivateKey(btcec.S256())
+	remotePriv, err := btcec.NewPrivateKey()
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -66,7 +67,10 @@ func establishTestConnection() (net.Conn, net.Conn, func(), error) {
 	// successful.
 	remoteConnChan := make(chan maybeNetConn, 1)
 	go func() {
-		remoteConn, err := Dial(remoteKeyECDH, netAddr, net.Dial)
+		remoteConn, err := Dial(
+			remoteKeyECDH, netAddr,
+			tor.DefaultConnTimeout, net.DialTimeout,
+		)
 		remoteConnChan <- maybeNetConn{remoteConn, err}
 	}()
 
@@ -106,7 +110,7 @@ func TestConnectionCorrectness(t *testing.T) {
 
 	// Test out some message full-message reads.
 	for i := 0; i < 10; i++ {
-		msg := []byte("hello" + string(i))
+		msg := []byte(fmt.Sprintf("hello%d", i))
 
 		if _, err := localConn.Write(msg); err != nil {
 			t.Fatalf("remote conn failed to write: %v", err)
@@ -189,14 +193,17 @@ func TestConcurrentHandshakes(t *testing.T) {
 
 	// Now, construct a new private key and use the brontide dialer to
 	// connect to the listener.
-	remotePriv, err := btcec.NewPrivateKey(btcec.S256())
+	remotePriv, err := btcec.NewPrivateKey()
 	if err != nil {
 		t.Fatalf("unable to generate private key: %v", err)
 	}
 	remoteKeyECDH := &keychain.PrivKeyECDH{PrivKey: remotePriv}
 
 	go func() {
-		remoteConn, err := Dial(remoteKeyECDH, netAddr, net.Dial)
+		remoteConn, err := Dial(
+			remoteKeyECDH, netAddr,
+			tor.DefaultConnTimeout, net.DialTimeout,
+		)
 		connChan <- maybeNetConn{remoteConn, err}
 	}()
 
@@ -319,7 +326,7 @@ func TestBolt0008TestVectors(t *testing.T) {
 		t.Fatalf("unable to decode hex: %v", err)
 	}
 	initiatorPriv, _ := btcec.PrivKeyFromBytes(
-		btcec.S256(), initiatorKeyBytes,
+		initiatorKeyBytes,
 	)
 	initiatorKeyECDH := &keychain.PrivKeyECDH{PrivKey: initiatorPriv}
 
@@ -330,7 +337,7 @@ func TestBolt0008TestVectors(t *testing.T) {
 		t.Fatalf("unable to decode hex: %v", err)
 	}
 	responderPriv, responderPub := btcec.PrivKeyFromBytes(
-		btcec.S256(), responderKeyBytes,
+		responderKeyBytes,
 	)
 	responderKeyECDH := &keychain.PrivKeyECDH{PrivKey: responderPriv}
 
@@ -346,7 +353,7 @@ func TestBolt0008TestVectors(t *testing.T) {
 			return nil, err
 		}
 
-		priv, _ := btcec.PrivKeyFromBytes(btcec.S256(), eBytes)
+		priv, _ := btcec.PrivKeyFromBytes(eBytes)
 		return priv, nil
 	})
 	responderEphemeral := EphemeralGenerator(func() (*btcec.PrivateKey, error) {
@@ -357,7 +364,7 @@ func TestBolt0008TestVectors(t *testing.T) {
 			return nil, err
 		}
 
-		priv, _ := btcec.PrivKeyFromBytes(btcec.S256(), eBytes)
+		priv, _ := btcec.PrivKeyFromBytes(eBytes)
 		return priv, nil
 	})
 

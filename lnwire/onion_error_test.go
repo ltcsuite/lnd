@@ -20,11 +20,12 @@ var (
 	testOffset        = uint16(24)
 	sig, _            = NewSigFromSignature(testSig)
 	testChannelUpdate = ChannelUpdate{
-		Signature:      sig,
-		ShortChannelID: NewShortChanIDFromInt(1),
-		Timestamp:      1,
-		MessageFlags:   0,
-		ChannelFlags:   1,
+		Signature:       sig,
+		ShortChannelID:  NewShortChanIDFromInt(1),
+		Timestamp:       1,
+		MessageFlags:    0,
+		ChannelFlags:    1,
+		ExtraOpaqueData: make([]byte, 0),
 	}
 )
 
@@ -274,6 +275,8 @@ func (f *mockFailIncorrectDetailsNoHeight) Decode(r io.Reader, pver uint32) erro
 	return nil
 }
 
-func (f *mockFailIncorrectDetailsNoHeight) Encode(w io.Writer, pver uint32) error {
-	return WriteElement(w, f.amount)
+func (f *mockFailIncorrectDetailsNoHeight) Encode(w *bytes.Buffer,
+	pver uint32) error {
+
+	return WriteUint64(w, f.amount)
 }

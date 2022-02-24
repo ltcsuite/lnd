@@ -6,7 +6,7 @@ import (
 	"io"
 	"sort"
 
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
 // Type is an 64-bit identifier for a TLV Record.

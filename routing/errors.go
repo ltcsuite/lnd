@@ -15,6 +15,28 @@ const (
 	// this update can't bring us something new, or because a node
 	// announcement was given for node not found in any channel.
 	ErrIgnored
+
+	// ErrChannelSpent is returned when we go to validate a channel, but
+	// the purported funding output has actually already been spent on
+	// chain.
+	ErrChannelSpent
+
+	// ErrNoFundingTransaction is returned when we are unable to find the
+	// funding transaction described by the short channel ID on chain.
+	ErrNoFundingTransaction
+
+	// ErrInvalidFundingOutput is returned if the channle funding output
+	// fails validation.
+	ErrInvalidFundingOutput
+
+	// ErrVBarrierShuttingDown signals that the barrier has been requested
+	// to shutdown, and that the caller should not treat the wait condition
+	// as fulfilled.
+	ErrVBarrierShuttingDown
+
+	// ErrParentValidationFailed signals that the validation of a
+	// dependent's parent failed, so the dependent must not be processed.
+	ErrParentValidationFailed
 )
 
 // routerError is a structure that represent the error inside the routing package,

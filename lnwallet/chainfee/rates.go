@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/ltcsuite/ltcd/blockchain"
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 const (

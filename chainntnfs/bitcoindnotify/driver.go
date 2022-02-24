@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/ltcsuite/lnd/blockcache"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcwallet/chain"
@@ -12,9 +13,9 @@ import (
 // createNewNotifier creates a new instance of the ChainNotifier interface
 // implemented by BitcoindNotifier.
 func createNewNotifier(args ...interface{}) (chainntnfs.ChainNotifier, error) {
-	if len(args) != 4 {
+	if len(args) != 5 {
 		return nil, fmt.Errorf("incorrect number of arguments to "+
-			".New(...), expected 4, instead passed %v", len(args))
+			".New(...), expected 5, instead passed %v", len(args))
 	}
 
 	chainConn, ok := args[0].(*chain.BitcoindConn)
@@ -41,7 +42,14 @@ func createNewNotifier(args ...interface{}) (chainntnfs.ChainNotifier, error) {
 			"is incorrect, expected a chainntnfs.ConfirmHintCache")
 	}
 
-	return New(chainConn, chainParams, spendHintCache, confirmHintCache), nil
+	blockCache, ok := args[4].(*blockcache.BlockCache)
+	if !ok {
+		return nil, errors.New("fifth argument to bitcoindnotify.New " +
+			"is incorrect, expected a *blockcache.BlockCache")
+	}
+
+	return New(chainConn, chainParams, spendHintCache,
+		confirmHintCache, blockCache), nil
 }
 
 // init registers a driver for the BtcdNotifier concrete implementation of the

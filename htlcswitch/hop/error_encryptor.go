@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/ltcsuite/ltcd/btcec"
 	sphinx "github.com/ltcsuite/lightning-onion"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
 // EncrypterType establishes an enum used in serialization to indicate how to
@@ -165,7 +165,7 @@ func (s *SphinxErrorEncrypter) Decode(r io.Reader) error {
 	}
 
 	var err error
-	s.EphemeralKey, err = btcec.ParsePubKey(ephemeral[:], btcec.S256())
+	s.EphemeralKey, err = btcec.ParsePubKey(ephemeral[:])
 	if err != nil {
 		return err
 	}

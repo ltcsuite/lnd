@@ -1,6 +1,7 @@
 package lnwire
 
 import (
+	"bytes"
 	"io"
 
 	"github.com/ltcsuite/ltcd/wire"
@@ -24,6 +25,11 @@ type FundingCreated struct {
 	// CommitSig is Alice's signature from Bob's version of the commitment
 	// transaction.
 	CommitSig Sig
+
+	// ExtraData is the set of data that was appended to this message to
+	// fill out the full maximum transport message size. These fields can
+	// be used to specify optional data such as custom TLV fields.
+	ExtraData ExtraOpaqueData
 }
 
 // A compile time check to ensure FundingCreated implements the lnwire.Message
@@ -35,8 +41,20 @@ var _ Message = (*FundingCreated)(nil)
 // protocol version.
 //
 // This is part of the lnwire.Message interface.
-func (f *FundingCreated) Encode(w io.Writer, pver uint32) error {
-	return WriteElements(w, f.PendingChannelID[:], f.FundingPoint, f.CommitSig)
+func (f *FundingCreated) Encode(w *bytes.Buffer, pver uint32) error {
+	if err := WriteBytes(w, f.PendingChannelID[:]); err != nil {
+		return err
+	}
+
+	if err := WriteOutPoint(w, f.FundingPoint); err != nil {
+		return err
+	}
+
+	if err := WriteSig(w, f.CommitSig); err != nil {
+		return err
+	}
+
+	return WriteBytes(w, f.ExtraData)
 }
 
 // Decode deserializes the serialized FundingCreated stored in the passed
@@ -45,7 +63,10 @@ func (f *FundingCreated) Encode(w io.Writer, pver uint32) error {
 //
 // This is part of the lnwire.Message interface.
 func (f *FundingCreated) Decode(r io.Reader, pver uint32) error {
-	return ReadElements(r, f.PendingChannelID[:], &f.FundingPoint, &f.CommitSig)
+	return ReadElements(
+		r, f.PendingChannelID[:], &f.FundingPoint, &f.CommitSig,
+		&f.ExtraData,
+	)
 }
 
 // MsgType returns the uint32 code which uniquely identifies this message as a
@@ -54,13 +75,4 @@ func (f *FundingCreated) Decode(r io.Reader, pver uint32) error {
 // This is part of the lnwire.Message interface.
 func (f *FundingCreated) MsgType() MessageType {
 	return MsgFundingCreated
-}
-
-// MaxPayloadLength returns the maximum allowed payload length for a
-// FundingCreated message.
-//
-// This is part of the lnwire.Message interface.
-func (f *FundingCreated) MaxPayloadLength(uint32) uint32 {
-	// 32 + 32 + 2 + 64
-	return 130
 }

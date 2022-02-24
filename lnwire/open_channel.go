@@ -1,11 +1,13 @@
 package lnwire
 
 import (
+	"bytes"
 	"io"
 
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/lnd/tlv"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 // FundingFlag represents the possible bit mask values for the ChannelFlags
@@ -106,7 +108,7 @@ type OpenChannel struct {
 	DelayedPaymentPoint *btcec.PublicKey
 
 	// HtlcPoint is the base point used to derive the set of keys for this
-	// party that will be used within the HTLC public key scripts.  This
+	// party that will be used within the HTLC public key scripts. This
 	// value is combined with the receiver's revocation base point in order
 	// to derive the keys that are used within HTLC scripts.
 	HtlcPoint *btcec.PublicKey
@@ -128,6 +130,27 @@ type OpenChannel struct {
 	// and has a length prefix, so a zero will be written if it is not set
 	// and its length followed by the script will be written if it is set.
 	UpfrontShutdownScript DeliveryAddress
+
+	// ChannelType is the explicit channel type the initiator wishes to
+	// open.
+	ChannelType *ChannelType
+
+	// LeaseExpiry represents the absolute expiration height of a channel
+	// lease. This is a custom TLV record that will only apply when a leased
+	// channel is being opened using the script enforced lease commitment
+	// type.
+	LeaseExpiry *LeaseExpiry
+
+	// ExtraData is the set of data that was appended to this message to
+	// fill out the full maximum transport message size. These fields can
+	// be used to specify optional data such as custom TLV fields.
+	//
+	// NOTE: Since the upfront shutdown script MUST be present (though can
+	// be zero-length) if any TLV data is available, the script will be
+	// extracted and removed from this blob when decoding. ExtraData will
+	// contain all TLV records _except_ the DeliveryAddress record in that
+	// case.
+	ExtraData ExtraOpaqueData
 }
 
 // A compile time check to ensure OpenChannel implements the lnwire.Message
@@ -138,29 +161,93 @@ var _ Message = (*OpenChannel)(nil)
 // implementation. Serialization will observe the rules defined by the passed
 // protocol version.
 //
-// This is part of the lnwire.Message interface.
-func (o *OpenChannel) Encode(w io.Writer, pver uint32) error {
-	return WriteElements(w,
-		o.ChainHash[:],
-		o.PendingChannelID[:],
-		o.FundingAmount,
-		o.PushAmount,
-		o.DustLimit,
-		o.MaxValueInFlight,
-		o.ChannelReserve,
-		o.HtlcMinimum,
-		o.FeePerKiloWeight,
-		o.CsvDelay,
-		o.MaxAcceptedHTLCs,
-		o.FundingKey,
-		o.RevocationPoint,
-		o.PaymentPoint,
-		o.DelayedPaymentPoint,
-		o.HtlcPoint,
-		o.FirstCommitmentPoint,
-		o.ChannelFlags,
-		o.UpfrontShutdownScript,
-	)
+func (o *OpenChannel) Encode(w *bytes.Buffer, pver uint32) error {
+	recordProducers := []tlv.RecordProducer{&o.UpfrontShutdownScript}
+	if o.ChannelType != nil {
+		recordProducers = append(recordProducers, o.ChannelType)
+	}
+	if o.LeaseExpiry != nil {
+		recordProducers = append(recordProducers, o.LeaseExpiry)
+	}
+	err := EncodeMessageExtraData(&o.ExtraData, recordProducers...)
+	if err != nil {
+		return err
+	}
+
+	if err := WriteBytes(w, o.ChainHash[:]); err != nil {
+		return err
+	}
+
+	if err := WriteBytes(w, o.PendingChannelID[:]); err != nil {
+		return err
+	}
+
+	if err := WriteSatoshi(w, o.FundingAmount); err != nil {
+		return err
+	}
+
+	if err := WriteMilliSatoshi(w, o.PushAmount); err != nil {
+		return err
+	}
+
+	if err := WriteSatoshi(w, o.DustLimit); err != nil {
+		return err
+	}
+
+	if err := WriteMilliSatoshi(w, o.MaxValueInFlight); err != nil {
+		return err
+	}
+
+	if err := WriteSatoshi(w, o.ChannelReserve); err != nil {
+		return err
+	}
+
+	if err := WriteMilliSatoshi(w, o.HtlcMinimum); err != nil {
+		return err
+	}
+
+	if err := WriteUint32(w, o.FeePerKiloWeight); err != nil {
+		return err
+	}
+
+	if err := WriteUint16(w, o.CsvDelay); err != nil {
+		return err
+	}
+
+	if err := WriteUint16(w, o.MaxAcceptedHTLCs); err != nil {
+		return err
+	}
+
+	if err := WritePublicKey(w, o.FundingKey); err != nil {
+		return err
+	}
+
+	if err := WritePublicKey(w, o.RevocationPoint); err != nil {
+		return err
+	}
+
+	if err := WritePublicKey(w, o.PaymentPoint); err != nil {
+		return err
+	}
+
+	if err := WritePublicKey(w, o.DelayedPaymentPoint); err != nil {
+		return err
+	}
+
+	if err := WritePublicKey(w, o.HtlcPoint); err != nil {
+		return err
+
+	}
+
+	if err := WritePublicKey(w, o.FirstCommitmentPoint); err != nil {
+		return err
+	}
+
+	if err := WriteFundingFlag(w, o.ChannelFlags); err != nil {
+		return err
+	}
+
+	return WriteBytes(w, o.ExtraData)
 }
 
 // Decode deserializes the serialized OpenChannel stored in the passed
@@ -169,7 +256,8 @@ func (o *OpenChannel) Encode(w io.Writer, pver uint32) error {
 //
 // This is part of the lnwire.Message interface.
 func (o *OpenChannel) Decode(r io.Reader, pver uint32) error {
-	if err := ReadElements(r,
+	// Read all the mandatory fields in the open message.
+	err := ReadElements(r,
 		o.ChainHash[:],
 		o.PendingChannelID[:],
 		&o.FundingAmount,
@@ -188,16 +276,41 @@ func (o *OpenChannel) Decode(r io.Reader, pver uint32) error {
 		&o.HtlcPoint,
 		&o.FirstCommitmentPoint,
 		&o.ChannelFlags,
-	); err != nil {
+	)
+	if err != nil {
 		return err
 	}
 
-	// Check for the optional upfront shutdown script field. If it is not there,
-	// silence the EOF error.
-	err := ReadElement(r, &o.UpfrontShutdownScript)
-	if err != nil && err != io.EOF {
+	// For backwards compatibility, the optional extra data blob for
+	// OpenChannel must contain an entry for the upfront shutdown script.
+	// We'll read it out and attempt to parse it.
+	var tlvRecords ExtraOpaqueData
+	if err := ReadElements(r, &tlvRecords); err != nil {
 		return err
 	}
+
+	// Next we'll parse out the set of known records, keeping the raw tlv
+	// bytes untouched to ensure we don't drop any bytes erroneously.
+	var (
+		chanType    ChannelType
+		leaseExpiry LeaseExpiry
+	)
+	typeMap, err := tlvRecords.ExtractRecords(
+		&o.UpfrontShutdownScript, &chanType, &leaseExpiry,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Set the corresponding TLV types if they were included in the stream.
+	if val, ok := typeMap[ChannelTypeRecordType]; ok && val == nil {
+		o.ChannelType = &chanType
+	}
+	if val, ok := typeMap[LeaseExpiryRecordType]; ok && val == nil {
+		o.LeaseExpiry = &leaseExpiry
+	}
+
+	o.ExtraData = tlvRecords
 
 	return nil
 }
@@ -208,18 +321,4 @@ func (o *OpenChannel) Decode(r io.Reader, pver uint32) error {
 // This is part of the lnwire.Message interface.
 func (o *OpenChannel) MsgType() MessageType {
 	return MsgOpenChannel
-}
-
-// MaxPayloadLength returns the maximum allowed payload length for a
-// OpenChannel message.
-//
-// This is part of the lnwire.Message interface.
-func (o *OpenChannel) MaxPayloadLength(uint32) uint32 {
-	// (32 * 2) + (8 * 6) + (4 * 1) + (2 * 2) + (33 * 6) + 1
-	var length uint32 = 319 // base length
-
-	// Upfront shutdown script max length.
-	length += 2 + deliveryAddressMaxSize
-
-	return length
 }

@@ -1,3 +1,4 @@
+//go:build dev
 // +build dev
 
 package bitcoindnotify
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ltcsuite/lnd/blockcache"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
@@ -43,7 +45,7 @@ func initHintCache(t *testing.T) *chainntnfs.HeightHintCache {
 	testCfg := chainntnfs.CacheConfig{
 		QueryDisable: false,
 	}
-	hintCache, err := chainntnfs.NewHeightHintCache(testCfg, db)
+	hintCache, err := chainntnfs.NewHeightHintCache(testCfg, db.Backend)
 	if err != nil {
 		t.Fatalf("unable to create hint cache: %v", err)
 	}
@@ -55,13 +57,14 @@ func initHintCache(t *testing.T) *chainntnfs.HeightHintCache {
 // bitcoind driver.
 func setUpNotifier(t *testing.T, bitcoindConn *chain.BitcoindConn,
 	spendHintCache chainntnfs.SpendHintCache,
-	confirmHintCache chainntnfs.ConfirmHintCache) *BitcoindNotifier {
+	confirmHintCache chainntnfs.ConfirmHintCache,
+	blockCache *blockcache.BlockCache) *BitcoindNotifier {
 
 	t.Helper()
 
 	notifier := New(
 		bitcoindConn, chainntnfs.NetParams, spendHintCache,
-		confirmHintCache,
+		confirmHintCache, blockCache,
 	)
 	if err := notifier.Start(); err != nil {
 		t.Fatalf("unable to start notifier: %v", err)
@@ -77,7 +80,7 @@ func syncNotifierWithMiner(t *testing.T, notifier *BitcoindNotifier,
 
 	t.Helper()
 
-	_, minerHeight, err := miner.Node.GetBestBlock()
+	_, minerHeight, err := miner.Client.GetBestBlock()
 	if err != nil {
 		t.Fatalf("unable to retrieve miner's current height: %v", err)
 	}
@@ -116,8 +119,11 @@ func TestHistoricalConfDetailsTxIndex(t *testing.T) {
 	defer cleanUp()
 
 	hintCache := initHintCache(t)
+	blockCache := blockcache.NewBlockCache(10000)
 
-	notifier := setUpNotifier(t, bitcoindConn, hintCache, hintCache)
+	notifier := setUpNotifier(
+		t, bitcoindConn, hintCache, hintCache, blockCache,
+	)
 	defer notifier.Stop()
 
 	syncNotifierWithMiner(t, notifier, miner)
@@ -173,7 +179,7 @@ func TestHistoricalConfDetailsTxIndex(t *testing.T) {
 			"mempool, but did not: %v", txStatus)
 	}
 
-	if _, err := miner.Node.Generate(1); err != nil {
+	if _, err := miner.Client.Generate(1); err != nil {
 		t.Fatalf("unable to generate block: %v", err)
 	}
 
@@ -209,8 +215,11 @@ func TestHistoricalConfDetailsNoTxIndex(t *testing.T) {
 	defer cleanUp()
 
 	hintCache := initHintCache(t)
+	blockCache := blockcache.NewBlockCache(10000)
 
-	notifier := setUpNotifier(t, bitcoindConn, hintCache, hintCache)
+	notifier := setUpNotifier(
+		t, bitcoindConn, hintCache, hintCache, blockCache,
+	)
 	defer notifier.Stop()
 
 	// Since the node has its txindex disabled, we fall back to scanning the
@@ -247,14 +256,14 @@ func TestHistoricalConfDetailsNoTxIndex(t *testing.T) {
 	// ensured above.
 	outpoint, output, privKey := chainntnfs.CreateSpendableOutput(t, miner)
 	spendTx := chainntnfs.CreateSpendTx(t, outpoint, output, privKey)
-	spendTxHash, err := miner.Node.SendRawTransaction(spendTx, true)
+	spendTxHash, err := miner.Client.SendRawTransaction(spendTx, true)
 	if err != nil {
 		t.Fatalf("unable to broadcast tx: %v", err)
 	}
 	if err := chainntnfs.WaitForMempoolTx(miner, spendTxHash); err != nil {
 		t.Fatalf("tx not relayed to miner: %v", err)
 	}
-	if _, err := miner.Node.Generate(1); err != nil {
+	if _, err := miner.Client.Generate(1); err != nil {
 		t.Fatalf("unable to generate block: %v", err)
 	}
 

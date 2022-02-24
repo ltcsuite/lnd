@@ -10,9 +10,9 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/channeldb"
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/lnwire"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
 func createTestMessageStore(t *testing.T) (*MessageStore, func()) {
@@ -43,7 +43,7 @@ func createTestMessageStore(t *testing.T) (*MessageStore, func()) {
 }
 
 func randPubKey(t *testing.T) *btcec.PublicKey {
-	priv, err := btcec.NewPrivateKey(btcec.S256())
+	priv, err := btcec.NewPrivateKey()
 	if err != nil {
 		t.Fatalf("unable to create private key: %v", err)
 	}
@@ -64,13 +64,15 @@ func randCompressedPubKey(t *testing.T) [33]byte {
 
 func randAnnounceSignatures() *lnwire.AnnounceSignatures {
 	return &lnwire.AnnounceSignatures{
-		ShortChannelID: lnwire.NewShortChanIDFromInt(rand.Uint64()),
+		ShortChannelID:  lnwire.NewShortChanIDFromInt(rand.Uint64()),
+		ExtraOpaqueData: make([]byte, 0),
 	}
 }
 
 func randChannelUpdate() *lnwire.ChannelUpdate {
 	return &lnwire.ChannelUpdate{
-		ShortChannelID: lnwire.NewShortChanIDFromInt(rand.Uint64()),
+		ShortChannelID:  lnwire.NewShortChanIDFromInt(rand.Uint64()),
+		ExtraOpaqueData: make([]byte, 0),
 	}
 }
 
@@ -239,7 +241,7 @@ func TestMessageStoreUnsupportedMessage(t *testing.T) {
 	err = kvdb.Update(msgStore.db, func(tx kvdb.RwTx) error {
 		messageStore := tx.ReadWriteBucket(messageStoreBucket)
 		return messageStore.Put(msgKey, rawMsg.Bytes())
-	})
+	}, func() {})
 	if err != nil {
 		t.Fatalf("unable to add unsupported message to store: %v", err)
 	}

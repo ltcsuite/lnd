@@ -11,8 +11,8 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/lntypes"
@@ -20,6 +20,16 @@ import (
 	"github.com/ltcsuite/lnd/netann"
 	"github.com/ltcsuite/lnd/routing"
 	"github.com/ltcsuite/lnd/zpay32"
+)
+
+const (
+	// DefaultInvoiceExpiry is the default invoice expiry for new MPP
+	// invoices.
+	DefaultInvoiceExpiry = 24 * time.Hour
+
+	// DefaultAMPInvoiceExpiry is the default invoice expiry for new AMP
+	// invoices.
+	DefaultAMPInvoiceExpiry = 30 * 24 * time.Hour
 )
 
 // AddInvoiceConfig contains dependencies for invoice creation.
@@ -45,11 +55,18 @@ type AddInvoiceConfig struct {
 
 	// ChanDB is a global boltdb instance which is needed to access the
 	// channel graph.
-	ChanDB *channeldb.DB
+	ChanDB *channeldb.ChannelStateDB
+
+	// Graph holds a reference to the ChannelGraph database.
+	Graph *channeldb.ChannelGraph
 
 	// GenInvoiceFeatures returns a feature containing feature bits that
 	// should be advertised on freshly generated invoices.
 	GenInvoiceFeatures func() *lnwire.FeatureVector
+
+	// GenAmpInvoiceFeatures returns a feature containing feature bits that
+	// should be advertised on freshly generated AMP invoices.
+	GenAmpInvoiceFeatures func() *lnwire.FeatureVector
 }
 
 // AddInvoiceData contains the required data to create a new invoice.
@@ -94,14 +111,72 @@ type AddInvoiceData struct {
 	// HodlInvoice signals that this invoice shouldn't be settled
 	// immediately upon receiving the payment.
 	HodlInvoice bool
+
+	// Amp signals whether or not to create an AMP invoice.
+	//
+	// NOTE: Preimage should always be set to nil when this value is true.
+	Amp bool
+
+	// RouteHints are optional route hints that can each be individually used
+	// to assist in reaching the invoice's destination.
+	RouteHints [][]zpay32.HopHint
 }
 
-// AddInvoice attempts to add a new invoice to the invoice database. Any
-// duplicated invoices are rejected, therefore all invoices *must* have a
-// unique payment preimage.
-func AddInvoice(ctx context.Context, cfg *AddInvoiceConfig,
-	invoice *AddInvoiceData) (*lntypes.Hash, *channeldb.Invoice, error) {
+// paymentHashAndPreimage returns the payment hash and preimage for this invoice
+// depending on the configuration.
+//
+// For AMP invoices (when Amp flag is true), this method always returns a nil
+// preimage. The hash value can be set externally by the user using the Hash
+// field, or one will be generated randomly. The payment hash here only serves
+// as a unique identifier for insertion into the invoice index, as there is
+// no universal preimage for an AMP payment.
+//
+// For MPP invoices (when Amp flag is false), this method may return nil
+// preimage when create a hodl invoice, but otherwise will always return a
+// non-nil preimage and the corresponding payment hash. The valid combinations
+// are parsed as follows:
+//   - Preimage == nil && Hash == nil -> (random preimage, H(random preimage))
+//   - Preimage != nil && Hash == nil -> (Preimage, H(Preimage))
+//   - Preimage == nil && Hash != nil -> (nil, Hash)
+func (d *AddInvoiceData) paymentHashAndPreimage() (
+	*lntypes.Preimage, lntypes.Hash, error) {
 
+	if d.Amp {
+		return d.ampPaymentHashAndPreimage()
+	}
+
+	return d.mppPaymentHashAndPreimage()
+}
+
+// ampPaymentHashAndPreimage returns the payment hash to use for an AMP invoice.
+// The preimage will always be nil.
+func (d *AddInvoiceData) ampPaymentHashAndPreimage() (*lntypes.Preimage, lntypes.Hash, error) {
+	switch {
+
+	// Preimages cannot be set on AMP invoice.
+	case d.Preimage != nil:
+		return nil, lntypes.Hash{},
+			errors.New("preimage set on AMP invoice")
+
+	// If a specific hash was requested, use that.
+	case d.Hash != nil:
+		return nil, *d.Hash, nil
+
+	// Otherwise generate a random hash value, just needs to be unique to be
+	// added to the invoice index.
+	default:
+		var paymentHash lntypes.Hash
+		if _, err := rand.Read(paymentHash[:]); err != nil {
+			return nil, lntypes.Hash{}, err
+		}
+
+		return nil, paymentHash, nil
+	}
+}
+
+// mppPaymentHashAndPreimage returns the payment hash and preimage to use for an
+// MPP invoice.
+func (d *AddInvoiceData) mppPaymentHashAndPreimage() (*lntypes.Preimage, lntypes.Hash, error) {
 	var (
 		paymentPreimage *lntypes.Preimage
 		paymentHash     lntypes.Hash
@@ -110,28 +185,42 @@ func AddInvoice(ctx context.Context, cfg *AddInvoiceConfig,
 	switch {
 
 	// Only either preimage or hash can be set.
-	case invoice.Preimage != nil && invoice.Hash != nil:
-		return nil, nil,
+	case d.Preimage != nil && d.Hash != nil:
+		return nil, lntypes.Hash{},
 			errors.New("preimage and hash both set")
 
 	// If no hash or preimage is given, generate a random preimage.
-	case invoice.Preimage == nil && invoice.Hash == nil:
+	case d.Preimage == nil && d.Hash == nil:
 		paymentPreimage = &lntypes.Preimage{}
 		if _, err := rand.Read(paymentPreimage[:]); err != nil {
-			return nil, nil, err
+			return nil, lntypes.Hash{}, err
 		}
 		paymentHash = paymentPreimage.Hash()
 
 	// If just a hash is given, we create a hold invoice by setting the
 	// preimage to unknown.
-	case invoice.Preimage == nil && invoice.Hash != nil:
-		paymentHash = *invoice.Hash
+	case d.Preimage == nil && d.Hash != nil:
+		paymentHash = *d.Hash
 
 	// A specific preimage was supplied. Use that for the invoice.
-	case invoice.Preimage != nil && invoice.Hash == nil:
-		preimage := *invoice.Preimage
+	case d.Preimage != nil && d.Hash == nil:
+		preimage := *d.Preimage
 		paymentPreimage = &preimage
-		paymentHash = invoice.Preimage.Hash()
+		paymentHash = d.Preimage.Hash()
+	}
+
+	return paymentPreimage, paymentHash, nil
+}
+
+// AddInvoice attempts to add a new invoice to the invoice database. Any
+// duplicated invoices are rejected, therefore all invoices *must* have a
+// unique payment preimage.
+func AddInvoice(ctx context.Context, cfg *AddInvoiceConfig,
+	invoice *AddInvoiceData) (*lntypes.Hash, *channeldb.Invoice, error) {
+
+	paymentPreimage, paymentHash, err := invoice.paymentHashAndPreimage()
+	if err != nil {
+		return nil, nil, err
 	}
 
 	// The size of the memo, receipt and description hash attached must not
@@ -190,10 +279,12 @@ func AddInvoice(ctx context.Context, cfg *AddInvoiceConfig,
 		options = append(options, zpay32.FallbackAddr(addr))
 	}
 
+	switch {
+
 	// If expiry is set, specify it. If it is not provided, no expiry time
 	// will be explicitly added to this payment request, which will imply
 	// the default 3600 seconds.
-	if invoice.Expiry > 0 {
+	case invoice.Expiry > 0:
 
 		// We'll ensure that the specified expiry is restricted to sane
 		// number of seconds. As a result, we'll reject an invoice with
@@ -209,6 +300,15 @@ func AddInvoice(ctx context.Context, cfg *AddInvoiceConfig,
 
 		expiry := time.Duration(invoice.Expiry) * time.Second
 		options = append(options, zpay32.Expiry(expiry))
+
+	// If no custom expiry is provided, use the default MPP expiry.
+	case !invoice.Amp:
+		options = append(options, zpay32.Expiry(DefaultInvoiceExpiry))
+
+	// Otherwise, use the default AMP expiry.
+	default:
+		options = append(options, zpay32.Expiry(DefaultAMPInvoiceExpiry))
+
 	}
 
 	// If the description hash is set, then we add it do the list of options.
@@ -246,6 +346,27 @@ func AddInvoice(ctx context.Context, cfg *AddInvoiceConfig,
 		options = append(options, zpay32.CLTVExpiry(uint64(defaultDelta)))
 	}
 
+	// We make sure that the given invoice routing hints number is within the
+	// valid range
+	if len(invoice.RouteHints) > 20 {
+		return nil, nil, fmt.Errorf("number of routing hints must not exceed " +
+			"maximum of 20")
+	}
+
+	// We continue by populating the requested routing hints indexing their
+	// corresponding channels so we won't duplicate them.
+	forcedHints := make(map[uint64]struct{})
+	for _, h := range invoice.RouteHints {
+		if len(h) == 0 {
+			return nil, nil, fmt.Errorf("number of hop hint within a route must " +
+				"be positive")
+		}
+		options = append(options, zpay32.RouteHint(h))
+
+		// Only this first hop is our direct channel.
+		forcedHints[h[0].ChannelID] = struct{}{}
+	}
+
 	// If we were requested to include routing hints in the invoice, then
 	// we'll fetch all of our available private channels and create routing
 	// hints for them.
@@ -256,11 +377,21 @@ func AddInvoice(ctx context.Context, cfg *AddInvoiceConfig,
 		}
 
 		if len(openChannels) > 0 {
+			// We filter the channels by excluding the ones that were specified by
+			// the caller and were already added.
+			var filteredChannels []*channeldb.OpenChannel
+			for _, c := range openChannels {
+				if _, ok := forcedHints[c.ShortChanID().ToUint64()]; ok {
+					continue
+				}
+				filteredChannels = append(filteredChannels, c)
+			}
+
 			// We'll restrict the number of individual route hints
 			// to 20 to avoid creating overly large invoices.
-			const numMaxHophints = 20
-			hopHints := selectHopHints(
-				amtMSat, cfg, openChannels, numMaxHophints,
+			numMaxHophints := 20 - len(forcedHints)
+			hopHints := SelectHopHints(
+				amtMSat, cfg, filteredChannels, numMaxHophints,
 			)
 
 			options = append(options, hopHints...)
@@ -268,7 +399,12 @@ func AddInvoice(ctx context.Context, cfg *AddInvoiceConfig,
 	}
 
 	// Set our desired invoice features and add them to our list of options.
-	invoiceFeatures := cfg.GenInvoiceFeatures()
+	var invoiceFeatures *lnwire.FeatureVector
+	if invoice.Amp {
+		invoiceFeatures = cfg.GenAmpInvoiceFeatures()
+	} else {
+		invoiceFeatures = cfg.GenInvoiceFeatures()
+	}
 	options = append(options, zpay32.Features(invoiceFeatures))
 
 	// Generate and set a random payment address for this invoice. If the
@@ -289,11 +425,11 @@ func AddInvoice(ctx context.Context, cfg *AddInvoiceConfig,
 		return nil, nil, err
 	}
 
-	payReqString, err := payReq.Encode(
-		zpay32.MessageSigner{
-			SignCompact: cfg.NodeSigner.SignDigestCompact,
+	payReqString, err := payReq.Encode(zpay32.MessageSigner{
+		SignCompact: func(msg []byte) ([]byte, error) {
+			return cfg.NodeSigner.SignMessageCompact(msg, false)
 		},
-	)
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -330,9 +466,8 @@ func AddInvoice(ctx context.Context, cfg *AddInvoiceConfig,
 
 // chanCanBeHopHint returns true if the target channel is eligible to be a hop
 // hint.
-func chanCanBeHopHint(channel *channeldb.OpenChannel,
-	graph *channeldb.ChannelGraph,
-	cfg *AddInvoiceConfig) (*channeldb.ChannelEdgePolicy, bool) {
+func chanCanBeHopHint(channel *channeldb.OpenChannel, cfg *AddInvoiceConfig) (
+	*channeldb.ChannelEdgePolicy, bool) {
 
 	// Since we're only interested in our private channels, we'll skip
 	// public ones.
@@ -359,7 +494,7 @@ func chanCanBeHopHint(channel *channeldb.OpenChannel,
 	// channels.
 	var remotePub [33]byte
 	copy(remotePub[:], channel.IdentityPub.SerializeCompressed())
-	isRemoteNodePublic, err := graph.IsPublicNode(remotePub)
+	isRemoteNodePublic, err := cfg.Graph.IsPublicNode(remotePub)
 	if err != nil {
 		log.Errorf("Unable to determine if node %x "+
 			"is advertised: %v", remotePub, err)
@@ -375,7 +510,7 @@ func chanCanBeHopHint(channel *channeldb.OpenChannel,
 
 	// Fetch the policies for each end of the channel.
 	chanID := channel.ShortChanID().ToUint64()
-	info, p1, p2, err := graph.FetchChannelEdgesByID(chanID)
+	info, p1, p2, err := cfg.Graph.FetchChannelEdgesByID(chanID)
 	if err != nil {
 		log.Errorf("Unable to fetch the routing "+
 			"policies for the edges of the channel "+
@@ -414,16 +549,14 @@ func addHopHint(hopHints *[]func(*zpay32.Invoice),
 	)
 }
 
-// selectHopHints will select up to numMaxHophints from the set of passed open
+// SelectHopHints will select up to numMaxHophints from the set of passed open
 // channels. The set of hop hints will be returned as a slice of functional
 // options that'll append the route hint to the set of all route hints.
 //
 // TODO(roasbeef): do proper sub-set sum max hints usually << numChans
-func selectHopHints(amtMSat lnwire.MilliSatoshi, cfg *AddInvoiceConfig,
+func SelectHopHints(amtMSat lnwire.MilliSatoshi, cfg *AddInvoiceConfig,
 	openChannels []*channeldb.OpenChannel,
 	numMaxHophints int) []func(*zpay32.Invoice) {
-
-	graph := cfg.ChanDB.ChannelGraph()
 
 	// We'll add our hop hints in two passes, first we'll add all channels
 	// that are eligible to be hop hints, and also have a local balance
@@ -433,9 +566,7 @@ func selectHopHints(amtMSat lnwire.MilliSatoshi, cfg *AddInvoiceConfig,
 	hopHints := make([]func(*zpay32.Invoice), 0, numMaxHophints)
 	for _, channel := range openChannels {
 		// If this channel can't be a hop hint, then skip it.
-		edgePolicy, canBeHopHint := chanCanBeHopHint(
-			channel, graph, cfg,
-		)
+		edgePolicy, canBeHopHint := chanCanBeHopHint(channel, cfg)
 		if edgePolicy == nil || !canBeHopHint {
 			continue
 		}
@@ -485,9 +616,7 @@ func selectHopHints(amtMSat lnwire.MilliSatoshi, cfg *AddInvoiceConfig,
 		// If the channel can't be a hop hint, then we'll skip it.
 		// Otherwise, we'll use the policy information to populate the
 		// hop hint.
-		remotePolicy, canBeHopHint := chanCanBeHopHint(
-			channel, graph, cfg,
-		)
+		remotePolicy, canBeHopHint := chanCanBeHopHint(channel, cfg)
 		if !canBeHopHint || remotePolicy == nil {
 			continue
 		}

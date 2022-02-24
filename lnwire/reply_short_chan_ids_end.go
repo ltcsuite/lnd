@@ -1,6 +1,7 @@
 package lnwire
 
 import (
+	"bytes"
 	"io"
 
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
@@ -9,7 +10,7 @@ import (
 // ReplyShortChanIDsEnd is a message that marks the end of a streaming message
 // response to an initial QueryShortChanIDs message. This marks that the
 // receiver of the original QueryShortChanIDs for the target chain has either
-// sent all adequate responses it knows of, or doesn't now of any short chan
+// sent all adequate responses it knows of, or doesn't know of any short chan
 // ID's for the target chain.
 type ReplyShortChanIDsEnd struct {
 	// ChainHash denotes the target chain that we're respond to a short
@@ -22,6 +23,11 @@ type ReplyShortChanIDsEnd struct {
 	// set of short chan ID's in the corresponding QueryShortChanIDs
 	// message.
 	Complete uint8
+
+	// ExtraData is the set of data that was appended to this message to
+	// fill out the full maximum transport message size. These fields can
+	// be used to specify optional data such as custom TLV fields.
+	ExtraData ExtraOpaqueData
 }
 
 // NewReplyShortChanIDsEnd creates a new empty ReplyShortChanIDsEnd message.
@@ -41,6 +47,7 @@ func (c *ReplyShortChanIDsEnd) Decode(r io.Reader, pver uint32) error {
 	return ReadElements(r,
 		c.ChainHash[:],
 		&c.Complete,
+		&c.ExtraData,
 	)
 }
 
@@ -48,11 +55,16 @@ func (c *ReplyShortChanIDsEnd) Decode(r io.Reader, pver uint32) error {
 // observing the protocol version specified.
 //
 // This is part of the lnwire.Message interface.
-func (c *ReplyShortChanIDsEnd) Encode(w io.Writer, pver uint32) error {
-	return WriteElements(w,
-		c.ChainHash[:],
-		c.Complete,
-	)
+func (c *ReplyShortChanIDsEnd) Encode(w *bytes.Buffer, pver uint32) error {
+	if err := WriteBytes(w, c.ChainHash[:]); err != nil {
+		return err
+	}
+
+	if err := WriteUint8(w, c.Complete); err != nil {
+		return err
+	}
+
+	return WriteBytes(w, c.ExtraData)
 }
 
 // MsgType returns the integer uniquely identifying this message type on the
@@ -61,14 +73,4 @@ func (c *ReplyShortChanIDsEnd) Encode(w io.Writer, pver uint32) error {
 // This is part of the lnwire.Message interface.
 func (c *ReplyShortChanIDsEnd) MsgType() MessageType {
 	return MsgReplyShortChanIDsEnd
-}
-
-// MaxPayloadLength returns the maximum allowed payload size for a
-// ReplyShortChanIDsEnd complete message observing the specified protocol
-// version.
-//
-// This is part of the lnwire.Message interface.
-func (c *ReplyShortChanIDsEnd) MaxPayloadLength(uint32) uint32 {
-	// 32 (chain hash) + 1 (complete)
-	return 33
 }

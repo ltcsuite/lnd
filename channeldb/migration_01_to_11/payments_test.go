@@ -6,12 +6,12 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/lnd/lnwire"
+	lnwire "github.com/ltcsuite/lnd/channeldb/migration/lnwire21"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
 var (
-	priv, _ = btcec.NewPrivateKey(btcec.S256())
+	priv, _ = btcec.NewPrivateKey()
 	pub     = priv.PubKey()
 )
 

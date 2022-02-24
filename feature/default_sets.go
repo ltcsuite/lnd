@@ -22,9 +22,10 @@ var defaultSetDesc = setDesc{
 		SetInit:         {}, // I
 		SetNodeAnn:      {}, // N
 		SetInvoice:      {}, // 9
+		SetInvoiceAmp:   {}, // 9A
 		SetLegacyGlobal: {},
 	},
-	lnwire.StaticRemoteKeyOptional: {
+	lnwire.StaticRemoteKeyRequired: {
 		SetInit:         {}, // I
 		SetNodeAnn:      {}, // N
 		SetLegacyGlobal: {},
@@ -33,21 +34,37 @@ var defaultSetDesc = setDesc{
 		SetInit:    {}, // I
 		SetNodeAnn: {}, // N
 	},
-	lnwire.PaymentAddrOptional: {
-		SetInit:    {}, // I
-		SetNodeAnn: {}, // N
-		SetInvoice: {}, // 9
+	lnwire.PaymentAddrRequired: {
+		SetInit:       {}, // I
+		SetNodeAnn:    {}, // N
+		SetInvoice:    {}, // 9
+		SetInvoiceAmp: {}, // 9A
 	},
 	lnwire.MPPOptional: {
 		SetInit:    {}, // I
 		SetNodeAnn: {}, // N
 		SetInvoice: {}, // 9
 	},
-	lnwire.AnchorsOptional: {
+	lnwire.AnchorsZeroFeeHtlcTxOptional: {
 		SetInit:    {}, // I
 		SetNodeAnn: {}, // N
 	},
 	lnwire.WumboChannelsOptional: {
+		SetInit:    {}, // I
+		SetNodeAnn: {}, // N
+	},
+	lnwire.AMPOptional: {
+		SetInit:    {}, // I
+		SetNodeAnn: {}, // N
+	},
+	lnwire.AMPRequired: {
+		SetInvoiceAmp: {}, // 9A
+	},
+	lnwire.ExplicitChannelTypeOptional: {
+		SetInit:    {}, // I
+		SetNodeAnn: {}, // N
+	},
+	lnwire.ScriptEnforcedLeaseOptional: {
 		SetInit:    {}, // I
 		SetNodeAnn: {}, // N
 	},

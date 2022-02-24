@@ -1,6 +1,8 @@
 package input
 
 import (
+	"github.com/ltcsuite/lnd/lntypes"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
 )
@@ -13,6 +15,16 @@ type Input interface {
 	// Outpoint returns the reference to the output being spent, used to
 	// construct the corresponding transaction input.
 	OutPoint() *wire.OutPoint
+
+	// RequiredTxOut returns a non-nil TxOut if input commits to a certain
+	// transaction output. This is used in the SINGLE|ANYONECANPAY case to
+	// make sure any presigned input is still valid by including the
+	// output.
+	RequiredTxOut() *wire.TxOut
+
+	// RequiredLockTime returns whether this input commits to a tx locktime
+	// that must be used in the transaction including it.
+	RequiredLockTime() (uint32, bool)
 
 	// WitnessType returns an enum specifying the type of witness that must
 	// be generated in order to spend this output.
@@ -41,6 +53,35 @@ type Input interface {
 	// HeightHint returns the minimum height at which a confirmed spending
 	// tx can occur.
 	HeightHint() uint32
+
+	// UnconfParent returns information about a possibly unconfirmed parent
+	// tx.
+	UnconfParent() *TxInfo
+}
+
+// TxInfo describes properties of a parent tx that are relevant for CPFP.
+type TxInfo struct {
+	// Fee is the fee of the tx.
+	Fee ltcutil.Amount
+
+	// Weight is the weight of the tx.
+	Weight int64
+}
+
+// SignDetails is a struct containing information needed to resign certain
+// inputs. It is used to re-sign 2nd level HTLC transactions that uses the
+// SINGLE|ANYONECANPAY sighash type, as we have a signature provided by our
+// peer, but we can aggregate multiple of these 2nd level transactions into a
+// new transaction, that needs to be signed by us.
+type SignDetails struct {
+	// SignDesc is the sign descriptor needed for us to sign the input.
+	SignDesc SignDescriptor
+
+	// PeerSig is the peer's signature for this input.
+	PeerSig Signature
+
+	// SigHashType is the sighash signed by the peer.
+	SigHashType txscript.SigHashType
 }
 
 type inputKit struct {
@@ -49,12 +90,29 @@ type inputKit struct {
 	signDesc        SignDescriptor
 	heightHint      uint32
 	blockToMaturity uint32
+	cltvExpiry      uint32
+
+	// unconfParent contains information about a potential unconfirmed
+	// parent transaction.
+	unconfParent *TxInfo
 }
 
 // OutPoint returns the breached output's identifier that is to be included as
 // a transaction input.
 func (i *inputKit) OutPoint() *wire.OutPoint {
 	return &i.outpoint
+}
+
+// RequiredTxOut returns a nil for the base input type.
+func (i *inputKit) RequiredTxOut() *wire.TxOut {
+	return nil
+}
+
+// RequiredLockTime returns whether this input commits to a tx locktime that
+// must be used in the transaction including it. This will be false for the
+// base input type since we can re-sign for any lock time.
+func (i *inputKit) RequiredLockTime() (uint32, bool) {
+	return i.cltvExpiry, i.cltvExpiry > 0
 }
 
 // WitnessType returns the type of witness that must be generated to spend the
@@ -82,6 +140,11 @@ func (i *inputKit) BlocksToMaturity() uint32 {
 	return i.blockToMaturity
 }
 
+// Cpfp returns information about a possibly unconfirmed parent tx.
+func (i *inputKit) UnconfParent() *TxInfo {
+	return i.unconfParent
+}
+
 // BaseInput contains all the information needed to sweep a basic output
 // (CSV/CLTV/no time lock)
 type BaseInput struct {
@@ -91,14 +154,16 @@ type BaseInput struct {
 // MakeBaseInput assembles a new BaseInput that can be used to construct a
 // sweep transaction.
 func MakeBaseInput(outpoint *wire.OutPoint, witnessType WitnessType,
-	signDescriptor *SignDescriptor, heightHint uint32) BaseInput {
+	signDescriptor *SignDescriptor, heightHint uint32,
+	unconfParent *TxInfo) BaseInput {
 
 	return BaseInput{
 		inputKit{
-			outpoint:    *outpoint,
-			witnessType: witnessType,
-			signDesc:    *signDescriptor,
-			heightHint:  heightHint,
+			outpoint:     *outpoint,
+			witnessType:  witnessType,
+			signDesc:     *signDescriptor,
+			heightHint:   heightHint,
+			unconfParent: unconfParent,
 		},
 	}
 }
@@ -109,7 +174,7 @@ func NewBaseInput(outpoint *wire.OutPoint, witnessType WitnessType,
 	signDescriptor *SignDescriptor, heightHint uint32) *BaseInput {
 
 	input := MakeBaseInput(
-		outpoint, witnessType, signDescriptor, heightHint,
+		outpoint, witnessType, signDescriptor, heightHint, nil,
 	)
 
 	return &input
@@ -128,6 +193,25 @@ func NewCsvInput(outpoint *wire.OutPoint, witnessType WitnessType,
 			signDesc:        *signDescriptor,
 			heightHint:      heightHint,
 			blockToMaturity: blockToMaturity,
+		},
+	}
+}
+
+// NewCsvInputWithCltv assembles a new csv and cltv locked input that can be
+// used to construct a sweep transaction.
+func NewCsvInputWithCltv(outpoint *wire.OutPoint, witnessType WitnessType,
+	signDescriptor *SignDescriptor, heightHint uint32,
+	csvDelay uint32, cltvExpiry uint32) *BaseInput {
+
+	return &BaseInput{
+		inputKit{
+			outpoint:        *outpoint,
+			witnessType:     witnessType,
+			signDesc:        *signDescriptor,
+			heightHint:      heightHint,
+			blockToMaturity: csvDelay,
+			cltvExpiry:      cltvExpiry,
+			unconfParent:    nil,
 		},
 	}
 }
@@ -194,7 +278,130 @@ func (h *HtlcSucceedInput) CraftInputScript(signer Signer, txn *wire.MsgTx,
 	}, nil
 }
 
+// HtlcsSecondLevelAnchorInput is an input type used to spend HTLC outputs
+// using a re-signed second level transaction, either via the timeout or success
+// paths.
+type HtlcSecondLevelAnchorInput struct {
+	inputKit
+
+	// SignedTx is the original second level transaction signed by the
+	// channel peer.
+	SignedTx *wire.MsgTx
+
+	// createWitness creates a witness allowing the passed transaction to
+	// spend the input.
+	createWitness func(signer Signer, txn *wire.MsgTx,
+		hashCache *txscript.TxSigHashes, txinIdx int) (wire.TxWitness, error)
+}
+
+// RequiredTxOut returns the tx out needed to be present on the sweep tx for
+// the spend of the input to be valid.
+func (i *HtlcSecondLevelAnchorInput) RequiredTxOut() *wire.TxOut {
+	return i.SignedTx.TxOut[0]
+}
+
+// RequiredLockTime returns the locktime needed for the sweep tx for the spend
+// of the input to be valid. For a second level HTLC timeout this will be the
+// CLTV expiry, for HTLC success it will be zero.
+func (i *HtlcSecondLevelAnchorInput) RequiredLockTime() (uint32, bool) {
+	return i.SignedTx.LockTime, true
+}
+
+// CraftInputScript returns a valid set of input scripts allowing this output
+// to be spent. The returns input scripts should target the input at location
+// txIndex within the passed transaction. The input scripts generated by this
+// method support spending p2wkh, p2wsh, and also nested p2sh outputs.
+func (i *HtlcSecondLevelAnchorInput) CraftInputScript(signer Signer,
+	txn *wire.MsgTx, hashCache *txscript.TxSigHashes,
+	txinIdx int) (*Script, error) {
+
+	witness, err := i.createWitness(signer, txn, hashCache, txinIdx)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Script{
+		Witness: witness,
+	}, nil
+}
+
+// MakeHtlcSecondLevelTimeoutAnchorInput creates an input allowing the sweeper
+// to spend the HTLC output on our commit using the second level timeout
+// transaction.
+func MakeHtlcSecondLevelTimeoutAnchorInput(signedTx *wire.MsgTx,
+	signDetails *SignDetails, heightHint uint32) HtlcSecondLevelAnchorInput {
+
+	// Spend an HTLC output on our local commitment tx using the
+	// 2nd timeout transaction.
+	createWitness := func(signer Signer, txn *wire.MsgTx,
+		hashCache *txscript.TxSigHashes,
+		txinIdx int) (wire.TxWitness, error) {
+
+		desc := signDetails.SignDesc
+		desc.SigHashes = txscript.NewTxSigHashes(txn)
+		desc.InputIndex = txinIdx
+
+		return SenderHtlcSpendTimeout(
+			signDetails.PeerSig, signDetails.SigHashType, signer,
+			&desc, txn,
+		)
+	}
+
+	return HtlcSecondLevelAnchorInput{
+		inputKit: inputKit{
+			outpoint:    signedTx.TxIn[0].PreviousOutPoint,
+			witnessType: HtlcOfferedTimeoutSecondLevelInputConfirmed,
+			signDesc:    signDetails.SignDesc,
+			heightHint:  heightHint,
+
+			// CSV delay is always 1 for these inputs.
+			blockToMaturity: 1,
+		},
+		SignedTx:      signedTx,
+		createWitness: createWitness,
+	}
+}
+
+// MakeHtlcSecondLevelSuccessAnchorInput creates an input allowing the sweeper
+// to spend the HTLC output on our commit using the second level success
+// transaction.
+func MakeHtlcSecondLevelSuccessAnchorInput(signedTx *wire.MsgTx,
+	signDetails *SignDetails, preimage lntypes.Preimage,
+	heightHint uint32) HtlcSecondLevelAnchorInput {
+
+	// Spend an HTLC output on our local commitment tx using the 2nd
+	// success transaction.
+	createWitness := func(signer Signer, txn *wire.MsgTx,
+		hashCache *txscript.TxSigHashes,
+		txinIdx int) (wire.TxWitness, error) {
+
+		desc := signDetails.SignDesc
+		desc.SigHashes = hashCache
+		desc.InputIndex = txinIdx
+
+		return ReceiverHtlcSpendRedeem(
+			signDetails.PeerSig, signDetails.SigHashType,
+			preimage[:], signer, &desc, txn,
+		)
+	}
+
+	return HtlcSecondLevelAnchorInput{
+		inputKit: inputKit{
+			outpoint:    signedTx.TxIn[0].PreviousOutPoint,
+			witnessType: HtlcAcceptedSuccessSecondLevelInputConfirmed,
+			signDesc:    signDetails.SignDesc,
+			heightHint:  heightHint,
+
+			// CSV delay is always 1 for these inputs.
+			blockToMaturity: 1,
+		},
+		SignedTx:      signedTx,
+		createWitness: createWitness,
+	}
+}
+
 // Compile-time constraints to ensure each input struct implement the Input
 // interface.
 var _ Input = (*BaseInput)(nil)
 var _ Input = (*HtlcSucceedInput)(nil)
+var _ Input = (*HtlcSecondLevelAnchorInput)(nil)

@@ -9,9 +9,10 @@ import (
 	sphinx "github.com/ltcsuite/lightning-onion"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/channeldb"
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
 	"github.com/ltcsuite/lnd/htlcswitch/hop"
 	"github.com/ltcsuite/lnd/invoices"
+	"github.com/ltcsuite/lnd/kvdb"
+	"github.com/ltcsuite/lnd/lntest/mock"
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwire"
@@ -295,7 +296,7 @@ type incomingResolverTestContext struct {
 	registry       *mockRegistry
 	witnessBeacon  *mockWitnessBeacon
 	resolver       *htlcIncomingContestResolver
-	notifier       *mockNotifier
+	notifier       *mock.ChainNotifier
 	onionProcessor *mockOnionProcessor
 	resolveErr     chan error
 	nextResolver   ContractResolver
@@ -303,10 +304,10 @@ type incomingResolverTestContext struct {
 }
 
 func newIncomingResolverTestContext(t *testing.T, isExit bool) *incomingResolverTestContext {
-	notifier := &mockNotifier{
-		epochChan: make(chan *chainntnfs.BlockEpoch),
-		spendChan: make(chan *chainntnfs.SpendDetail),
-		confChan:  make(chan *chainntnfs.TxConfirmation),
+	notifier := &mock.ChainNotifier{
+		EpochChan: make(chan *chainntnfs.BlockEpoch),
+		SpendChan: make(chan *chainntnfs.SpendDetail),
+		ConfChan:  make(chan *chainntnfs.TxConfirmation),
 	}
 	witnessBeacon := newMockWitnessBeacon()
 	registry := &mockRegistry{
@@ -341,7 +342,7 @@ func newIncomingResolverTestContext(t *testing.T, isExit bool) *incomingResolver
 		},
 	}
 	resolver := &htlcIncomingContestResolver{
-		htlcSuccessResolver: htlcSuccessResolver{
+		htlcSuccessResolver: &htlcSuccessResolver{
 			contractResolverKit: *newContractResolverKit(cfg),
 			htlcResolution:      lnwallet.IncomingHtlcResolution{},
 			htlc: channeldb.HTLC{
@@ -377,7 +378,7 @@ func (i *incomingResolverTestContext) resolve() {
 }
 
 func (i *incomingResolverTestContext) notifyEpoch(height int32) {
-	i.notifier.epochChan <- &chainntnfs.BlockEpoch{
+	i.notifier.EpochChan <- &chainntnfs.BlockEpoch{
 		Height: height,
 	}
 }

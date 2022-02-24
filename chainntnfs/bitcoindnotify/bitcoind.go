@@ -6,14 +6,15 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/ltcsuite/lnd/blockcache"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/queue"
 	"github.com/ltcsuite/ltcd/btcjson"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/ltcwallet/chain"
 )
 
@@ -50,6 +51,9 @@ type BitcoindNotifier struct {
 
 	bestBlock chainntnfs.BlockEpoch
 
+	// blockCache is a LRU block cache.
+	blockCache *blockcache.BlockCache
+
 	// spendHintCache is a cache used to query and update the latest height
 	// hints for an outpoint. Each height hint represents the earliest
 	// height at which the outpoint could have been spent within the chain.
@@ -73,7 +77,8 @@ var _ chainntnfs.ChainNotifier = (*BitcoindNotifier)(nil)
 // willing to accept RPC requests and new zmq clients.
 func New(chainConn *chain.BitcoindConn, chainParams *chaincfg.Params,
 	spendHintCache chainntnfs.SpendHintCache,
-	confirmHintCache chainntnfs.ConfirmHintCache) *BitcoindNotifier {
+	confirmHintCache chainntnfs.ConfirmHintCache,
+	blockCache *blockcache.BlockCache) *BitcoindNotifier {
 
 	notifier := &BitcoindNotifier{
 		chainParams: chainParams,
@@ -85,6 +90,8 @@ func New(chainConn *chain.BitcoindConn, chainParams *chaincfg.Params,
 
 		spendHintCache:   spendHintCache,
 		confirmHintCache: confirmHintCache,
+
+		blockCache: blockCache,
 
 		quit: make(chan struct{}),
 	}
@@ -110,6 +117,8 @@ func (b *BitcoindNotifier) Stop() error {
 	if atomic.AddInt32(&b.stopped, 1) != 1 {
 		return nil
 	}
+
+	chainntnfs.Log.Info("bitcoind notifier shutting down")
 
 	// Shutdown the rpc client, this gracefully disconnects from bitcoind,
 	// and cleans up all related resources.
@@ -150,6 +159,10 @@ func (b *BitcoindNotifier) startNotifier() error {
 	if err != nil {
 		return err
 	}
+	blockHeader, err := b.chainConn.GetBlockHeader(currentHash)
+	if err != nil {
+		return err
+	}
 
 	b.txNotifier = chainntnfs.NewTxNotifier(
 		uint32(currentHeight), chainntnfs.ReorgSafetyLimit,
@@ -157,8 +170,9 @@ func (b *BitcoindNotifier) startNotifier() error {
 	)
 
 	b.bestBlock = chainntnfs.BlockEpoch{
-		Height: currentHeight,
-		Hash:   currentHash,
+		Height:      currentHeight,
+		Hash:        currentHash,
+		BlockHeader: blockHeader,
 	}
 
 	b.wg.Add(1)
@@ -174,6 +188,8 @@ func (b *BitcoindNotifier) startNotifier() error {
 // notificationDispatcher is the primary goroutine which handles client
 // notification registrations, as well as notification dispatches.
 func (b *BitcoindNotifier) notificationDispatcher() {
+	defer b.wg.Done()
+
 out:
 	for {
 		select {
@@ -313,6 +329,7 @@ out:
 					b.notifyBlockEpochClient(
 						msg, b.bestBlock.Height,
 						b.bestBlock.Hash,
+						b.bestBlock.BlockHeader,
 					)
 
 					msg.errorChan <- nil
@@ -334,6 +351,7 @@ out:
 				for _, block := range missedBlocks {
 					b.notifyBlockEpochClient(
 						msg, block.Height, block.Hash,
+						block.BlockHeader,
 					)
 				}
 
@@ -383,8 +401,9 @@ out:
 				}
 
 				newBlock := chainntnfs.BlockEpoch{
-					Height: item.Height,
-					Hash:   &item.Hash,
+					Height:      item.Height,
+					Hash:        &item.Hash,
+					BlockHeader: blockHeader,
 				}
 				if err := b.handleBlockConnected(newBlock); err != nil {
 					chainntnfs.Log.Error(err)
@@ -436,7 +455,6 @@ out:
 			break out
 		}
 	}
-	b.wg.Done()
 }
 
 // historicalConfDetails looks up whether a confirmation request (txid/output
@@ -521,7 +539,7 @@ func (b *BitcoindNotifier) confDetailsManually(confRequest chainntnfs.ConfReques
 					"with height %d", height)
 		}
 
-		block, err := b.chainConn.GetBlock(blockHash)
+		block, err := b.GetBlock(blockHash)
 		if err != nil {
 			return nil, chainntnfs.TxNotFoundManually,
 				fmt.Errorf("unable to get block with hash "+
@@ -557,7 +575,7 @@ func (b *BitcoindNotifier) handleBlockConnected(block chainntnfs.BlockEpoch) err
 	// First, we'll fetch the raw block as we'll need to gather all the
 	// transactions to determine whether any are relevant to our registered
 	// clients.
-	rawBlock, err := b.chainConn.GetBlock(block.Hash)
+	rawBlock, err := b.GetBlock(block.Hash)
 	if err != nil {
 		return fmt.Errorf("unable to get block: %v", err)
 	}
@@ -581,26 +599,29 @@ func (b *BitcoindNotifier) handleBlockConnected(block chainntnfs.BlockEpoch) err
 	// satisfy any client requests based upon the new block.
 	b.bestBlock = block
 
-	b.notifyBlockEpochs(block.Height, block.Hash)
+	b.notifyBlockEpochs(block.Height, block.Hash, block.BlockHeader)
 	return b.txNotifier.NotifyHeight(uint32(block.Height))
 }
 
 // notifyBlockEpochs notifies all registered block epoch clients of the newly
 // connected block to the main chain.
-func (b *BitcoindNotifier) notifyBlockEpochs(newHeight int32, newSha *chainhash.Hash) {
+func (b *BitcoindNotifier) notifyBlockEpochs(newHeight int32, newSha *chainhash.Hash,
+	blockHeader *wire.BlockHeader) {
+
 	for _, client := range b.blockEpochClients {
-		b.notifyBlockEpochClient(client, newHeight, newSha)
+		b.notifyBlockEpochClient(client, newHeight, newSha, blockHeader)
 	}
 }
 
 // notifyBlockEpochClient sends a registered block epoch client a notification
 // about a specific block.
 func (b *BitcoindNotifier) notifyBlockEpochClient(epochClient *blockEpochRegistration,
-	height int32, sha *chainhash.Hash) {
+	height int32, sha *chainhash.Hash, header *wire.BlockHeader) {
 
 	epoch := &chainntnfs.BlockEpoch{
-		Height: height,
-		Hash:   sha,
+		Height:      height,
+		Hash:        sha,
+		BlockHeader: header,
 	}
 
 	select {
@@ -776,7 +797,7 @@ func (b *BitcoindNotifier) historicalSpendDetails(
 			return nil, fmt.Errorf("unable to retrieve hash for "+
 				"block with height %d: %v", height, err)
 		}
-		block, err := b.chainConn.GetBlock(blockHash)
+		block, err := b.GetBlock(blockHash)
 		if err != nil {
 			return nil, fmt.Errorf("unable to retrieve block "+
 				"with hash %v: %v", blockHash, err)
@@ -953,4 +974,12 @@ func (b *BitcoindNotifier) RegisterBlockEpochNtfn(
 			},
 		}, nil
 	}
+}
+
+// GetBlock is used to retrieve the block with the given hash. This function
+// wraps the blockCache's GetBlock function.
+func (b *BitcoindNotifier) GetBlock(hash *chainhash.Hash) (*wire.MsgBlock,
+	error) {
+
+	return b.blockCache.GetBlock(hash, b.chainConn.GetBlock)
 }

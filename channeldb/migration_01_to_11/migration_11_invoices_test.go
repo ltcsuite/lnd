@@ -6,10 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/zpay32"
-	"github.com/ltcsuite/ltcd/btcec"
-	bitcoinCfg "github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/btcec/v2/ecdsa"
+	bitcoinCfg "github.com/ltcsuite/ltcd/chaincfg" //TODO(losh) : check if should revert
 	litecoinCfg "github.com/ltcsuite/ltcd/chaincfg"
 )
 
@@ -55,7 +56,7 @@ func beforeMigrationFuncV11(t *testing.T, d *DB, invoices []Invoice) {
 		}
 
 		return nil
-	})
+	}, func() {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,12 +151,10 @@ func signDigestCompact(hash []byte) ([]byte, error) {
 	// Should the signature reference a compressed public key or not.
 	isCompressedKey := true
 
-	privKey, _ := btcec.PrivKeyFromBytes(btcec.S256(), testPrivKeyBytes)
+	privKey, _ := btcec.PrivKeyFromBytes(testPrivKeyBytes)
 
-	// btcec.SignCompact returns a pubkey-recoverable signature
-	sig, err := btcec.SignCompact(
-		btcec.S256(), privKey, hash, isCompressedKey,
-	)
+	// ecdsa.SignCompact returns a pubkey-recoverable signature
+	sig, err := ecdsa.SignCompact(privKey, hash, isCompressedKey)
 	if err != nil {
 		return nil, fmt.Errorf("can't sign the hash: %v", err)
 	}

@@ -128,6 +128,7 @@ func (f *interceptedForward) Packet() InterceptedPacket {
 		IncomingAmount: f.packet.incomingAmount,
 		IncomingExpiry: f.packet.incomingTimeout,
 		CustomRecords:  f.packet.customRecords,
+		OnionBlob:      f.htlc.OnionBlob,
 	}
 }
 
@@ -138,7 +139,16 @@ func (f *interceptedForward) Resume() error {
 
 // Fail forward a failed packet to the switch.
 func (f *interceptedForward) Fail() error {
-	reason, err := f.packet.obfuscator.EncryptFirstHop(lnwire.NewTemporaryChannelFailure(nil))
+	update, err := f.htlcSwitch.cfg.FetchLastChannelUpdate(
+		f.packet.incomingChanID,
+	)
+	if err != nil {
+		return err
+	}
+
+	reason, err := f.packet.obfuscator.EncryptFirstHop(
+		lnwire.NewTemporaryChannelFailure(update),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt failure reason %v", err)
 	}
@@ -169,6 +179,7 @@ func (f *interceptedForward) resolve(message lnwire.Message) error {
 		circuit:        f.packet.circuit,
 		htlc:           message,
 		obfuscator:     f.packet.obfuscator,
+		sourceRef:      f.packet.sourceRef,
 	}
 	return f.htlcSwitch.mailOrchestrator.Deliver(pkt.incomingChanID, pkt)
 }

@@ -2,16 +2,18 @@ package chainfee
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	prand "math/rand"
 	"net"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/rpcclient"
-	"github.com/ltcsuite/ltcutil"
 )
 
 const (
@@ -19,12 +21,12 @@ const (
 	// a WebAPIEstimator will cache fees for. This number is chosen
 	// because it's the highest number of confs bitcoind will return a fee
 	// estimate for.
-	maxBlockTarget uint32 = 1009
+	maxBlockTarget uint32 = 1008
 
 	// minBlockTarget is the lowest number of blocks confirmations that
 	// a WebAPIEstimator will cache fees for. Requesting an estimate for
 	// less than this will result in an error.
-	minBlockTarget uint32 = 2
+	minBlockTarget uint32 = 1
 
 	// minFeeUpdateTimeout represents the minimum interval in which a
 	// WebAPIEstimator will request fresh fees from its API.
@@ -33,6 +35,15 @@ const (
 	// maxFeeUpdateTimeout represents the maximum interval in which a
 	// WebAPIEstimator will request fresh fees from its API.
 	maxFeeUpdateTimeout = 20 * time.Minute
+)
+
+var (
+	// errNoFeeRateFound is used when a given conf target cannot be found
+	// from the fee estimator.
+	errNoFeeRateFound = errors.New("no fee estimation for block target")
+
+	// errEmptyCache is used when the fee rate cache is empty.
+	errEmptyCache = errors.New("fee rate cache is empty")
 )
 
 // Estimator provides the ability to estimate on-chain transaction fees for
@@ -125,11 +136,11 @@ type BtcdEstimator struct {
 	// produce fee estimates.
 	fallbackFeePerKW SatPerKWeight
 
-	// minFeePerKW is the minimum fee, in sat/kw, that we should enforce.
-	// This will be used as the default fee rate for a transaction when the
-	// estimated fee rate is too low to allow the transaction to propagate
-	// through the network.
-	minFeePerKW SatPerKWeight
+	// minFeeManager is used to query the current minimum fee, in sat/kw,
+	// that we should enforce. This will be used to determine fee rate for
+	// a transaction when the estimated fee rate is too low to allow the
+	// transaction to propagate through the network.
+	minFeeManager *minFeeManager
 
 	ltcdConn *rpcclient.Client
 }
@@ -164,34 +175,36 @@ func (b *BtcdEstimator) Start() error {
 		return err
 	}
 
-	// Once the connection to the backend node has been established, we'll
-	// query it for its minimum relay fee.
-	info, err := b.ltcdConn.GetInfo()
+	// Once the connection to the backend node has been established, we
+	// can initialise the minimum relay fee manager which queries the
+	// chain backend for the minimum relay fee on construction.
+	minRelayFeeManager, err := newMinFeeManager(
+		defaultUpdateInterval, b.fetchMinRelayFee,
+	)
 	if err != nil {
 		return err
+	}
+	b.minFeeManager = minRelayFeeManager
+
+	return nil
+}
+
+// fetchMinRelayFee fetches and returns the minimum relay fee in sat/kb from
+// the btcd backend.
+func (b *BtcdEstimator) fetchMinRelayFee() (SatPerKWeight, error) {
+	info, err := b.ltcdConn.GetInfo()
+	if err != nil {
+		return 0, err
 	}
 
 	relayFee, err := ltcutil.NewAmount(info.RelayFee)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	// The fee rate is expressed in sat/kb, so we'll manually convert it to
 	// our desired sat/kw rate.
-	minRelayFeePerKw := SatPerKVByte(relayFee).FeePerKWeight()
-
-	// By default, we'll use the backend node's minimum relay fee as the
-	// minimum fee rate we'll propose for transacations. However, if this
-	// happens to be lower than our fee floor, we'll enforce that instead.
-	b.minFeePerKW = minRelayFeePerKw
-	if b.minFeePerKW < FeePerKwFloor {
-		b.minFeePerKW = FeePerKwFloor
-	}
-
-	log.Debugf("Using minimum fee rate of %v sat/kw",
-		int64(b.minFeePerKW))
-
-	return nil
+	return SatPerKVByte(relayFee).FeePerKWeight(), nil
 }
 
 // Stop stops any spawned goroutines and cleans up the resources used
@@ -230,7 +243,7 @@ func (b *BtcdEstimator) EstimateFeePerKW(numBlocks uint32) (SatPerKWeight, error
 //
 // NOTE: This method is part of the Estimator interface.
 func (b *BtcdEstimator) RelayFeePerKW() SatPerKWeight {
-	return b.minFeePerKW
+	return b.minFeeManager.fetchMinFee()
 }
 
 // fetchEstimate returns a fee estimate for a transaction to be confirmed in
@@ -254,11 +267,11 @@ func (b *BtcdEstimator) fetchEstimate(confTarget uint32) (SatPerKWeight, error) 
 	satPerKw := SatPerKVByte(satPerKB).FeePerKWeight()
 
 	// Finally, we'll enforce our fee floor.
-	if satPerKw < b.minFeePerKW {
+	if satPerKw < b.minFeeManager.fetchMinFee() {
 		log.Debugf("Estimated fee rate of %v sat/kw is too low, "+
 			"using fee floor of %v sat/kw instead", satPerKw,
-			b.minFeePerKW)
-		satPerKw = b.minFeePerKW
+			b.minFeeManager)
+		satPerKw = b.minFeeManager.fetchMinFee()
 	}
 
 	log.Debugf("Returning %v sat/kw for conf target of %v",
@@ -280,11 +293,11 @@ type BitcoindEstimator struct {
 	// produce fee estimates.
 	fallbackFeePerKW SatPerKWeight
 
-	// minFeePerKW is the minimum fee, in sat/kw, that we should enforce.
-	// This will be used as the default fee rate for a transaction when the
-	// estimated fee rate is too low to allow the transaction to propagate
-	// through the network.
-	minFeePerKW SatPerKWeight
+	// minFeeManager is used to keep track of the minimum fee, in sat/kw,
+	// that we should enforce. This will be used as the default fee rate
+	// for a transaction when the estimated fee rate is too low to allow
+	// the transaction to propagate through the network.
+	minFeeManager *minFeeManager
 
 	// feeMode is the estimate_mode to use when calling "estimatesmartfee".
 	// It can be either "ECONOMICAL" or "CONSERVATIVE", and it's default
@@ -324,43 +337,47 @@ func NewBitcoindEstimator(rpcConfig rpcclient.ConnConfig, feeMode string,
 // NOTE: This method is part of the Estimator interface.
 func (b *BitcoindEstimator) Start() error {
 	// Once the connection to the backend node has been established, we'll
-	// query it for its minimum relay fee. Since the `getinfo` RPC has been
-	// deprecated for `bitcoind`, we'll need to send a `getnetworkinfo`
-	// command as a raw request.
-	resp, err := b.bitcoindConn.RawRequest("getnetworkinfo", nil)
+	// initialise the minimum relay fee manager which will query
+	// the backend node for its minimum mempool fee.
+	relayFeeManager, err := newMinFeeManager(
+		defaultUpdateInterval,
+		b.fetchMinMempoolFee,
+	)
 	if err != nil {
 		return err
 	}
+	b.minFeeManager = relayFeeManager
 
-	// Parse the response to retrieve the relay fee in sat/KB.
+	return nil
+}
+
+// fetchMinMempoolFee is used to fetch the minimum fee that the backend node
+// requires for a tx to enter its mempool. The returned fee will be the
+// maximum of the minimum relay fee and the minimum mempool fee.
+func (b *BitcoindEstimator) fetchMinMempoolFee() (SatPerKWeight, error) {
+	resp, err := b.bitcoindConn.RawRequest("getmempoolinfo", nil)
+	if err != nil {
+		return 0, err
+	}
+
+	// Parse the response to retrieve the min mempool fee in sat/KB.
+	// mempoolminfee is the maximum of minrelaytxfee and
+	// minimum mempool fee
 	info := struct {
-		RelayFee float64 `json:"relayfee"`
+		MempoolMinFee float64 `json:"mempoolminfee"`
 	}{}
 	if err := json.Unmarshal(resp, &info); err != nil {
-		return err
+		return 0, err
 	}
 
-	relayFee, err := ltcutil.NewAmount(info.RelayFee)
+	minMempoolFee, err := ltcutil.NewAmount(info.MempoolMinFee)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	// The fee rate is expressed in sat/kb, so we'll manually convert it to
 	// our desired sat/kw rate.
-	minRelayFeePerKw := SatPerKVByte(relayFee).FeePerKWeight()
-
-	// By default, we'll use the backend node's minimum relay fee as the
-	// minimum fee rate we'll propose for transacations. However, if this
-	// happens to be lower than our fee floor, we'll enforce that instead.
-	b.minFeePerKW = minRelayFeePerKw
-	if b.minFeePerKW < FeePerKwFloor {
-		b.minFeePerKW = FeePerKwFloor
-	}
-
-	log.Debugf("Using minimum fee rate of %v sat/kw",
-		int64(b.minFeePerKW))
-
-	return nil
+	return SatPerKVByte(minMempoolFee).FeePerKWeight(), nil
 }
 
 // Stop stops any spawned goroutines and cleans up the resources used
@@ -375,7 +392,16 @@ func (b *BitcoindEstimator) Stop() error {
 // confirmation and returns the estimated fee expressed in sat/kw.
 //
 // NOTE: This method is part of the Estimator interface.
-func (b *BitcoindEstimator) EstimateFeePerKW(numBlocks uint32) (SatPerKWeight, error) {
+func (b *BitcoindEstimator) EstimateFeePerKW(
+	numBlocks uint32) (SatPerKWeight, error) {
+
+	if numBlocks > maxBlockTarget {
+		log.Debugf("conf target %d exceeds the max value, "+
+			"use %d instead.", numBlocks, maxBlockTarget,
+		)
+		numBlocks = maxBlockTarget
+	}
+
 	feeEstimate, err := b.fetchEstimate(numBlocks)
 	switch {
 	// If the estimator doesn't have enough data, or returns an error, then
@@ -397,7 +423,7 @@ func (b *BitcoindEstimator) EstimateFeePerKW(numBlocks uint32) (SatPerKWeight, e
 //
 // NOTE: This method is part of the Estimator interface.
 func (b *BitcoindEstimator) RelayFeePerKW() SatPerKWeight {
-	return b.minFeePerKW
+	return b.minFeeManager.fetchMinFee()
 }
 
 // fetchEstimate returns a fee estimate for a transaction to be confirmed in
@@ -444,12 +470,13 @@ func (b *BitcoindEstimator) fetchEstimate(confTarget uint32) (SatPerKWeight, err
 	satPerKw := SatPerKVByte(satPerKB).FeePerKWeight()
 
 	// Finally, we'll enforce our fee floor.
-	if satPerKw < b.minFeePerKW {
+	minRelayFee := b.minFeeManager.fetchMinFee()
+	if satPerKw < minRelayFee {
 		log.Debugf("Estimated fee rate of %v sat/kw is too low, "+
 			"using fee floor of %v sat/kw instead", satPerKw,
-			b.minFeePerKW)
+			minRelayFee)
 
-		satPerKw = b.minFeePerKW
+		satPerKw = minRelayFee
 	}
 
 	log.Debugf("Returning %v sat/kw for conf target of %v",
@@ -540,9 +567,9 @@ type WebAPIEstimator struct {
 	feesMtx          sync.Mutex
 	feeByBlockTarget map[uint32]uint32
 
-	// defaultFeePerKw is a fallback value that we'll use if we're unable
-	// to query the API for any reason.
-	defaultFeePerKw SatPerKWeight
+	// noCache determines whether the web estimator should cache fee
+	// estimates.
+	noCache bool
 
 	quit chan struct{}
 	wg   sync.WaitGroup
@@ -550,13 +577,11 @@ type WebAPIEstimator struct {
 
 // NewWebAPIEstimator creates a new WebAPIEstimator from a given URL and a
 // fallback default fee. The fees are updated whenever a new block is mined.
-func NewWebAPIEstimator(
-	api WebAPIFeeSource, defaultFee SatPerKWeight) *WebAPIEstimator {
-
+func NewWebAPIEstimator(api WebAPIFeeSource, noCache bool) *WebAPIEstimator {
 	return &WebAPIEstimator{
 		apiSource:        api,
 		feeByBlockTarget: make(map[uint32]uint32),
-		defaultFeePerKw:  defaultFee,
+		noCache:          noCache,
 		quit:             make(chan struct{}),
 	}
 }
@@ -565,7 +590,9 @@ func NewWebAPIEstimator(
 // confirmation and returns the estimated fee expressed in sat/kw.
 //
 // NOTE: This method is part of the Estimator interface.
-func (w *WebAPIEstimator) EstimateFeePerKW(numBlocks uint32) (SatPerKWeight, error) {
+func (w *WebAPIEstimator) EstimateFeePerKW(numBlocks uint32) (
+	SatPerKWeight, error) {
+
 	if numBlocks > maxBlockTarget {
 		numBlocks = maxBlockTarget
 	} else if numBlocks < minBlockTarget {
@@ -573,9 +600,18 @@ func (w *WebAPIEstimator) EstimateFeePerKW(numBlocks uint32) (SatPerKWeight, err
 			"accepted is %v", numBlocks, minBlockTarget)
 	}
 
+	// Get fee estimates now if we don't refresh periodically.
+	if w.noCache {
+		w.updateFeeEstimates()
+	}
+
 	feePerKb, err := w.getCachedFee(numBlocks)
+
+	// If the estimator returns an error, a zero value fee rate will be
+	// returned. We will log the error and return the fall back fee rate
+	// instead.
 	if err != nil {
-		return 0, err
+		log.Errorf("unable to query estimator: %v", err)
 	}
 
 	// If the result is too low, then we'll clamp it to our current fee
@@ -596,6 +632,11 @@ func (w *WebAPIEstimator) EstimateFeePerKW(numBlocks uint32) (SatPerKWeight, err
 //
 // NOTE: This method is part of the Estimator interface.
 func (w *WebAPIEstimator) Start() error {
+	// No update loop is needed when we don't cache.
+	if w.noCache {
+		return nil
+	}
+
 	var err error
 	w.started.Do(func() {
 		log.Infof("Starting web API fee estimator")
@@ -615,6 +656,11 @@ func (w *WebAPIEstimator) Start() error {
 //
 // NOTE: This method is part of the Estimator interface.
 func (w *WebAPIEstimator) Stop() error {
+	// Update loop is not running when we don't cache.
+	if w.noCache {
+		return nil
+	}
+
 	w.stopped.Do(func() {
 		log.Infof("Stopping web API fee estimator")
 
@@ -643,31 +689,76 @@ func (w *WebAPIEstimator) randomFeeUpdateTimeout() time.Duration {
 	return time.Duration(prand.Int63n(upper-lower) + lower)
 }
 
-// getCachedFee takes in a target for the number of blocks until an initial
-// confirmation and returns an estimated fee (if one was returned by the API). If
-// the fee was not previously cached, we cache it here.
+// getCachedFee takes a conf target and returns the cached fee rate. When the
+// fee rate cannot be found, it will search the cache by decrementing the conf
+// target until a fee rate is found. If still not found, it will return the fee
+// rate of the minimum conf target cached, in other words, the most expensive
+// fee rate it knows of.
 func (w *WebAPIEstimator) getCachedFee(numBlocks uint32) (uint32, error) {
 	w.feesMtx.Lock()
 	defer w.feesMtx.Unlock()
 
-	// Search our cached fees for the desired block target. If the target is
-	// not cached, then attempt to extrapolate it from the next lowest target
-	// that *is* cached. If we successfully extrapolate, then cache the
-	// target's fee.
+	// If the cache is empty, return an error.
+	if len(w.feeByBlockTarget) == 0 {
+		return 0, fmt.Errorf("web API error: %w", errEmptyCache)
+	}
+
+	// Search the conf target from the cache. We expect a query to the web
+	// API has been made and the result has been cached at this point.
+	fee, ok := w.feeByBlockTarget[numBlocks]
+
+	// If the conf target can be found, exit early.
+	if ok {
+		return fee, nil
+	}
+
+	// The conf target cannot be found. We will first search the cache
+	// using a lower conf target. This is a conservative approach as the
+	// fee rate returned will be larger than what's requested.
 	for target := numBlocks; target >= minBlockTarget; target-- {
 		fee, ok := w.feeByBlockTarget[target]
 		if !ok {
 			continue
 		}
 
-		_, ok = w.feeByBlockTarget[numBlocks]
-		if !ok {
-			w.feeByBlockTarget[numBlocks] = fee
-		}
+		log.Warnf("Web API does not have a fee rate for target=%d, "+
+			"using the fee rate for target=%d instead",
+			numBlocks, target)
+
+		// Return the fee rate found, which will be more expensive than
+		// requested. We will not cache the fee rate here in the hope
+		// that the web API will later populate this value.
 		return fee, nil
 	}
-	return 0, fmt.Errorf("web API does not include a fee estimation for "+
-		"block target of %v", numBlocks)
+
+	// There are no lower conf targets cached, which is likely when the
+	// requested conf target is 1. We will search the cache using a higher
+	// conf target, which gives a fee rate that's cheaper than requested.
+	//
+	// NOTE: we can only get here iff the requested conf target is smaller
+	// than the minimum conf target cached, so we return the minimum conf
+	// target from the cache.
+	minTargetCached := uint32(math.MaxUint32)
+	for target := range w.feeByBlockTarget {
+		if target < minTargetCached {
+			minTargetCached = target
+		}
+	}
+
+	fee, ok = w.feeByBlockTarget[minTargetCached]
+	if !ok {
+		// We should never get here, just a vanity check.
+		return 0, fmt.Errorf("web API error: %w, conf target: %d",
+			errNoFeeRateFound, numBlocks)
+	}
+
+	// Log an error instead of a warning as a cheaper fee rate may delay
+	// the confirmation for some important transactions.
+	log.Errorf("Web API does not have a fee rate for target=%d, "+
+		"using the fee rate for target=%d instead",
+		numBlocks, minTargetCached)
+
+	return fee, nil
 }
 
 // updateFeeEstimates re-queries the API for fresh fees and caches them.

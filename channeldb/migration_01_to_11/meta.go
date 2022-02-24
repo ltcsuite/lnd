@@ -1,7 +1,7 @@
 package migration_01_to_11
 
 import (
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/kvdb"
 )
 
 var (

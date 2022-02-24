@@ -4,8 +4,8 @@ import (
 	prand "math/rand"
 	"time"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 // minMedianChanSizeFraction determines the minimum size a channel must have to
@@ -78,7 +78,7 @@ func (p *PrefAttachment) Name() string {
 // given to nodes already having high connectivity in the graph.
 //
 // NOTE: This is a part of the AttachmentHeuristic interface.
-func (p *PrefAttachment) NodeScores(g ChannelGraph, chans []Channel,
+func (p *PrefAttachment) NodeScores(g ChannelGraph, chans []LocalChannel,
 	chanSize ltcutil.Amount, nodes map[NodeID]struct{}) (
 	map[NodeID]*NodeScore, error) {
 

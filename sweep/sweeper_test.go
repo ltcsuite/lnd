@@ -2,20 +2,25 @@ package sweep
 
 import (
 	"os"
+	"reflect"
 	"runtime/debug"
 	"runtime/pprof"
 	"testing"
 	"time"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
+	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/build"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lntest/mock"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -54,13 +59,13 @@ var (
 		0xf8, 0x2e, 0x16, 0x0b, 0xfa, 0x9b, 0x8b, 0x64, 0xf9,
 		0xd4, 0xc0, 0x3f, 0x99, 0x9b, 0x86, 0x43, 0xf6, 0x56,
 		0xb4, 0x12, 0xa3,
-	}, btcec.S256())
+	})
 )
 
 func createTestInput(value int64, witnessType input.WitnessType) input.BaseInput {
 	hash := chainhash.Hash{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-		byte(testInputCount)}
+		byte(testInputCount + 1)}
 
 	input := input.MakeBaseInput(
 		&wire.OutPoint{
@@ -76,6 +81,7 @@ func createTestInput(value int64, witnessType input.WitnessType) input.BaseInput
 			},
 		},
 		0,
+		nil,
 	)
 
 	testInputCount++
@@ -85,7 +91,7 @@ func createTestInput(value int64, witnessType input.WitnessType) input.BaseInput
 
 func init() {
 	// Create a set of test spendable inputs.
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 20; i++ {
 		input := createTestInput(int64(10000+i*500),
 			input.CommitmentTimeLock)
 
@@ -101,7 +107,7 @@ func createSweeperTestContext(t *testing.T) *sweeperTestContext {
 	backend := newMockBackend(t, notifier)
 	backend.walletUtxos = []*lnwallet.Utxo{
 		{
-			Value:       ltcutil.Amount(10000),
+			Value:       ltcutil.Amount(1_000_000),
 			AddressType: lnwallet.WitnessPubKey,
 		},
 	}
@@ -128,9 +134,10 @@ func createSweeperTestContext(t *testing.T) *sweeperTestContext {
 			return c
 		},
 		Store:  store,
-		Signer: &mockSigner{},
+		Signer: &mock.DummySigner{},
 		GenSweepScript: func() ([]byte, error) {
-			script := []byte{outputScriptCount}
+			script := make([]byte, input.P2WPKHSize)
+			script[0] = outputScriptCount
 			outputScriptCount++
 			return script, nil
 		},
@@ -172,6 +179,18 @@ func (ctx *sweeperTestContext) tick() {
 	case <-time.After(defaultTestTimeout):
 		debug.PrintStack()
 		ctx.t.Fatal("tick timeout - no new timer created")
+	}
+}
+
+// assertNoTick asserts that the sweeper does not wait for a tick.
+func (ctx *sweeperTestContext) assertNoTick() {
+	ctx.t.Helper()
+
+	select {
+	case <-ctx.timeoutChan:
+		ctx.t.Fatal("unexpected tick")
+
+	case <-time.After(processingDelay):
 	}
 }
 
@@ -336,9 +355,10 @@ func assertTxFeeRate(t *testing.T, tx *wire.MsgTx,
 	outputAmt := tx.TxOut[0].Value
 
 	fee := ltcutil.Amount(inputAmt - outputAmt)
-	_, txWeight := getWeightEstimate(inputs)
+	_, estimator := getWeightEstimate(inputs, nil, 0)
+	txWeight := estimator.weight()
 
-	expectedFee := expectedFeeRate.FeeForWeight(txWeight)
+	expectedFee := expectedFeeRate.FeeForWeight(int64(txWeight))
 	if fee != expectedFee {
 		t.Fatalf("expected fee rate %v results in %v fee, got %v fee",
 			expectedFeeRate, expectedFee, fee)
@@ -475,8 +495,9 @@ func TestWalletUtxo(t *testing.T) {
 			"inputs instead", len(sweepTx.TxIn))
 	}
 
-	// Calculate expected output value based on wallet utxo of 10000 sats.
-	expectedOutputValue := int64(294 + 10000 - 180)
+	// Calculate expected output value based on wallet utxo of 1_000_000
+	// sats.
+	expectedOutputValue := int64(294 + 1_000_000 - 180)
 	if sweepTx.TxOut[0].Value != expectedOutputValue {
 		t.Fatalf("Expected output value of %v, but got %v",
 			expectedOutputValue, sweepTx.TxOut[0].Value)
@@ -1291,4 +1312,969 @@ func TestExclusiveGroup(t *testing.T) {
 	if result2.Err != ErrExclusiveGroupSpend {
 		t.Fatal("expected third input to be canceled")
 	}
+}
+
+// TestCpfp tests that the sweeper spends cpfp inputs at a fee rate that exceeds
+// the parent tx fee rate.
+func TestCpfp(t *testing.T) {
+	ctx := createSweeperTestContext(t)
+
+	ctx.estimator.updateFees(1000, chainfee.FeePerKwFloor)
+
+	// Offer an input with an unconfirmed parent tx to the sweeper. The
+	// parent tx pays 3000 sat/kw.
+	hash := chainhash.Hash{1}
+	input := input.MakeBaseInput(
+		&wire.OutPoint{Hash: hash},
+		input.CommitmentTimeLock,
+		&input.SignDescriptor{
+			Output: &wire.TxOut{
+				Value: 330,
+			},
+			KeyDesc: keychain.KeyDescriptor{
+				PubKey: testPubKey,
+			},
+		},
+		0,
+		&input.TxInfo{
+			Weight: 300,
+			Fee:    900,
+		},
+	)
+
+	feePref := FeePreference{ConfTarget: 6}
+	result, err := ctx.sweeper.SweepInput(
+		&input, Params{Fee: feePref, Force: true},
+	)
+	require.NoError(t, err)
+
+	// Because we sweep at 1000 sat/kw, the parent cannot be paid for. We
+	// expect the sweeper to remain idle.
+	ctx.assertNoTick()
+
+	// Increase the fee estimate to above the parent tx fee rate.
+	ctx.estimator.updateFees(5000, chainfee.FeePerKwFloor)
+
+	// Signal a new block. This is a trigger for the sweeper to refresh fee
+	// estimates.
+	ctx.notifier.NotifyEpoch(1000)
+
+	// Now we do expect a sweep transaction to be published with our input
+	// and an attached wallet utxo.
+	ctx.tick()
+	tx := ctx.receiveTx()
+	require.Len(t, tx.TxIn, 2)
+	require.Len(t, tx.TxOut, 1)
+
+	// As inputs we have 10000 sats from the wallet and 330 sats from the
+	// cpfp input. The sweep tx is weight expected to be 759 units. There is
+	// an additional 300 weight units from the parent to include in the
+	// package, making a total of 1059. At 5000 sat/kw, the required fee for
+	// the package is 5295 sats. The parent already paid 900 sats, so there
+	// is 4395 sat remaining to be paid. The expected output value is
+	// therefore: 1_000_000 + 330 - 4395 = 995 935.
+	require.Equal(t, int64(995_935), tx.TxOut[0].Value)
+
+	// Mine the tx and assert that the result is passed back.
+	ctx.backend.mine()
+	ctx.expectResult(result, nil)
+
+	ctx.finish(1)
+}
+
+var (
+	testInputsA = pendingInputs{
+		wire.OutPoint{Hash: chainhash.Hash{}, Index: 0}: &pendingInput{},
+		wire.OutPoint{Hash: chainhash.Hash{}, Index: 1}: &pendingInput{},
+		wire.OutPoint{Hash: chainhash.Hash{}, Index: 2}: &pendingInput{},
+	}
+
+	testInputsB = pendingInputs{
+		wire.OutPoint{Hash: chainhash.Hash{}, Index: 10}: &pendingInput{},
+		wire.OutPoint{Hash: chainhash.Hash{}, Index: 11}: &pendingInput{},
+		wire.OutPoint{Hash: chainhash.Hash{}, Index: 12}: &pendingInput{},
+	}
+
+	testInputsC = pendingInputs{
+		wire.OutPoint{Hash: chainhash.Hash{}, Index: 0}:  &pendingInput{},
+		wire.OutPoint{Hash: chainhash.Hash{}, Index: 1}:  &pendingInput{},
+		wire.OutPoint{Hash: chainhash.Hash{}, Index: 2}:  &pendingInput{},
+		wire.OutPoint{Hash: chainhash.Hash{}, Index: 10}: &pendingInput{},
+		wire.OutPoint{Hash: chainhash.Hash{}, Index: 11}: &pendingInput{},
+		wire.OutPoint{Hash: chainhash.Hash{}, Index: 12}: &pendingInput{},
+	}
+)
+
+// TestMergeClusters check that we properly can merge clusters together,
+// according to their required locktime.
+func TestMergeClusters(t *testing.T) {
+	t.Parallel()
+
+	lockTime1 := uint32(100)
+	lockTime2 := uint32(200)
+
+	testCases := []struct {
+		name string
+		a    inputCluster
+		b    inputCluster
+		res  []inputCluster
+	}{
+		{
+			name: "max fee rate",
+			a: inputCluster{
+				sweepFeeRate: 5000,
+				inputs:       testInputsA,
+			},
+			b: inputCluster{
+				sweepFeeRate: 7000,
+				inputs:       testInputsB,
+			},
+			res: []inputCluster{
+				{
+					sweepFeeRate: 7000,
+					inputs:       testInputsC,
+				},
+			},
+		},
+		{
+			name: "same locktime",
+			a: inputCluster{
+				lockTime:     &lockTime1,
+				sweepFeeRate: 5000,
+				inputs:       testInputsA,
+			},
+			b: inputCluster{
+				lockTime:     &lockTime1,
+				sweepFeeRate: 7000,
+				inputs:       testInputsB,
+			},
+			res: []inputCluster{
+				{
+					lockTime:     &lockTime1,
+					sweepFeeRate: 7000,
+					inputs:       testInputsC,
+				},
+			},
+		},
+		{
+			name: "diff locktime",
+			a: inputCluster{
+				lockTime:     &lockTime1,
+				sweepFeeRate: 5000,
+				inputs:       testInputsA,
+			},
+			b: inputCluster{
+				lockTime:     &lockTime2,
+				sweepFeeRate: 7000,
+				inputs:       testInputsB,
+			},
+			res: []inputCluster{
+				{
+					lockTime:     &lockTime1,
+					sweepFeeRate: 5000,
+					inputs:       testInputsA,
+				},
+				{
+					lockTime:     &lockTime2,
+					sweepFeeRate: 7000,
+					inputs:       testInputsB,
+				},
+			},
+		},
+	}
+
+	for _, test := range testCases {
+		merged := mergeClusters(test.a, test.b)
+		if !reflect.DeepEqual(merged, test.res) {
+			t.Fatalf("[%s] unexpected result: %v",
+				test.name, spew.Sdump(merged))
+		}
+	}
+}
+
+// TestZipClusters tests that we can merge lists of inputs clusters correctly.
+func TestZipClusters(t *testing.T) {
+	t.Parallel()
+
+	createCluster := func(inp pendingInputs, f chainfee.SatPerKWeight) inputCluster {
+		return inputCluster{
+			sweepFeeRate: f,
+			inputs:       inp,
+		}
+	}
+
+	testCases := []struct {
+		name string
+		as   []inputCluster
+		bs   []inputCluster
+		res  []inputCluster
+	}{
+		{
+			name: "merge A into B",
+			as: []inputCluster{
+				createCluster(testInputsA, 5000),
+			},
+			bs: []inputCluster{
+				createCluster(testInputsB, 7000),
+			},
+			res: []inputCluster{
+				createCluster(testInputsC, 7000),
+			},
+		},
+		{
+			name: "A can't merge with B",
+			as: []inputCluster{
+				createCluster(testInputsA, 7000),
+			},
+			bs: []inputCluster{
+				createCluster(testInputsB, 5000),
+			},
+			res: []inputCluster{
+				createCluster(testInputsA, 7000),
+				createCluster(testInputsB, 5000),
+			},
+		},
+		{
+			name: "empty bs",
+			as: []inputCluster{
+				createCluster(testInputsA, 7000),
+			},
+			bs: []inputCluster{},
+			res: []inputCluster{
+				createCluster(testInputsA, 7000),
+			},
+		},
+		{
+			name: "empty as",
+			as:   []inputCluster{},
+			bs: []inputCluster{
+				createCluster(testInputsB, 5000),
+			},
+			res: []inputCluster{
+				createCluster(testInputsB, 5000),
+			},
+		},
+
+		{
+			name: "zip 3xA into 3xB",
+			as: []inputCluster{
+				createCluster(testInputsA, 5000),
+				createCluster(testInputsA, 5000),
+				createCluster(testInputsA, 5000),
+			},
+			bs: []inputCluster{
+				createCluster(testInputsB, 7000),
+				createCluster(testInputsB, 7000),
+				createCluster(testInputsB, 7000),
+			},
+			res: []inputCluster{
+				createCluster(testInputsC, 7000),
+				createCluster(testInputsC, 7000),
+				createCluster(testInputsC, 7000),
+			},
+		},
+		{
+			name: "zip A into 3xB",
+			as: []inputCluster{
+				createCluster(testInputsA, 2500),
+			},
+			bs: []inputCluster{
+				createCluster(testInputsB, 3000),
+				createCluster(testInputsB, 2000),
+				createCluster(testInputsB, 1000),
+			},
+			res: []inputCluster{
+				createCluster(testInputsC, 3000),
+				createCluster(testInputsB, 2000),
+				createCluster(testInputsB, 1000),
+			},
+		},
+	}
+
+	for _, test := range testCases {
+		zipped := zipClusters(test.as, test.bs)
+		if !reflect.DeepEqual(zipped, test.res) {
+			t.Fatalf("[%s] unexpected result: %v",
+				test.name, spew.Sdump(zipped))
+		}
+	}
+}
+
+type testInput struct {
+	*input.BaseInput
+
+	locktime *uint32
+	reqTxOut *wire.TxOut
+}
+
+func (i *testInput) RequiredLockTime() (uint32, bool) {
+	if i.locktime != nil {
+		return *i.locktime, true
+	}
+
+	return 0, false
+}
+
+func (i *testInput) RequiredTxOut() *wire.TxOut {
+	return i.reqTxOut
+}
+
+// CraftInputScript is a custom sign method for the testInput type that will
+// encode the spending outpoint and the tx input index as part of the returned
+// witness.
+func (i *testInput) CraftInputScript(_ input.Signer, txn *wire.MsgTx,
+	hashCache *txscript.TxSigHashes, txinIdx int) (*input.Script, error) {
+
+	// We'll encode the outpoint in the witness, so we can assert that the
+	// expected input was signed at the correct index.
+	op := i.OutPoint()
+	return &input.Script{
+		Witness: [][]byte{
+			// We encode the hash of the outpoint...
+			op.Hash[:],
+			// ..the outpoint index...
+			{byte(op.Index)},
+			// ..and finally the tx input index.
+			{byte(txinIdx)},
+		},
+	}, nil
+}
+
+// assertSignedIndex goes through all inputs to the tx and checks that all
+// testInputs have witnesses corresponding to the outpoints they are spending,
+// and are signed at the correct tx input index. All found testInputs are
+// returned such that we can sum up and sanity check that all testInputs were
+// part of the sweep.
+func assertSignedIndex(t *testing.T, tx *wire.MsgTx,
+	testInputs map[wire.OutPoint]*testInput) map[wire.OutPoint]struct{} {
+
+	found := make(map[wire.OutPoint]struct{})
+	for idx, txIn := range tx.TxIn {
+		op := txIn.PreviousOutPoint
+
+		// Not a testInput, it won't have the test encoding we require
+		// to check outpoint and index.
+		if _, ok := testInputs[op]; !ok {
+			continue
+		}
+
+		if _, ok := found[op]; ok {
+			t.Fatalf("input already used")
+		}
+
+		// Check it was signes spending the correct outpoint, and at
+		// the expected tx input index.
+		require.Equal(t, txIn.Witness[0], op.Hash[:])
+		require.Equal(t, txIn.Witness[1], []byte{byte(op.Index)})
+		require.Equal(t, txIn.Witness[2], []byte{byte(idx)})
+		found[op] = struct{}{}
+	}
+
+	return found
+}
+
+// TestLockTimes checks that the sweeper properly groups inputs requiring the
+// same locktime together into sweep transactions.
+func TestLockTimes(t *testing.T) {
+	ctx := createSweeperTestContext(t)
+
+	// We increase the number of max inputs to a tx so that won't
+	// impact our test.
+	ctx.sweeper.cfg.MaxInputsPerTx = 100
+
+	// We will set up the lock times in such a way that we expect the
+	// sweeper to divide the inputs into 4 diffeerent transactions.
+	const numSweeps = 4
+
+	// Sweep 8 inputs, using 4 different lock times.
+	var (
+		results []chan Result
+		inputs  = make(map[wire.OutPoint]input.Input)
+	)
+	for i := 0; i < numSweeps*2; i++ {
+		lt := uint32(10 + (i % numSweeps))
+		inp := &testInput{
+			BaseInput: spendableInputs[i],
+			locktime:  &lt,
+		}
+
+		result, err := ctx.sweeper.SweepInput(
+			inp, Params{
+				Fee: FeePreference{ConfTarget: 6},
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		results = append(results, result)
+
+		op := inp.OutPoint()
+		inputs[*op] = inp
+	}
+
+	// We also add 3 regular inputs that don't require any specific lock
+	// time.
+	for i := 0; i < 3; i++ {
+		inp := spendableInputs[i+numSweeps*2]
+		result, err := ctx.sweeper.SweepInput(
+			inp, Params{
+				Fee: FeePreference{ConfTarget: 6},
+			},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		results = append(results, result)
+
+		op := inp.OutPoint()
+		inputs[*op] = inp
+	}
+
+	// We expect all inputs to be published in separate transactions, even
+	// though they share the same fee preference.
+	ctx.tick()
+
+	// Check the sweeps transactions, ensuring all inputs are there, and
+	// all the locktimes are satisfied.
+	for i := 0; i < numSweeps; i++ {
+		sweepTx := ctx.receiveTx()
+		if len(sweepTx.TxOut) != 1 {
+			t.Fatal("expected a single tx out in the sweep tx")
+		}
+
+		for _, txIn := range sweepTx.TxIn {
+			op := txIn.PreviousOutPoint
+			inp, ok := inputs[op]
+			if !ok {
+				t.Fatalf("Unexpected outpoint: %v", op)
+			}
+
+			delete(inputs, op)
+
+			// If this input had a required locktime, ensure the tx
+			// has that set correctly.
+			lt, ok := inp.RequiredLockTime()
+			if !ok {
+				continue
+			}
+
+			if lt != sweepTx.LockTime {
+				t.Fatalf("Input required locktime %v, sweep "+
+					"tx had locktime %v", lt, sweepTx.LockTime)
+			}
+
+		}
+	}
+
+	// The should be no inputs not foud in any of the sweeps.
+	if len(inputs) != 0 {
+		t.Fatalf("had unsweeped inputs")
+	}
+
+	// Mine the first sweeps
+	ctx.backend.mine()
+
+	// Results should all come back.
+	for i := range results {
+		result := <-results[i]
+		if result.Err != nil {
+			t.Fatal("expected input to be swept")
+		}
+	}
+}
+
+// TestRequiredTxOuts checks that inputs having a required TxOut gets swept with
+// sweep transactions paying into these outputs.
+func TestRequiredTxOuts(t *testing.T) {
+	// Create some test inputs and locktime vars.
+	var inputs []*input.BaseInput
+	for i := 0; i < 20; i++ {
+		input := createTestInput(
+			int64(ltcutil.SatoshiPerBitcoin+i*500),
+			input.CommitmentTimeLock,
+		)
+
+		inputs = append(inputs, &input)
+	}
+
+	locktime1 := uint32(51)
+	locktime2 := uint32(52)
+	locktime3 := uint32(53)
+
+	aPkScript := make([]byte, input.P2WPKHSize)
+	aPkScript[0] = 'a'
+
+	bPkScript := make([]byte, input.P2WSHSize)
+	bPkScript[0] = 'b'
+
+	cPkScript := make([]byte, input.P2PKHSize)
+	cPkScript[0] = 'c'
+
+	dPkScript := make([]byte, input.P2SHSize)
+	dPkScript[0] = 'd'
+
+	ePkScript := make([]byte, input.UnknownWitnessSize)
+	ePkScript[0] = 'e'
+
+	fPkScript := make([]byte, input.P2WSHSize)
+	fPkScript[0] = 'f'
+
+	testCases := []struct {
+		name         string
+		inputs       []*testInput
+		assertSweeps func(*testing.T, map[wire.OutPoint]*testInput,
+			[]*wire.MsgTx)
+	}{
+		{
+			// Single input with a required TX out that is smaller.
+			// We expect a change output to be added.
+			name: "single input, leftover change",
+			inputs: []*testInput{
+				{
+					BaseInput: inputs[0],
+					reqTxOut: &wire.TxOut{
+						PkScript: aPkScript,
+						Value:    100000,
+					},
+				},
+			},
+
+			// Since the required output value is small, we expect
+			// the rest after fees to go into a change output.
+			assertSweeps: func(t *testing.T,
+				_ map[wire.OutPoint]*testInput,
+				txs []*wire.MsgTx) {
+
+				require.Equal(t, 1, len(txs))
+
+				tx := txs[0]
+				require.Equal(t, 1, len(tx.TxIn))
+
+				// We should have two outputs, the required
+				// output must be the first one.
+				require.Equal(t, 2, len(tx.TxOut))
+				out := tx.TxOut[0]
+				require.Equal(t, aPkScript, out.PkScript)
+				require.Equal(t, int64(100000), out.Value)
+			},
+		},
+		{
+			// An input committing to a slightly smaller output, so
+			// it will pay its own fees.
+			name: "single input, no change",
+			inputs: []*testInput{
+				{
+					BaseInput: inputs[0],
+					reqTxOut: &wire.TxOut{
+						PkScript: aPkScript,
+
+						// Fee will be about 5340 sats.
+						// Subtract a bit more to
+						// ensure no dust change output
+						// is manifested.
+						Value: inputs[0].SignDesc().Output.Value - 6300,
+					},
+				},
+			},
+
+			// We expect this single input/output pair.
+			assertSweeps: func(t *testing.T,
+				_ map[wire.OutPoint]*testInput,
+				txs []*wire.MsgTx) {
+
+				require.Equal(t, 1, len(txs))
+
+				tx := txs[0]
+				require.Equal(t, 1, len(tx.TxIn))
+
+				require.Equal(t, 1, len(tx.TxOut))
+				out := tx.TxOut[0]
+				require.Equal(t, aPkScript, out.PkScript)
+				require.Equal(
+					t,
+					inputs[0].SignDesc().Output.Value-6300,
+					out.Value,
+				)
+			},
+		},
+		{
+			// Two inputs, where the first one required no tx out.
+			name: "two inputs, one with required tx out",
+			inputs: []*testInput{
+				{
+
+					// We add a normal, non-requiredTxOut
+					// input. We use test input 10, to make
+					// sure this has a higher yield than
+					// the other input, and will be
+					// attempted added first to the sweep
+					// tx.
+					BaseInput: inputs[10],
+				},
+				{
+					// The second input requires a TxOut.
+					BaseInput: inputs[0],
+					reqTxOut: &wire.TxOut{
+						PkScript: aPkScript,
+						Value:    inputs[0].SignDesc().Output.Value,
+					},
+				},
+			},
+
+			// We expect the inputs to have been reordered.
+			assertSweeps: func(t *testing.T,
+				_ map[wire.OutPoint]*testInput,
+				txs []*wire.MsgTx) {
+
+				require.Equal(t, 1, len(txs))
+
+				tx := txs[0]
+				require.Equal(t, 2, len(tx.TxIn))
+				require.Equal(t, 2, len(tx.TxOut))
+
+				// The required TxOut should be the first one.
+				out := tx.TxOut[0]
+				require.Equal(t, aPkScript, out.PkScript)
+				require.Equal(
+					t, inputs[0].SignDesc().Output.Value,
+					out.Value,
+				)
+
+				// The first input should be the one having the
+				// required TxOut.
+				require.Len(t, tx.TxIn, 2)
+				require.Equal(
+					t, inputs[0].OutPoint(),
+					&tx.TxIn[0].PreviousOutPoint,
+				)
+
+				// Second one is the one without a required tx
+				// out.
+				require.Equal(
+					t, inputs[10].OutPoint(),
+					&tx.TxIn[1].PreviousOutPoint,
+				)
+			},
+		},
+
+		{
+			// An input committing to an output of equal value, just
+			// add input to pay fees.
+			name: "single input, extra fee input",
+			inputs: []*testInput{
+				{
+					BaseInput: inputs[0],
+					reqTxOut: &wire.TxOut{
+						PkScript: aPkScript,
+						Value:    inputs[0].SignDesc().Output.Value,
+					},
+				},
+			},
+
+			// We expect an extra input and output.
+			assertSweeps: func(t *testing.T,
+				_ map[wire.OutPoint]*testInput,
+				txs []*wire.MsgTx) {
+
+				require.Equal(t, 1, len(txs))
+
+				tx := txs[0]
+				require.Equal(t, 2, len(tx.TxIn))
+
+				require.Equal(t, 2, len(tx.TxOut))
+				out := tx.TxOut[0]
+				require.Equal(t, aPkScript, out.PkScript)
+				require.Equal(
+					t, inputs[0].SignDesc().Output.Value,
+					out.Value,
+				)
+			},
+		},
+		{
+			// Three inputs added, should be combined into a single
+			// sweep.
+			name: "three inputs",
+			inputs: []*testInput{
+				{
+					BaseInput: inputs[0],
+					reqTxOut: &wire.TxOut{
+						PkScript: aPkScript,
+						Value:    inputs[0].SignDesc().Output.Value,
+					},
+				},
+				{
+					BaseInput: inputs[1],
+					reqTxOut: &wire.TxOut{
+						PkScript: bPkScript,
+						Value:    inputs[1].SignDesc().Output.Value,
+					},
+				},
+				{
+					BaseInput: inputs[2],
+					reqTxOut: &wire.TxOut{
+						PkScript: cPkScript,
+						Value:    inputs[2].SignDesc().Output.Value,
+					},
+				},
+			},
+
+			// We expect an extra input and output to pay fees.
+			assertSweeps: func(t *testing.T,
+				testInputs map[wire.OutPoint]*testInput,
+				txs []*wire.MsgTx) {
+
+				require.Equal(t, 1, len(txs))
+
+				tx := txs[0]
+				require.Equal(t, 4, len(tx.TxIn))
+				require.Equal(t, 4, len(tx.TxOut))
+
+				// The inputs and outputs must be in the same
+				// order.
+				for i, in := range tx.TxIn {
+					// Last one is the change input/output
+					// pair, so we'll skip it.
+					if i == 3 {
+						continue
+					}
+
+					// Get this input to ensure the output
+					// on index i coresponsd to this one.
+					inp := testInputs[in.PreviousOutPoint]
+					require.NotNil(t, inp)
+
+					require.Equal(
+						t, tx.TxOut[i].Value,
+						inp.SignDesc().Output.Value,
+					)
+				}
+			},
+		},
+		{
+			// Six inputs added, which 3 different locktimes.
+			// Should result in 3 sweeps.
+			name: "six inputs",
+			inputs: []*testInput{
+				{
+					BaseInput: inputs[0],
+					locktime:  &locktime1,
+					reqTxOut: &wire.TxOut{
+						PkScript: aPkScript,
+						Value:    inputs[0].SignDesc().Output.Value,
+					},
+				},
+				{
+					BaseInput: inputs[1],
+					locktime:  &locktime1,
+					reqTxOut: &wire.TxOut{
+						PkScript: bPkScript,
+						Value:    inputs[1].SignDesc().Output.Value,
+					},
+				},
+				{
+					BaseInput: inputs[2],
+					locktime:  &locktime2,
+					reqTxOut: &wire.TxOut{
+						PkScript: cPkScript,
+						Value:    inputs[2].SignDesc().Output.Value,
+					},
+				},
+				{
+					BaseInput: inputs[3],
+					locktime:  &locktime2,
+					reqTxOut: &wire.TxOut{
+						PkScript: dPkScript,
+						Value:    inputs[3].SignDesc().Output.Value,
+					},
+				},
+				{
+					BaseInput: inputs[4],
+					locktime:  &locktime3,
+					reqTxOut: &wire.TxOut{
+						PkScript: ePkScript,
+						Value:    inputs[4].SignDesc().Output.Value,
+					},
+				},
+				{
+					BaseInput: inputs[5],
+					locktime:  &locktime3,
+					reqTxOut: &wire.TxOut{
+						PkScript: fPkScript,
+						Value:    inputs[5].SignDesc().Output.Value,
+					},
+				},
+			},
+
+			// We expect three sweeps, each having two of our
+			// inputs, one extra input and output to pay fees.
+			assertSweeps: func(t *testing.T,
+				testInputs map[wire.OutPoint]*testInput,
+				txs []*wire.MsgTx) {
+
+				require.Equal(t, 3, len(txs))
+
+				for _, tx := range txs {
+					require.Equal(t, 3, len(tx.TxIn))
+					require.Equal(t, 3, len(tx.TxOut))
+
+					// The inputs and outputs must be in
+					// the same order.
+					for i, in := range tx.TxIn {
+						// Last one is the change
+						// output, so we'll skip it.
+						if i == 2 {
+							continue
+						}
+
+						// Get this input to ensure the
+						// output on index i coresponsd
+						// to this one.
+						inp := testInputs[in.PreviousOutPoint]
+						require.NotNil(t, inp)
+
+						require.Equal(
+							t, tx.TxOut[i].Value,
+							inp.SignDesc().Output.Value,
+						)
+
+						// Check that the locktimes are
+						// kept intact.
+						require.Equal(
+							t, tx.LockTime,
+							*inp.locktime,
+						)
+					}
+				}
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx := createSweeperTestContext(t)
+
+			// We increase the number of max inputs to a tx so that
+			// won't impact our test.
+			ctx.sweeper.cfg.MaxInputsPerTx = 100
+
+			// Sweep all test inputs.
+			var (
+				inputs  = make(map[wire.OutPoint]*testInput)
+				results = make(map[wire.OutPoint]chan Result)
+			)
+			for _, inp := range testCase.inputs {
+				result, err := ctx.sweeper.SweepInput(
+					inp, Params{
+						Fee: FeePreference{ConfTarget: 6},
+					},
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				op := inp.OutPoint()
+				results[*op] = result
+				inputs[*op] = inp
+			}
+
+			// Tick, which should trigger a sweep of all inputs.
+			ctx.tick()
+
+			// Check the sweeps transactions, ensuring all inputs
+			// are there, and all the locktimes are satisfied.
+			var sweeps []*wire.MsgTx
+		Loop:
+			for {
+				select {
+				case tx := <-ctx.publishChan:
+					sweeps = append(sweeps, &tx)
+				case <-time.After(200 * time.Millisecond):
+					break Loop
+				}
+			}
+
+			// Mine the sweeps.
+			ctx.backend.mine()
+
+			// Results should all come back.
+			for _, resultChan := range results {
+				result := <-resultChan
+				if result.Err != nil {
+					t.Fatalf("expected input to be "+
+						"swept: %v", result.Err)
+				}
+			}
+
+			// Assert the transactions are what we expect.
+			testCase.assertSweeps(t, inputs, sweeps)
+
+			// Finally we assert that all our test inputs were part
+			// of the sweeps, and that they were signed correctly.
+			sweptInputs := make(map[wire.OutPoint]struct{})
+			for _, sweep := range sweeps {
+				swept := assertSignedIndex(t, sweep, inputs)
+				for op := range swept {
+					if _, ok := sweptInputs[op]; ok {
+						t.Fatalf("outpoint %v part of "+
+							"previous sweep", op)
+					}
+
+					sweptInputs[op] = struct{}{}
+				}
+			}
+
+			require.Equal(t, len(inputs), len(sweptInputs))
+			for op := range sweptInputs {
+				_, ok := inputs[op]
+				if !ok {
+					t.Fatalf("swept input %v not part of "+
+						"test inputs", op)
+				}
+			}
+		})
+	}
+}
+
+// TestSweeperShutdownHandling tests that we notify callers when the sweeper
+// cannot handle requests since it's in the process of shutting down.
+func TestSweeperShutdownHandling(t *testing.T) {
+	ctx := createSweeperTestContext(t)
+
+	// Make the backing notifier break down. This is what happens during
+	// lnd shut down, since the notifier is stopped before the sweeper.
+	require.Len(t, ctx.notifier.epochChan, 1)
+	for epochChan := range ctx.notifier.epochChan {
+		close(epochChan)
+	}
+
+	// Give the collector some time to exit.
+	time.Sleep(50 * time.Millisecond)
+
+	// Now trying to sweep inputs should return an error on the error
+	// channel.
+	resultChan, err := ctx.sweeper.SweepInput(
+		spendableInputs[0], defaultFeePref,
+	)
+	require.NoError(t, err)
+
+	select {
+	case res := <-resultChan:
+		require.Equal(t, ErrSweeperShuttingDown, res.Err)
+
+	case <-time.After(defaultTestTimeout):
+		t.Fatalf("no result arrived")
+	}
+
+	// Stop the sweeper properly.
+	err = ctx.sweeper.Stop()
+	require.NoError(t, err)
+
+	// Now attempting to sweep an input should error out immediately.
+	_, err = ctx.sweeper.SweepInput(
+		spendableInputs[0], defaultFeePref,
+	)
+	require.Error(t, err)
 }

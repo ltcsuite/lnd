@@ -20,6 +20,10 @@ const (
 	// sweepConfTarget is the default number of blocks that we'll use as a
 	// confirmation target when sweeping.
 	sweepConfTarget = 6
+
+	// secondLevelConfTarget is the confirmation target we'll use when
+	// adding fees to our second-level HTLC transactions.
+	secondLevelConfTarget = 6
 )
 
 // ContractResolver is an interface which packages a state machine which is
@@ -43,6 +47,10 @@ type ContractResolver interface {
 	//
 	// NOTE: This function MUST be run as a goroutine.
 	Resolve() (ContractResolver, error)
+
+	// SupplementState allows the user of a ContractResolver to supplement
+	// it with state required for the proper resolution of a contract.
+	SupplementState(*channeldb.OpenChannel)
 
 	// IsResolved returns true if the stored state in the resolve is fully
 	// resolved. In this case the target output can be forgotten.

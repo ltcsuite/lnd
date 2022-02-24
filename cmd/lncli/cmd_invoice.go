@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/hex"
 	"fmt"
 	"strconv"
@@ -38,6 +37,10 @@ var addInvoiceCommand = cli.Command{
 			Name:  "amt",
 			Usage: "the amt of satoshis in this invoice",
 		},
+		cli.Int64Flag{
+			Name:  "amt_msat",
+			Usage: "the amt of millisatoshis in this invoice",
+		},
 		cli.StringFlag{
 			Name: "description_hash",
 			Usage: "SHA-256 hash of the description of the payment. " +
@@ -63,6 +66,11 @@ var addInvoiceCommand = cli.Command{
 				"private channels in order to assist the " +
 				"payer in reaching you",
 		},
+		cli.BoolFlag{
+			Name: "amp",
+			Usage: "creates an AMP invoice. If true, preimage " +
+				"should not be set.",
+		},
 	},
 	Action: actionDecorator(addInvoice),
 }
@@ -72,18 +80,18 @@ func addInvoice(ctx *cli.Context) error {
 		preimage []byte
 		descHash []byte
 		amt      int64
+		amtMsat  int64
 		err      error
 	)
-
+	ctxc := getContext()
 	client, cleanUp := getClient(ctx)
 	defer cleanUp()
 
 	args := ctx.Args()
 
-	switch {
-	case ctx.IsSet("amt"):
-		amt = ctx.Int64("amt")
-	case args.Present():
+	amt = ctx.Int64("amt")
+	amtMsat = ctx.Int64("amt_msat")
+	if !ctx.IsSet("amt") && !ctx.IsSet("amt_msat") && args.Present() {
 		amt, err = strconv.ParseInt(args.First(), 10, 64)
 		args = args.Tail()
 		if err != nil {
@@ -111,13 +119,15 @@ func addInvoice(ctx *cli.Context) error {
 		Memo:            ctx.String("memo"),
 		RPreimage:       preimage,
 		Value:           amt,
+		ValueMsat:       amtMsat,
 		DescriptionHash: descHash,
 		FallbackAddr:    ctx.String("fallback_addr"),
 		Expiry:          ctx.Int64("expiry"),
 		Private:         ctx.Bool("private"),
+		IsAmp:           ctx.Bool("amp"),
 	}
 
-	resp, err := client.AddInvoice(context.Background(), invoice)
+	resp, err := client.AddInvoice(ctxc, invoice)
 	if err != nil {
 		return err
 	}
@@ -143,6 +153,7 @@ var lookupInvoiceCommand = cli.Command{
 }
 
 func lookupInvoice(ctx *cli.Context) error {
+	ctxc := getContext()
 	client, cleanUp := getClient(ctx)
 	defer cleanUp()
 
@@ -168,7 +179,7 @@ func lookupInvoice(ctx *cli.Context) error {
 		RHash: rHash,
 	}
 
-	invoice, err := client.LookupInvoice(context.Background(), req)
+	invoice, err := client.LookupInvoice(ctxc, req)
 	if err != nil {
 		return err
 	}
@@ -225,6 +236,7 @@ var listInvoicesCommand = cli.Command{
 }
 
 func listInvoices(ctx *cli.Context) error {
+	ctxc := getContext()
 	client, cleanUp := getClient(ctx)
 	defer cleanUp()
 
@@ -235,7 +247,7 @@ func listInvoices(ctx *cli.Context) error {
 		Reversed:       !ctx.Bool("paginate-forwards"),
 	}
 
-	invoices, err := client.ListInvoices(context.Background(), req)
+	invoices, err := client.ListInvoices(ctxc, req)
 	if err != nil {
 		return err
 	}
@@ -261,7 +273,7 @@ var decodePayReqCommand = cli.Command{
 }
 
 func decodePayReq(ctx *cli.Context) error {
-	ctxb := context.Background()
+	ctxc := getContext()
 	client, cleanUp := getClient(ctx)
 	defer cleanUp()
 
@@ -276,7 +288,7 @@ func decodePayReq(ctx *cli.Context) error {
 		return fmt.Errorf("pay_req argument missing")
 	}
 
-	resp, err := client.DecodePayReq(ctxb, &lnrpc.PayReqString{
+	resp, err := client.DecodePayReq(ctxc, &lnrpc.PayReqString{
 		PayReq: payreq,
 	})
 	if err != nil {

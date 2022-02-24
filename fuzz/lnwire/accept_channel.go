@@ -1,3 +1,4 @@
+//go:build gofuzz
 // +build gofuzz
 
 package lnwirefuzz
@@ -13,10 +14,6 @@ func Fuzz_accept_channel(data []byte) int {
 	// Prefix with MsgAcceptChannel.
 	data = prefixWithMsgType(data, lnwire.MsgAcceptChannel)
 
-	// Create an empty message so that the FuzzHarness func can check
-	// if the max payload constraint is violated.
-	emptyMsg := lnwire.AcceptChannel{}
-
 	// We have to do this here instead of in fuzz.Harness so that
 	// reflect.DeepEqual isn't called. Because of the UpfrontShutdownScript
 	// encoding, the first message and second message aren't deeply equal since
@@ -26,13 +23,10 @@ func Fuzz_accept_channel(data []byte) int {
 	r := bytes.NewReader(data)
 
 	// Make sure byte array length (excluding 2 bytes for message type) is
-	// less than max payload size for the wire message. We check this because
-	// otherwise `go-fuzz` will keep creating inputs that crash on ReadMessage
-	// due to a large message size.
+	// less than max payload size for the wire message.
 	payloadLen := uint32(len(data)) - 2
-	if payloadLen > emptyMsg.MaxPayloadLength(0) {
-		// Ignore this input - max payload constraint violated.
-		return -1
+	if payloadLen > lnwire.MaxMsgBody {
+		return 1
 	}
 
 	msg, err := lnwire.ReadMessage(r, 0)
@@ -40,7 +34,7 @@ func Fuzz_accept_channel(data []byte) int {
 		// go-fuzz generated []byte that cannot be represented as a
 		// wire message but we will return 0 so go-fuzz can modify the
 		// input.
-		return 0
+		return 1
 	}
 
 	// We will serialize the message into a new bytes buffer.

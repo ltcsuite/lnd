@@ -7,9 +7,9 @@ import (
 	"io"
 	"time"
 
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	lnwire "github.com/ltcsuite/lnd/channeldb/migration/lnwire21"
+	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/lntypes"
-	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/tlv"
 	"github.com/ltcsuite/ltcd/wire"
 )
@@ -282,6 +282,8 @@ func (d *DB) FetchAllInvoices(pendingOnly bool) ([]Invoice, error) {
 
 			return nil
 		})
+	}, func() {
+		invoices = nil
 	})
 	if err != nil {
 		return nil, err

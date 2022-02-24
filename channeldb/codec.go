@@ -1,18 +1,19 @@
 package channeldb
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/shachain"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // writeOutpoint writes an outpoint to the passed writer using the minimal
@@ -178,7 +179,17 @@ func WriteElement(w io.Writer, element interface{}) error {
 		}
 
 	case lnwire.Message:
-		if _, err := lnwire.WriteMessage(w, e, 0); err != nil {
+		var msgBuf bytes.Buffer
+		if _, err := lnwire.WriteMessage(&msgBuf, e, 0); err != nil {
+			return err
+		}
+
+		msgLen := uint16(len(msgBuf.Bytes()))
+		if err := WriteElements(w, msgLen); err != nil {
+			return err
+		}
+
+		if _, err := w.Write(msgBuf.Bytes()); err != nil {
 			return err
 		}
 
@@ -335,7 +346,7 @@ func ReadElement(r io.Reader, element interface{}) error {
 			return err
 		}
 
-		priv, _ := btcec.PrivKeyFromBytes(btcec.S256(), b[:])
+		priv, _ := btcec.PrivKeyFromBytes(b[:])
 		*e = priv
 
 	case **btcec.PublicKey:
@@ -344,7 +355,7 @@ func ReadElement(r io.Reader, element interface{}) error {
 			return err
 		}
 
-		pubKey, err := btcec.ParsePubKey(b[:], btcec.S256())
+		pubKey, err := btcec.ParsePubKey(b[:])
 		if err != nil {
 			return err
 		}
@@ -394,7 +405,13 @@ func ReadElement(r io.Reader, element interface{}) error {
 		*e = bytes
 
 	case *lnwire.Message:
-		msg, err := lnwire.ReadMessage(r, 0)
+		var msgLen uint16
+		if err := ReadElement(r, &msgLen); err != nil {
+			return err
+		}
+
+		msgReader := io.LimitReader(r, int64(msgLen))
+		msg, err := lnwire.ReadMessage(msgReader, 0)
 		if err != nil {
 			return err
 		}

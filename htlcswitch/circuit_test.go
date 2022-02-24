@@ -12,9 +12,9 @@ import (
 	"github.com/ltcsuite/lnd/htlcswitch/hop"
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnwire"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	bitcoinCfg "github.com/ltcsuite/ltcd/chaincfg"
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 var (
@@ -38,13 +38,13 @@ var (
 func init() {
 	// Generate a fresh key for our sphinx router.
 	var err error
-	sphinxPrivKey, err = btcec.NewPrivateKey(btcec.S256())
+	sphinxPrivKey, err = btcec.NewPrivateKey()
 	if err != nil {
 		panic(err)
 	}
 
 	// And another, whose public key will serve as the test ephemeral key.
-	testEphemeralPriv, err := btcec.NewPrivateKey(btcec.S256())
+	testEphemeralPriv, err := btcec.NewPrivateKey()
 	if err != nil {
 		panic(err)
 	}
@@ -103,8 +103,11 @@ func newCircuitMap(t *testing.T) (*htlcswitch.CircuitMapConfig,
 
 	onionProcessor := newOnionProcessor(t)
 
+	db := makeCircuitDB(t, "")
 	circuitMapCfg := &htlcswitch.CircuitMapConfig{
-		DB:                    makeCircuitDB(t, ""),
+		DB:                    db,
+		FetchAllOpenChannels:  db.ChannelStateDB().FetchAllOpenChannels,
+		FetchClosedChannels:   db.ChannelStateDB().FetchClosedChannels,
 		ExtractErrorEncrypter: onionProcessor.ExtractErrorEncrypter,
 	}
 
@@ -634,13 +637,17 @@ func makeCircuitDB(t *testing.T, path string) *channeldb.DB {
 func restartCircuitMap(t *testing.T, cfg *htlcswitch.CircuitMapConfig) (
 	*htlcswitch.CircuitMapConfig, htlcswitch.CircuitMap) {
 
-	// Record the current temp path and close current db.
-	dbPath := cfg.DB.Path()
+	// Record the current temp path and close current db. We know we have
+	// a full channeldb.DB here since we created it just above.
+	dbPath := cfg.DB.(*channeldb.DB).Path()
 	cfg.DB.Close()
 
 	// Reinitialize circuit map with same db path.
+	db := makeCircuitDB(t, dbPath)
 	cfg2 := &htlcswitch.CircuitMapConfig{
-		DB:                    makeCircuitDB(t, dbPath),
+		DB:                    db,
+		FetchAllOpenChannels:  db.ChannelStateDB().FetchAllOpenChannels,
+		FetchClosedChannels:   db.ChannelStateDB().FetchClosedChannels,
 		ExtractErrorEncrypter: cfg.ExtractErrorEncrypter,
 	}
 	cm2, err := htlcswitch.NewCircuitMap(cfg2)
@@ -1312,8 +1319,8 @@ func TestCircuitMapDeleteUnopenedCircuit(t *testing.T) {
 	}
 }
 
-// TestCircuitMapDeleteUnopenedCircuit checks that an open circuit can be
-// removed persistently from the circuit map.
+// TestCircuitMapDeleteOpenCircuit checks that an open circuit can be removed
+// persistently from the circuit map.
 func TestCircuitMapDeleteOpenCircuit(t *testing.T) {
 	t.Parallel()
 

@@ -5,11 +5,16 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
+
+// ErrUnableToExtractChanUpdate is returned when a channel update cannot be
+// found for one of our active channels.
+var ErrUnableToExtractChanUpdate = fmt.Errorf("unable to extract ChannelUpdate")
 
 // ChannelUpdateModifier is a closure that makes in-place modifications to an
 // lnwire.ChannelUpdate.
@@ -51,7 +56,7 @@ func ChanUpdSetTimestamp(update *lnwire.ChannelUpdate) {
 // monotonically increase from the prior.
 //
 // NOTE: This method modifies the given update.
-func SignChannelUpdate(signer lnwallet.MessageSigner, pubKey *btcec.PublicKey,
+func SignChannelUpdate(signer lnwallet.MessageSigner, keyLoc keychain.KeyLocator,
 	update *lnwire.ChannelUpdate, mods ...ChannelUpdateModifier) error {
 
 	// Apply the requested changes to the channel update.
@@ -60,7 +65,7 @@ func SignChannelUpdate(signer lnwallet.MessageSigner, pubKey *btcec.PublicKey,
 	}
 
 	// Create the DER-encoded ECDSA signature over the message digest.
-	sig, err := SignAnnouncement(signer, pubKey, update)
+	sig, err := SignAnnouncement(signer, keyLoc, update)
 	if err != nil {
 		return err
 	}
@@ -107,8 +112,7 @@ func ExtractChannelUpdate(ownerPubKey []byte,
 		}
 	}
 
-	return nil, fmt.Errorf("unable to extract ChannelUpdate for channel %v",
-		info.ChannelPoint)
+	return nil, ErrUnableToExtractChanUpdate
 }
 
 // UnsignedChannelUpdateFromEdge reconstructs an unsigned ChannelUpdate from the

@@ -5,10 +5,9 @@ import (
 	"fmt"
 
 	"github.com/ltcsuite/lnd/channeldb"
-	"github.com/ltcsuite/lnd/input"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 )
 
 const (
@@ -35,7 +34,7 @@ var (
 	TimelockShift = uint32(1 << 29)
 )
 
-// createHtlcSuccessTx creates a transaction that spends the output on the
+// CreateHtlcSuccessTx creates a transaction that spends the output on the
 // commitment transaction of the peer that receives an HTLC. This transaction
 // essentially acts as an off-chain covenant as it's only permitted to spend
 // the designated HTLC output, and also that spend can _only_ be used as a
@@ -45,9 +44,10 @@ var (
 // In order to spend the HTLC output, the witness for the passed transaction
 // should be:
 //   * <0> <sender sig> <recvr sig> <preimage>
-func createHtlcSuccessTx(chanType channeldb.ChannelType,
-	htlcOutput wire.OutPoint, htlcAmt ltcutil.Amount, csvDelay uint32,
-	revocationKey, delayKey *btcec.PublicKey) (*wire.MsgTx, error) {
+func CreateHtlcSuccessTx(chanType channeldb.ChannelType, initiator bool,
+	htlcOutput wire.OutPoint, htlcAmt ltcutil.Amount, csvDelay,
+	leaseExpiry uint32, revocationKey, delayKey *btcec.PublicKey) (
+	*wire.MsgTx, error) {
 
 	// Create a version two transaction (as the success version of this
 	// spends an output with a CSV timeout).
@@ -65,12 +65,10 @@ func createHtlcSuccessTx(chanType channeldb.ChannelType,
 	// Next, we'll generate the script used as the output for all second
 	// level HTLC which forces a covenant w.r.t what can be done with all
 	// HTLC outputs.
-	witnessScript, err := input.SecondLevelHtlcScript(revocationKey, delayKey,
-		csvDelay)
-	if err != nil {
-		return nil, err
-	}
-	pkScript, err := input.WitnessScriptHash(witnessScript)
+	script, err := SecondLevelHtlcScript(
+		chanType, initiator, revocationKey, delayKey, csvDelay,
+		leaseExpiry,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -79,13 +77,13 @@ func createHtlcSuccessTx(chanType channeldb.ChannelType,
 	// required fees), paying to the timeout script.
 	successTx.AddTxOut(&wire.TxOut{
 		Value:    int64(htlcAmt),
-		PkScript: pkScript,
+		PkScript: script.PkScript,
 	})
 
 	return successTx, nil
 }
 
-// createHtlcTimeoutTx creates a transaction that spends the HTLC output on the
+// CreateHtlcTimeoutTx creates a transaction that spends the HTLC output on the
 // commitment transaction of the peer that created an HTLC (the sender). This
 // transaction essentially acts as an off-chain covenant as it spends a 2-of-2
 // multi-sig output. This output requires a signature from both the sender and
@@ -101,9 +99,9 @@ func createHtlcSuccessTx(chanType channeldb.ChannelType,
 // NOTE: The passed amount for the HTLC should take into account the required
 // fee rate at the time the HTLC was created. The fee should be able to
 // entirely pay for this (tiny: 1-in 1-out) transaction.
-func createHtlcTimeoutTx(chanType channeldb.ChannelType,
+func CreateHtlcTimeoutTx(chanType channeldb.ChannelType, initiator bool,
 	htlcOutput wire.OutPoint, htlcAmt ltcutil.Amount,
-	cltvExpiry, csvDelay uint32,
+	cltvExpiry, csvDelay, leaseExpiry uint32,
 	revocationKey, delayKey *btcec.PublicKey) (*wire.MsgTx, error) {
 
 	// Create a version two transaction (as the success version of this
@@ -117,6 +115,8 @@ func createHtlcTimeoutTx(chanType channeldb.ChannelType,
 	// sequence number based on the channel type.
 	txin := &wire.TxIn{
 		PreviousOutPoint: htlcOutput,
+		SignatureScript:  []byte{},
+		Witness:          [][]byte{},
 		Sequence:         HtlcSecondLevelInputSequence(chanType),
 	}
 	timeoutTx.AddTxIn(txin)
@@ -124,12 +124,10 @@ func createHtlcTimeoutTx(chanType channeldb.ChannelType,
 	// Next, we'll generate the script used as the output for all second
 	// level HTLC which forces a covenant w.r.t what can be done with all
 	// HTLC outputs.
-	witnessScript, err := input.SecondLevelHtlcScript(revocationKey, delayKey,
-		csvDelay)
-	if err != nil {
-		return nil, err
-	}
-	pkScript, err := input.WitnessScriptHash(witnessScript)
+	script, err := SecondLevelHtlcScript(
+		chanType, initiator, revocationKey, delayKey, csvDelay,
+		leaseExpiry,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +136,7 @@ func createHtlcTimeoutTx(chanType channeldb.ChannelType,
 	// required fees), paying to the regular second level HTLC script.
 	timeoutTx.AddTxOut(&wire.TxOut{
 		Value:    int64(htlcAmt),
-		PkScript: pkScript,
+		PkScript: script.PkScript,
 	})
 
 	return timeoutTx, nil

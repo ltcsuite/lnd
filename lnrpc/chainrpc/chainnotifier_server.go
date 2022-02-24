@@ -1,3 +1,4 @@
+//go:build chainrpc
 // +build chainrpc
 
 package chainrpc
@@ -11,9 +12,10 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/lnd/macaroons"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
 	"google.golang.org/grpc"
@@ -71,14 +73,11 @@ var (
 		"still in the process of starting")
 )
 
-// fileExists reports whether the named file or directory exists.
-func fileExists(name string) bool {
-	if _, err := os.Stat(name); err != nil {
-		if os.IsNotExist(err) {
-			return false
-		}
-	}
-	return true
+// ServerShell is a shell struct holding a reference to the actual sub-server.
+// It is used to register the gRPC sub-server with the root server before we
+// have the necessary dependencies to populate the actual sub-server.
+type ServerShell struct {
+	ChainNotifierServer
 }
 
 // Server is a sub-server of the main RPC server: the chain notifier RPC. This
@@ -87,6 +86,9 @@ func fileExists(name string) bool {
 // to lnd, even backed by multiple distinct lnd across independent failure
 // domains.
 type Server struct {
+	// Required by the grpc-gateway/v2 library for forward compatibility.
+	UnimplementedChainNotifierServer
+
 	started sync.Once
 	stopped sync.Once
 
@@ -110,17 +112,20 @@ func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
 	}
 
 	// Now that we know the full path of the chain notifier macaroon, we can
-	// check to see if we need to create it or not.
+	// check to see if we need to create it or not. If stateless_init is set
+	// then we don't write the macaroons.
 	macFilePath := cfg.ChainNotifierMacPath
-	if cfg.MacService != nil && !fileExists(macFilePath) {
+	if cfg.MacService != nil && !cfg.MacService.StatelessInit &&
+		!lnrpc.FileExists(macFilePath) {
+
 		log.Infof("Baking macaroons for ChainNotifier RPC Server at: %v",
 			macFilePath)
 
 		// At this point, we know that the chain notifier macaroon
 		// doesn't yet, exist, so we need to create it with the help of
 		// the main macaroon service.
-		chainNotifierMac, err := cfg.MacService.Oven.NewMacaroon(
-			context.Background(), bakery.LatestVersion, nil,
+		chainNotifierMac, err := cfg.MacService.NewMacaroon(
+			context.Background(), macaroons.DefaultRootKeyID,
 			macaroonOps...,
 		)
 		if err != nil {
@@ -132,7 +137,7 @@ func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
 		}
 		err = ioutil.WriteFile(macFilePath, chainNotifierMacBytes, 0644)
 		if err != nil {
-			os.Remove(macFilePath)
+			_ = os.Remove(macFilePath)
 			return nil, nil, err
 		}
 	}
@@ -178,11 +183,11 @@ func (s *Server) Name() string {
 // sub-server to register itself with the main gRPC root server. Until this is
 // called, each sub-server won't be able to have requests routed towards it.
 //
-// NOTE: This is part of the lnrpc.SubServer interface.
-func (s *Server) RegisterWithRootServer(grpcServer *grpc.Server) error {
+// NOTE: This is part of the lnrpc.GrpcHandler interface.
+func (r *ServerShell) RegisterWithRootServer(grpcServer *grpc.Server) error {
 	// We make sure that we register it with the main gRPC server to ensure
 	// all our methods are routed properly.
-	RegisterChainNotifierServer(grpcServer, s)
+	RegisterChainNotifierServer(grpcServer, r)
 
 	log.Debug("ChainNotifier RPC server successfully register with root " +
 		"gRPC server")
@@ -194,8 +199,8 @@ func (s *Server) RegisterWithRootServer(grpcServer *grpc.Server) error {
 // RPC server to register itself with the main REST mux server. Until this is
 // called, each sub-server won't be able to have requests routed towards it.
 //
-// NOTE: This is part of the lnrpc.SubServer interface.
-func (s *Server) RegisterWithRestServer(ctx context.Context,
+// NOTE: This is part of the lnrpc.GrpcHandler interface.
+func (r *ServerShell) RegisterWithRestServer(ctx context.Context,
 	mux *runtime.ServeMux, dest string, opts []grpc.DialOption) error {
 
 	// We make sure that we register it with the main REST server to ensure
@@ -210,6 +215,25 @@ func (s *Server) RegisterWithRestServer(ctx context.Context,
 	log.Debugf("ChainNotifier REST server successfully registered with " +
 		"root REST server")
 	return nil
+}
+
+// CreateSubServer populates the subserver's dependencies using the passed
+// SubServerConfigDispatcher. This method should fully initialize the
+// sub-server instance, making it ready for action. It returns the macaroon
+// permissions that the sub-server wishes to pass on to the root server for all
+// methods routed towards it.
+//
+// NOTE: This is part of the lnrpc.GrpcHandler interface.
+func (r *ServerShell) CreateSubServer(configRegistry lnrpc.SubServerConfigDispatcher) (
+	lnrpc.SubServer, lnrpc.MacaroonPerms, error) {
+
+	subServer, macPermissions, err := createNewSubServer(configRegistry)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	r.ChainNotifierServer = subServer
+	return subServer, macPermissions, nil
 }
 
 // RegisterConfirmationsNtfn is a synchronous response-streaming RPC that
@@ -277,7 +301,7 @@ func (s *Server) RegisterConfirmationsNtfn(in *ConfRequest,
 			}
 
 		// The transaction satisfying the request has been reorged out
-		// of the chain, so we'll send an event describing so.
+		// of the chain, so we'll send an event describing it.
 		case _, ok := <-confEvent.NegativeConf:
 			if !ok {
 				return chainntnfs.ErrChainNotifierShuttingDown
@@ -301,9 +325,12 @@ func (s *Server) RegisterConfirmationsNtfn(in *ConfRequest,
 			return nil
 
 		// The response stream's context for whatever reason has been
-		// closed. We'll return the error indicated by the context
-		// itself to the caller.
+		// closed. If context is closed by an exceeded deadline we will
+		// return an error.
 		case <-confStream.Context().Done():
+			if errors.Is(confStream.Context().Err(), context.Canceled) {
+				return nil
+			}
 			return confStream.Context().Err()
 
 		// The server has been requested to shut down.
@@ -409,9 +436,12 @@ func (s *Server) RegisterSpendNtfn(in *SpendRequest,
 			return nil
 
 		// The response stream's context for whatever reason has been
-		// closed. We'll return the error indicated by the context
-		// itself to the caller.
+		// closed. If context is closed by an exceeded deadline we will
+		// return an error.
 		case <-spendStream.Context().Done():
+			if errors.Is(spendStream.Context().Err(), context.Canceled) {
+				return nil
+			}
 			return spendStream.Context().Err()
 
 		// The server has been requested to shut down.
@@ -480,9 +510,12 @@ func (s *Server) RegisterBlockEpochNtfn(in *BlockEpoch,
 			}
 
 		// The response stream's context for whatever reason has been
-		// closed. We'll return the error indicated by the context
-		// itself to the caller.
+		// closed. If context is closed by an exceeded deadline we will
+		// return an error.
 		case <-epochStream.Context().Done():
+			if errors.Is(epochStream.Context().Err(), context.Canceled) {
+				return nil
+			}
 			return epochStream.Context().Err()
 
 		// The server has been requested to shut down.

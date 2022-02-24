@@ -3,19 +3,20 @@ package contractcourt
 import (
 	"crypto/rand"
 	"io/ioutil"
+	prand "math/rand"
 	"os"
 	"reflect"
 	"testing"
 	"time"
 
-	prand "math/rand"
-
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/channeldb"
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
 	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/kvdb"
+	"github.com/ltcsuite/lnd/lntest/channels"
 	"github.com/ltcsuite/lnd/lnwallet"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/btcec/v2/ecdsa"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
@@ -102,6 +103,46 @@ var (
 		},
 		HashType: txscript.SigHashAll,
 	}
+
+	testTx = &wire.MsgTx{
+		Version: 2,
+		TxIn: []*wire.TxIn{
+			{
+				PreviousOutPoint: testChanPoint2,
+				SignatureScript:  []byte{0x12, 0x34},
+				Witness: [][]byte{
+					{
+						0x00, 0x14, 0xee, 0x91, 0x41,
+						0x7e, 0x85, 0x6c, 0xde, 0x10,
+						0xa2, 0x91, 0x1e, 0xdc, 0xbd,
+						0xbd, 0x69, 0xe2, 0xef, 0xb5,
+						0x71, 0x48,
+					},
+				},
+				Sequence: 1,
+			},
+		},
+		TxOut: []*wire.TxOut{
+			{
+				Value: 5000000000,
+				PkScript: []byte{
+					0xc6, 0xa5, 0x9d, 0xc2, 0x26, 0xc2,
+					0x86, 0x24, 0xe1, 0x81, 0x75, 0xe8,
+					0x51, 0xc9, 0x6b, 0x97, 0x3d, 0x81,
+					0xb0, 0x1c, 0xc3, 0x1f, 0x04, 0x78,
+				},
+			},
+		},
+		LockTime: 123,
+	}
+
+	testSig, _ = ecdsa.ParseDERSignature(channels.TestSigBytes)
+
+	testSignDetails = &input.SignDetails{
+		SignDesc:    testSignDesc,
+		SigHashType: txscript.SigHashSingle,
+		PeerSig:     testSig,
+	}
 )
 
 func makeTestDB() (kvdb.Backend, func(), error) {
@@ -112,7 +153,10 @@ func makeTestDB() (kvdb.Backend, func(), error) {
 		return nil, nil, err
 	}
 
-	db, err := kvdb.Create(kvdb.BoltBackendName, tempDirName+"/test.db", true)
+	db, err := kvdb.Create(
+		kvdb.BoltBackendName, tempDirName+"/test.db", true,
+		kvdb.DefaultDBTimeout,
+	)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -216,13 +260,13 @@ func assertResolversEqual(t *testing.T, originalResolver ContractResolver,
 	case *htlcOutgoingContestResolver:
 		diskRes := diskResolver.(*htlcOutgoingContestResolver)
 		assertTimeoutResEqual(
-			&ogRes.htlcTimeoutResolver, &diskRes.htlcTimeoutResolver,
+			ogRes.htlcTimeoutResolver, diskRes.htlcTimeoutResolver,
 		)
 
 	case *htlcIncomingContestResolver:
 		diskRes := diskResolver.(*htlcIncomingContestResolver)
 		assertSuccessResEqual(
-			&ogRes.htlcSuccessResolver, &diskRes.htlcSuccessResolver,
+			ogRes.htlcSuccessResolver, diskRes.htlcSuccessResolver,
 		)
 
 		if ogRes.htlcExpiry != diskRes.htlcExpiry {
@@ -320,13 +364,13 @@ func TestContractInsertionRetrieval(t *testing.T) {
 	contestTimeout := timeoutResolver
 	contestTimeout.htlcResolution.ClaimOutpoint = randOutPoint()
 	resolvers = append(resolvers, &htlcOutgoingContestResolver{
-		htlcTimeoutResolver: contestTimeout,
+		htlcTimeoutResolver: &contestTimeout,
 	})
 	contestSuccess := successResolver
 	contestSuccess.htlcResolution.ClaimOutpoint = randOutPoint()
 	resolvers = append(resolvers, &htlcIncomingContestResolver{
 		htlcExpiry:          100,
-		htlcSuccessResolver: contestSuccess,
+		htlcSuccessResolver: &contestSuccess,
 	})
 
 	// For quick lookup during the test, we'll create this map which allow
@@ -466,7 +510,7 @@ func TestContractSwapping(t *testing.T) {
 
 	// We'll create two resolvers, a regular timeout resolver, and the
 	// contest resolver that eventually turns into the timeout resolver.
-	timeoutResolver := htlcTimeoutResolver{
+	timeoutResolver := &htlcTimeoutResolver{
 		htlcResolution: lnwallet.OutgoingHtlcResolution{
 			Expiry:          99,
 			SignedTimeoutTx: nil,
@@ -494,7 +538,7 @@ func TestContractSwapping(t *testing.T) {
 
 	// With the resolver inserted, we'll now attempt to atomically swap it
 	// for its underlying timeout resolver.
-	err = testLog.SwapContract(contestResolver, &timeoutResolver)
+	err = testLog.SwapContract(contestResolver, timeoutResolver)
 	if err != nil {
 		t.Fatalf("unable to swap contracts: %v", err)
 	}
@@ -511,7 +555,7 @@ func TestContractSwapping(t *testing.T) {
 	}
 
 	// That single contract should be the underlying timeout resolver.
-	assertResolversEqual(t, &timeoutResolver, dbContracts[0])
+	assertResolversEqual(t, timeoutResolver, dbContracts[0])
 }
 
 // TestContractResolutionsStorage tests that we're able to properly store and
@@ -547,11 +591,50 @@ func TestContractResolutionsStorage(t *testing.T) {
 					ClaimOutpoint:   randOutPoint(),
 					SweepSignDesc:   testSignDesc,
 				},
+
+				// We add a resolution with SignDetails.
+				{
+					Preimage:        testPreimage,
+					SignedSuccessTx: testTx,
+					SignDetails:     testSignDetails,
+					CsvDelay:        900,
+					ClaimOutpoint:   randOutPoint(),
+					SweepSignDesc:   testSignDesc,
+				},
+
+				// We add a resolution with a signed tx, but no
+				// SignDetails.
+				{
+					Preimage:        testPreimage,
+					SignedSuccessTx: testTx,
+					CsvDelay:        900,
+					ClaimOutpoint:   randOutPoint(),
+					SweepSignDesc:   testSignDesc,
+				},
 			},
 			OutgoingHTLCs: []lnwallet.OutgoingHtlcResolution{
+				// We add a resolution with a signed tx, but no
+				// SignDetails.
+				{
+					Expiry:          103,
+					SignedTimeoutTx: testTx,
+					CsvDelay:        923923,
+					ClaimOutpoint:   randOutPoint(),
+					SweepSignDesc:   testSignDesc,
+				},
+				// Resolution without signed tx.
 				{
 					Expiry:          103,
 					SignedTimeoutTx: nil,
+					CsvDelay:        923923,
+					ClaimOutpoint:   randOutPoint(),
+					SweepSignDesc:   testSignDesc,
+				},
+				// Resolution with SignDetails.
+				{
+					Expiry:          103,
+					SignedTimeoutTx: testTx,
+					SignDetails:     testSignDetails,
 					CsvDelay:        923923,
 					ClaimOutpoint:   randOutPoint(),
 					SweepSignDesc:   testSignDesc,
@@ -582,8 +665,8 @@ func TestContractResolutionsStorage(t *testing.T) {
 	}
 
 	if !reflect.DeepEqual(&res, diskRes) {
-		t.Fatalf("resolution mismatch: expected %#v\n, got %#v",
-			&res, diskRes)
+		t.Fatalf("resolution mismatch: expected %v\n, got %v",
+			spew.Sdump(&res), spew.Sdump(diskRes))
 	}
 
 	// We'll now delete the state, then attempt to retrieve the set of
@@ -611,7 +694,7 @@ func TestStateMutation(t *testing.T) {
 	defer cleanUp()
 
 	// The default state of an arbitrator should be StateDefault.
-	arbState, err := testLog.CurrentState()
+	arbState, err := testLog.CurrentState(nil)
 	if err != nil {
 		t.Fatalf("unable to read arb state: %v", err)
 	}
@@ -625,7 +708,7 @@ func TestStateMutation(t *testing.T) {
 	if err := testLog.CommitState(StateFullyResolved); err != nil {
 		t.Fatalf("unable to write state: %v", err)
 	}
-	arbState, err = testLog.CurrentState()
+	arbState, err = testLog.CurrentState(nil)
 	if err != nil {
 		t.Fatalf("unable to read arb state: %v", err)
 	}
@@ -643,7 +726,7 @@ func TestStateMutation(t *testing.T) {
 
 	// If we try to query for the state again, we should get the default
 	// state again.
-	arbState, err = testLog.CurrentState()
+	arbState, err = testLog.CurrentState(nil)
 	if err != nil {
 		t.Fatalf("unable to query current state: %v", err)
 	}
@@ -687,11 +770,11 @@ func TestScopeIsolation(t *testing.T) {
 
 	// Querying each log, the states should be the prior one we set, and be
 	// disjoint.
-	log1State, err := testLog1.CurrentState()
+	log1State, err := testLog1.CurrentState(nil)
 	if err != nil {
 		t.Fatalf("unable to read arb state: %v", err)
 	}
-	log2State, err := testLog2.CurrentState()
+	log2State, err := testLog2.CurrentState(nil)
 	if err != nil {
 		t.Fatalf("unable to read arb state: %v", err)
 	}
@@ -752,7 +835,7 @@ func TestCommitSetStorage(t *testing.T) {
 				t.Fatalf("unable to write commit set: %v", err)
 			}
 
-			diskCommitSet, err := testLog.FetchConfirmedCommitSet()
+			diskCommitSet, err := testLog.FetchConfirmedCommitSet(nil)
 			if err != nil {
 				t.Fatalf("unable to read commit set: %v", err)
 			}
@@ -767,7 +850,7 @@ func TestCommitSetStorage(t *testing.T) {
 }
 
 func init() {
-	testSignDesc.KeyDesc.PubKey, _ = btcec.ParsePubKey(key1, btcec.S256())
+	testSignDesc.KeyDesc.PubKey, _ = btcec.ParsePubKey(key1)
 
 	prand.Seed(time.Now().Unix())
 }

@@ -17,7 +17,7 @@ type ChannelNotifier struct {
 
 	ntfnServer *subscribe.Server
 
-	chanDB *channeldb.DB
+	chanDB *channeldb.ChannelStateDB
 }
 
 // PendingOpenChannelEvent represents a new event where a new channel has
@@ -65,10 +65,18 @@ type ClosedChannelEvent struct {
 	CloseSummary *channeldb.ChannelCloseSummary
 }
 
+// FullyResolvedChannelEvent represents a new event where a channel becomes
+// fully resolved.
+type FullyResolvedChannelEvent struct {
+	// ChannelPoint is the channelpoint for the newly fully resolved
+	// channel.
+	ChannelPoint *wire.OutPoint
+}
+
 // New creates a new channel notifier. The ChannelNotifier gets channel
 // events from peers and from the chain arbitrator, and dispatches them to
 // its clients.
-func New(chanDB *channeldb.DB) *ChannelNotifier {
+func New(chanDB *channeldb.ChannelStateDB) *ChannelNotifier {
 	return &ChannelNotifier{
 		ntfnServer: subscribe.NewServer(),
 		chanDB:     chanDB,
@@ -86,10 +94,13 @@ func (c *ChannelNotifier) Start() error {
 }
 
 // Stop signals the notifier for a graceful shutdown.
-func (c *ChannelNotifier) Stop() {
+func (c *ChannelNotifier) Stop() error {
+	var err error
 	c.stopped.Do(func() {
-		c.ntfnServer.Stop()
+		log.Info("ChannelNotifier shutting down")
+		err = c.ntfnServer.Stop()
 	})
+	return err
 }
 
 // SubscribeChannelEvents returns a subscribe.Client that will receive updates
@@ -123,9 +134,8 @@ func (c *ChannelNotifier) NotifyPendingOpenChannelEvent(chanPoint wire.OutPoint,
 // NotifyOpenChannelEvent notifies the channelEventNotifier goroutine that a
 // channel has gone from pending open to open.
 func (c *ChannelNotifier) NotifyOpenChannelEvent(chanPoint wire.OutPoint) {
-
 	// Fetch the relevant channel from the database.
-	channel, err := c.chanDB.FetchChannel(chanPoint)
+	channel, err := c.chanDB.FetchChannel(nil, chanPoint)
 	if err != nil {
 		log.Warnf("Unable to fetch open channel from the db: %v", err)
 	}
@@ -150,6 +160,18 @@ func (c *ChannelNotifier) NotifyClosedChannelEvent(chanPoint wire.OutPoint) {
 	event := ClosedChannelEvent{CloseSummary: closeSummary}
 	if err := c.ntfnServer.SendUpdate(event); err != nil {
 		log.Warnf("Unable to send closed channel update: %v", err)
+	}
+}
+
+// NotifyFullyResolvedChannelEvent notifies the channelEventNotifier goroutine
+// that a channel was fully resolved on chain.
+func (c *ChannelNotifier) NotifyFullyResolvedChannelEvent(
+	chanPoint wire.OutPoint) {
+
+	// Send the resolved event to all channel event subscribers.
+	event := FullyResolvedChannelEvent{ChannelPoint: &chanPoint}
+	if err := c.ntfnServer.SendUpdate(event); err != nil {
+		log.Warnf("Unable to send resolved channel update: %v", err)
 	}
 }
 

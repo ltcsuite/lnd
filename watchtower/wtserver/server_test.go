@@ -12,10 +12,10 @@ import (
 	"github.com/ltcsuite/lnd/watchtower/wtmock"
 	"github.com/ltcsuite/lnd/watchtower/wtserver"
 	"github.com/ltcsuite/lnd/watchtower/wtwire"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
-	"github.com/ltcsuite/ltcutil"
 )
 
 var (
@@ -35,7 +35,7 @@ var (
 func randPubKey(t *testing.T) *btcec.PublicKey {
 	t.Helper()
 
-	sk, err := btcec.NewPrivateKey(btcec.S256())
+	sk, err := btcec.NewPrivateKey()
 	if err != nil {
 		t.Fatalf("unable to generate pubkey: %v", err)
 	}
@@ -161,6 +161,28 @@ type createSessionTestCase struct {
 }
 
 var createSessionTests = []createSessionTestCase{
+	{
+		name: "duplicate session create altruist anchor commit",
+		initMsg: wtwire.NewInitMessage(
+			lnwire.NewRawFeatureVector(),
+			testnetChainHash,
+		),
+		createMsg: &wtwire.CreateSession{
+			BlobType:     blob.TypeAltruistAnchorCommit,
+			MaxUpdates:   1000,
+			RewardBase:   0,
+			RewardRate:   0,
+			SweepFeeRate: 10000,
+		},
+		expReply: &wtwire.CreateSessionReply{
+			Code: wtwire.CodeOK,
+			Data: []byte{},
+		},
+		expDupReply: &wtwire.CreateSessionReply{
+			Code: wtwire.CodeOK,
+			Data: []byte{},
+		},
+	},
 	{
 		name: "duplicate session create",
 		initMsg: wtwire.NewInitMessage(

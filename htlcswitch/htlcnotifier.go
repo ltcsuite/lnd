@@ -8,6 +8,7 @@ import (
 
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/htlcswitch/hop"
+	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/subscribe"
 )
@@ -87,12 +88,15 @@ func (h *HtlcNotifier) Start() error {
 }
 
 // Stop signals the notifier for a graceful shutdown.
-func (h *HtlcNotifier) Stop() {
+func (h *HtlcNotifier) Stop() error {
+	var err error
 	h.stopped.Do(func() {
-		if err := h.ntfnServer.Stop(); err != nil {
+		log.Info("HtlcNotifier shutting down")
+		if err = h.ntfnServer.Stop(); err != nil {
 			log.Warnf("error stopping htlc notifier: %v", err)
 		}
 	})
+	return err
 }
 
 // SubscribeHtlcEvents returns a subscribe.Client that will receive updates
@@ -279,6 +283,9 @@ type SettleEvent struct {
 	// forwards with their corresponding forwarding event.
 	HtlcKey
 
+	// Preimage that was released for settling the htlc.
+	Preimage lntypes.Preimage
+
 	// HtlcEventType classifies the event as part of a local send or
 	// receive, or as part of a forward.
 	HtlcEventType
@@ -358,9 +365,12 @@ func (h *HtlcNotifier) NotifyForwardingFailEvent(key HtlcKey,
 // to as part of a forward or a receive to our node has been settled.
 //
 // Note this is part of the htlcNotifier interface.
-func (h *HtlcNotifier) NotifySettleEvent(key HtlcKey, eventType HtlcEventType) {
+func (h *HtlcNotifier) NotifySettleEvent(key HtlcKey,
+	preimage lntypes.Preimage, eventType HtlcEventType) {
+
 	event := &SettleEvent{
 		HtlcKey:       key,
+		Preimage:      preimage,
 		HtlcEventType: eventType,
 		Timestamp:     h.now(),
 	}

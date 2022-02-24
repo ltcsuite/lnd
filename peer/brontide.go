@@ -11,26 +11,34 @@ import (
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/connmgr"
-	"github.com/ltcsuite/ltcd/txscript"
-	"github.com/ltcsuite/ltcd/wire"
-
-	"github.com/ltcsuite/lnd/brontide"
 	"github.com/ltcsuite/lnd/buffer"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/channelnotifier"
 	"github.com/ltcsuite/lnd/contractcourt"
+	"github.com/ltcsuite/lnd/discovery"
 	"github.com/ltcsuite/lnd/feature"
+	"github.com/ltcsuite/lnd/funding"
 	"github.com/ltcsuite/lnd/htlcswitch"
+	"github.com/ltcsuite/lnd/htlcswitch/hodl"
+	"github.com/ltcsuite/lnd/htlcswitch/hop"
+	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/invoices"
 	"github.com/ltcsuite/lnd/lnpeer"
 	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/lnd/lnwallet/chancloser"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/netann"
+	"github.com/ltcsuite/lnd/pool"
 	"github.com/ltcsuite/lnd/queue"
 	"github.com/ltcsuite/lnd/ticker"
+	"github.com/ltcsuite/lnd/watchtower/wtclient"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/connmgr"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 const (
@@ -85,6 +93,11 @@ type newChannelMsg struct {
 	err     chan error
 }
 
+type customMsg struct {
+	peer [33]byte
+	msg  lnwire.Custom
+}
+
 // closeMsg is a wrapper struct around any wire messages that deal with the
 // cooperative channel closure negotiation process. This struct includes the
 // raw channel ID targeted along with the original message.
@@ -112,6 +125,217 @@ type TimestampedError struct {
 	Timestamp time.Time
 }
 
+// Config defines configuration fields that are necessary for a peer object
+// to function.
+type Config struct {
+	// Conn is the underlying network connection for this peer.
+	Conn MessageConn
+
+	// ConnReq stores information related to the persistent connection request
+	// for this peer.
+	ConnReq *connmgr.ConnReq
+
+	// PubKeyBytes is the serialized, compressed public key of this peer.
+	PubKeyBytes [33]byte
+
+	// Addr is the network address of the peer.
+	Addr *lnwire.NetAddress
+
+	// Inbound indicates whether or not the peer is an inbound peer.
+	Inbound bool
+
+	// Features is the set of features that we advertise to the remote party.
+	Features *lnwire.FeatureVector
+
+	// LegacyFeatures is the set of features that we advertise to the remote
+	// peer for backwards compatibility. Nodes that have not implemented
+	// flat features will still be able to read our feature bits from the
+	// legacy global field, but we will also advertise everything in the
+	// default features field.
+	LegacyFeatures *lnwire.FeatureVector
+
+	// OutgoingCltvRejectDelta defines the number of blocks before expiry of
+	// an htlc where we don't offer it anymore.
+	OutgoingCltvRejectDelta uint32
+
+	// ChanActiveTimeout specifies the duration the peer will wait to request
+	// a channel reenable, beginning from the time the peer was started.
+	ChanActiveTimeout time.Duration
+
+	// ErrorBuffer stores a set of errors related to a peer. It contains error
+	// messages that our peer has recently sent us over the wire and records of
+	// unknown messages that were sent to us so that we can have a full track
+	// record of the communication errors we have had with our peer. If we
+	// choose to disconnect from a peer, it also stores the reason we had for
+	// disconnecting.
+	ErrorBuffer *queue.CircularBuffer
+
+	// WritePool is the task pool that manages reuse of write buffers. Write
+	// tasks are submitted to the pool in order to conserve the total number of
+	// write buffers allocated at any one time, and decouple write buffer
+	// allocation from the peer life cycle.
+	WritePool *pool.Write
+
+	// ReadPool is the task pool that manages reuse of read buffers.
+	ReadPool *pool.Read
+
+	// Switch is a pointer to the htlcswitch. It is used to setup, get, and
+	// tear-down ChannelLinks.
+	Switch messageSwitch
+
+	// InterceptSwitch is a pointer to the InterceptableSwitch, a wrapper around
+	// the regular Switch. We only export it here to pass ForwardPackets to the
+	// ChannelLinkConfig.
+	InterceptSwitch *htlcswitch.InterceptableSwitch
+
+	// ChannelDB is used to fetch opened channels, and closed channels.
+	ChannelDB *channeldb.ChannelStateDB
+
+	// ChannelGraph is a pointer to the channel graph which is used to
+	// query information about the set of known active channels.
+	ChannelGraph *channeldb.ChannelGraph
+
+	// ChainArb is used to subscribe to channel events, update contract signals,
+	// and force close channels.
+	ChainArb *contractcourt.ChainArbitrator
+
+	// AuthGossiper is needed so that the Brontide impl can register with the
+	// gossiper and process remote channel announcements.
+	AuthGossiper *discovery.AuthenticatedGossiper
+
+	// ChanStatusMgr is used to set or un-set the disabled bit in channel
+	// updates.
+	ChanStatusMgr *netann.ChanStatusManager
+
+	// ChainIO is used to retrieve the best block.
+	ChainIO lnwallet.BlockChainIO
+
+	// FeeEstimator is used to compute our target ideal fee-per-kw when
+	// initializing the coop close process.
+	FeeEstimator chainfee.Estimator
+
+	// Signer is used when creating *lnwallet.LightningChannel instances.
+	Signer input.Signer
+
+	// SigPool is used when creating *lnwallet.LightningChannel instances.
+	SigPool *lnwallet.SigPool
+
+	// Wallet is used to publish transactions and generates delivery
+	// scripts during the coop close process.
+	Wallet *lnwallet.LightningWallet
+
+	// ChainNotifier is used to receive confirmations of a coop close
+	// transaction.
+	ChainNotifier chainntnfs.ChainNotifier
+
+	// RoutingPolicy is used to set the forwarding policy for links created by
+	// the Brontide.
+	RoutingPolicy htlcswitch.ForwardingPolicy
+
+	// Sphinx is used when setting up ChannelLinks so they can decode sphinx
+	// onion blobs.
+	Sphinx *hop.OnionProcessor
+
+	// WitnessBeacon is used when setting up ChannelLinks so they can add any
+	// preimages that they learn.
+	WitnessBeacon contractcourt.WitnessBeacon
+
+	// Invoices is passed to the ChannelLink on creation and handles all
+	// invoice-related logic.
+	Invoices *invoices.InvoiceRegistry
+
+	// ChannelNotifier is used by the link to notify other sub-systems about
+	// channel-related events and by the Brontide to subscribe to
+	// ActiveLinkEvents.
+	ChannelNotifier *channelnotifier.ChannelNotifier
+
+	// HtlcNotifier is used when creating a ChannelLink.
+	HtlcNotifier *htlcswitch.HtlcNotifier
+
+	// TowerClient is used by legacy channels to backup revoked states.
+	TowerClient wtclient.Client
+
+	// AnchorTowerClient is used by anchor channels to backup revoked
+	// states.
+	AnchorTowerClient wtclient.Client
+
+	// DisconnectPeer is used to disconnect this peer if the cooperative close
+	// process fails.
+	DisconnectPeer func(*btcec.PublicKey) error
+
+	// GenNodeAnnouncement is used to send our node announcement to the remote
+	// on startup.
+	GenNodeAnnouncement func(bool,
+		...netann.NodeAnnModifier) (lnwire.NodeAnnouncement, error)
+
+	// PrunePersistentPeerConnection is used to remove all internal state
+	// related to this peer in the server.
+	PrunePersistentPeerConnection func([33]byte)
+
+	// FetchLastChanUpdate fetches our latest channel update for a target
+	// channel.
+	FetchLastChanUpdate func(lnwire.ShortChannelID) (*lnwire.ChannelUpdate,
+		error)
+
+	// FundingManager is an implementation of the funding.Controller interface.
+	FundingManager funding.Controller
+
+	// Hodl is used when creating ChannelLinks to specify HodlFlags as
+	// breakpoints in dev builds.
+	Hodl *hodl.Config
+
+	// UnsafeReplay is used when creating ChannelLinks to specify whether or
+	// not to replay adds on its commitment tx.
+	UnsafeReplay bool
+
+	// MaxOutgoingCltvExpiry is used when creating ChannelLinks and is the max
+	// number of blocks that funds could be locked up for when forwarding
+	// payments.
+	MaxOutgoingCltvExpiry uint32
+
+	// MaxChannelFeeAllocation is used when creating ChannelLinks and is the
+	// maximum percentage of total funds that can be allocated to a channel's
+	// commitment fee. This only applies for the initiator of the channel.
+	MaxChannelFeeAllocation float64
+
+	// MaxAnchorsCommitFeeRate is the maximum fee rate we'll use as an
+	// initiator for anchor channel commitments.
+	MaxAnchorsCommitFeeRate chainfee.SatPerKWeight
+
+	// CoopCloseTargetConfs is the confirmation target that will be used
+	// to estimate the fee rate to use during a cooperative channel
+	// closure initiated by the remote peer.
+	CoopCloseTargetConfs uint32
+
+	// ServerPubKey is the serialized, compressed public key of our lnd node.
+	// It is used to determine which policy (channel edge) to pass to the
+	// ChannelLink.
+	ServerPubKey [33]byte
+
+	// ChannelCommitInterval is the maximum time that is allowed to pass between
+	// receiving a channel state update and signing the next commitment.
+	// Setting this to a longer duration allows for more efficient channel
+	// operations at the cost of latency.
+	ChannelCommitInterval time.Duration
+
+	// ChannelCommitBatchSize is the maximum number of channel state updates
+	// that is accumulated before signing a new commitment.
+	ChannelCommitBatchSize uint32
+
+	// HandleCustomMessage is called whenever a custom message is received
+	// from the peer.
+	HandleCustomMessage func(peer [33]byte, msg *lnwire.Custom) error
+
+	// PongBuf is a slice we'll reuse instead of allocating memory on the
+	// heap. Since only reads will occur and no writes, there is no need
+	// for any synchronization primitives. As a result, it's safe to share
+	// this across multiple Peer struct instances.
+	PongBuf []byte
+
+	// Quit is the server's quit channel. If this is closed, we halt operation.
+	Quit chan struct{}
+}
+
 // Brontide is an active peer on the Lightning Network. This struct is responsible
 // for managing any channel state related to this peer. To do so, it has
 // several helper goroutines to handle events such as HTLC timeouts, new
@@ -136,6 +360,13 @@ type Brontide struct {
 	// pingLastSend is the Unix time expressed in nanoseconds when we sent
 	// our last ping message. To be used atomically.
 	pingLastSend int64
+
+	// lastPingPayload stores an unsafe pointer wrapped as an atomic
+	// variable which points to the last payload the remote party sent us
+	// as their ping.
+	//
+	// MUST be used atomically.
+	lastPingPayload atomic.Value
 
 	cfg Config
 
@@ -247,17 +478,45 @@ func NewBrontide(cfg Config) *Brontide {
 }
 
 // Start starts all helper goroutines the peer needs for normal operations.  In
-// the case this peer has already been started, then this function is a loop.
+// the case this peer has already been started, then this function is a noop.
 func (p *Brontide) Start() error {
 	if atomic.AddInt32(&p.started, 1) != 1 {
 		return nil
 	}
 
-	peerLog.Tracef("Peer %v starting", p)
+	peerLog.Tracef("Peer %v starting with conn[%v->%v]", p,
+		p.cfg.Conn.LocalAddr(), p.cfg.Conn.RemoteAddr())
+
+	// Fetch and then load all the active channels we have with this remote
+	// peer from the database.
+	activeChans, err := p.cfg.ChannelDB.FetchOpenChannels(
+		p.cfg.Addr.IdentityKey,
+	)
+	if err != nil {
+		peerLog.Errorf("Unable to fetch active chans "+
+			"for peer %v: %v", p, err)
+		return err
+	}
+
+	if len(activeChans) == 0 {
+		p.cfg.PrunePersistentPeerConnection(p.cfg.PubKeyBytes)
+	}
+
+	// Quickly check if we have any existing legacy channels with this
+	// peer.
+	haveLegacyChan := false
+	for _, c := range activeChans {
+		if c.ChanType.IsTweakless() {
+			continue
+		}
+
+		haveLegacyChan = true
+		break
+	}
 
 	// Exchange local and global features, the init message should be very
 	// first between two nodes.
-	if err := p.sendInitMsg(); err != nil {
+	if err := p.sendInitMsg(haveLegacyChan); err != nil {
 		return fmt.Errorf("unable to send init msg: %v", err)
 	}
 
@@ -303,19 +562,6 @@ func (p *Brontide) Start() error {
 	} else {
 		return errors.New("very first message between nodes " +
 			"must be init message")
-	}
-
-	// Fetch and then load all the active channels we have with this remote
-	// peer from the database.
-	activeChans, err := p.cfg.ChannelDB.FetchOpenChannels(p.cfg.Addr.IdentityKey)
-	if err != nil {
-		peerLog.Errorf("unable to fetch active chans "+
-			"for peer %v: %v", p, err)
-		return err
-	}
-
-	if len(activeChans) == 0 {
-		p.cfg.PrunePersistentPeerConnection(p.cfg.PubKeyBytes)
 	}
 
 	// Next, load all the active channels we have with this peer,
@@ -570,6 +816,18 @@ func (p *Brontide) addLink(chanPoint *wire.OutPoint,
 		return p.cfg.ChainArb.UpdateContractSignals(*chanPoint, signals)
 	}
 
+	chanType := lnChan.State().ChanType
+
+	// Select the appropriate tower client based on the channel type. It's
+	// okay if the clients are disabled altogether and these values are nil,
+	// as the link will check for nilness before using either.
+	var towerClient htlcswitch.TowerClient
+	if chanType.HasAnchors() {
+		towerClient = p.cfg.AnchorTowerClient
+	} else {
+		towerClient = p.cfg.TowerClient
+	}
+
 	linkCfg := htlcswitch.ChannelLinkConfig{
 		Peer:                    p,
 		DecodeHopIterators:      p.cfg.Sphinx.DecodeHopIterators,
@@ -577,7 +835,7 @@ func (p *Brontide) addLink(chanPoint *wire.OutPoint,
 		FetchLastChannelUpdate:  p.cfg.FetchLastChanUpdate,
 		HodlMask:                p.cfg.Hodl.Mask(),
 		Registry:                p.cfg.Invoices,
-		Switch:                  p.cfg.Switch,
+		BestHeight:              p.cfg.Switch.BestHeight,
 		Circuits:                p.cfg.Switch.CircuitModifier(),
 		ForwardPackets:          p.cfg.InterceptSwitch.ForwardPackets,
 		FwrdingPolicy:           *forwardingPolicy,
@@ -587,35 +845,35 @@ func (p *Brontide) addLink(chanPoint *wire.OutPoint,
 		UpdateContractSignals:   updateContractSignals,
 		OnChannelFailure:        onChannelFailure,
 		SyncStates:              syncStates,
-		BatchTicker:             ticker.New(50 * time.Millisecond),
-		FwdPkgGCTicker:          ticker.New(time.Minute),
+		BatchTicker:             ticker.New(p.cfg.ChannelCommitInterval),
+		FwdPkgGCTicker:          ticker.New(time.Hour),
 		PendingCommitTicker:     ticker.New(time.Minute),
-		BatchSize:               10,
+		BatchSize:               p.cfg.ChannelCommitBatchSize,
 		UnsafeReplay:            p.cfg.UnsafeReplay,
 		MinFeeUpdateTimeout:     htlcswitch.DefaultMinLinkFeeUpdateTimeout,
 		MaxFeeUpdateTimeout:     htlcswitch.DefaultMaxLinkFeeUpdateTimeout,
 		OutgoingCltvRejectDelta: p.cfg.OutgoingCltvRejectDelta,
-		TowerClient:             p.cfg.TowerClient,
+		TowerClient:             towerClient,
 		MaxOutgoingCltvExpiry:   p.cfg.MaxOutgoingCltvExpiry,
 		MaxFeeAllocation:        p.cfg.MaxChannelFeeAllocation,
+		MaxAnchorsCommitFeeRate: p.cfg.MaxAnchorsCommitFeeRate,
 		NotifyActiveLink:        p.cfg.ChannelNotifier.NotifyActiveLinkEvent,
 		NotifyActiveChannel:     p.cfg.ChannelNotifier.NotifyActiveChannelEvent,
 		NotifyInactiveChannel:   p.cfg.ChannelNotifier.NotifyInactiveChannelEvent,
 		HtlcNotifier:            p.cfg.HtlcNotifier,
 	}
 
-	link := htlcswitch.NewChannelLink(linkCfg, lnChan)
-
 	// Before adding our new link, purge the switch of any pending or live
 	// links going by the same channel id. If one is found, we'll shut it
 	// down to ensure that the mailboxes are only ever under the control of
 	// one link.
-	p.cfg.Switch.RemoveLink(link.ChanID())
+	chanID := lnwire.NewChanIDFromOutPoint(chanPoint)
+	p.cfg.Switch.RemoveLink(chanID)
 
 	// With the channel link created, we'll now notify the htlc switch so
 	// this channel can be used to dispatch local payments and also
 	// passively forward payments.
-	return p.cfg.Switch.AddLink(link)
+	return p.cfg.Switch.CreateAndAddLink(linkCfg, lnChan)
 }
 
 // maybeSendNodeAnn sends our node announcement to the remote peer if at least
@@ -693,11 +951,7 @@ func (p *Brontide) String() string {
 // readNextMessage reads, and returns the next message on the wire along with
 // any additional raw payload.
 func (p *Brontide) readNextMessage() (lnwire.Message, error) {
-	noiseConn, ok := p.cfg.Conn.(*brontide.Conn)
-	if !ok {
-		return nil, fmt.Errorf("brontide.Conn required to read messages")
-	}
-
+	noiseConn := p.cfg.Conn
 	err := noiseConn.SetReadDeadline(time.Time{})
 	if err != nil {
 		return nil, err
@@ -712,7 +966,10 @@ func (p *Brontide) readNextMessage() (lnwire.Message, error) {
 	// reading incrementally from the stream as the Lightning wire protocol
 	// is message oriented and allows nodes to pad on additional data to
 	// the message stream.
-	var rawMsg []byte
+	var (
+		nextMsg lnwire.Message
+		msgLen  uint64
+	)
 	err = p.cfg.ReadPool.Submit(func(buf *buffer.Read) error {
 		// Before reading the body of the message, set the read timeout
 		// accordingly to ensure we don't block other readers using the
@@ -725,18 +982,29 @@ func (p *Brontide) readNextMessage() (lnwire.Message, error) {
 			return readErr
 		}
 
-		rawMsg, readErr = noiseConn.ReadNextBody(buf[:pktLen])
-		return readErr
-	})
-	atomic.AddUint64(&p.bytesReceived, uint64(len(rawMsg)))
-	if err != nil {
-		return nil, err
-	}
+		// The ReadNextBody method will actually end up re-using the
+		// buffer, so within this closure, we can continue to use
+		// rawMsg as it's just a slice into the buf from the buffer
+		// pool.
+		rawMsg, readErr := noiseConn.ReadNextBody(buf[:pktLen])
+		if readErr != nil {
+			return readErr
+		}
+		msgLen = uint64(len(rawMsg))
 
-	// Next, create a new io.Reader implementation from the raw message,
-	// and use this to decode the message directly from.
-	msgReader := bytes.NewReader(rawMsg)
-	nextMsg, err := lnwire.ReadMessage(msgReader, 0)
+		// Next, create a new io.Reader implementation from the raw
+		// message, and use this to decode the message directly from.
+		msgReader := bytes.NewReader(rawMsg)
+		nextMsg, err = lnwire.ReadMessage(msgReader, 0)
+		if err != nil {
+			return err
+		}
+
+		// At this point, rawMsg and buf will be returned back to the
+		// buffer pool for re-use.
+		return nil
+	})
+	atomic.AddUint64(&p.bytesReceived, msgLen)
 	if err != nil {
 		return nil, err
 	}
@@ -909,7 +1177,7 @@ func (ms *msgStream) AddMsg(msg lnwire.Message) {
 // ChannelLink to pass messages to. It accomplishes this by subscribing to
 // an ActiveLinkEvent which is emitted by the link when it first starts up.
 func waitUntilLinkActive(p *Brontide,
-	cid lnwire.ChannelID) htlcswitch.ChannelLink {
+	cid lnwire.ChannelID) htlcswitch.ChannelUpdateHandler {
 
 	// Subscribe to receive channel events.
 	//
@@ -931,7 +1199,7 @@ func waitUntilLinkActive(p *Brontide,
 
 	// The link may already be active by this point, and we may have missed the
 	// ActiveLinkEvent. Check if the link exists.
-	link, _ := p.cfg.Switch.GetLink(cid)
+	link := p.fetchLinkFromKeyAndCid(cid)
 	if link != nil {
 		return link
 	}
@@ -961,8 +1229,7 @@ func waitUntilLinkActive(p *Brontide,
 			// The link shouldn't be nil as we received an
 			// ActiveLinkEvent. If it is nil, we return nil and the
 			// calling function should catch it.
-			link, _ = p.cfg.Switch.GetLink(cid)
-			return link
+			return p.fetchLinkFromKeyAndCid(cid)
 
 		case <-p.quit:
 			return nil
@@ -971,14 +1238,14 @@ func waitUntilLinkActive(p *Brontide,
 }
 
 // newChanMsgStream is used to create a msgStream between the peer and
-// particular channel link in the htlcswitch.  We utilize additional
+// particular channel link in the htlcswitch. We utilize additional
 // synchronization with the fundingManager to ensure we don't attempt to
 // dispatch a message to a channel before it is fully active. A reference to the
-// channel this stream forwards to his held in scope to prevent unnecessary
+// channel this stream forwards to is held in scope to prevent unnecessary
 // lookups.
 func newChanMsgStream(p *Brontide, cid lnwire.ChannelID) *msgStream {
 
-	var chanLink htlcswitch.ChannelLink
+	var chanLink htlcswitch.ChannelUpdateHandler
 
 	apply := func(msg lnwire.Message) {
 		// This check is fine because if the link no longer exists, it will
@@ -1085,7 +1352,7 @@ out:
 				continue
 
 			// If they sent us an address type that we don't yet
-			// know of, then this isn't a dire error, so we'll
+			// know of, then this isn't a wire error, so we'll
 			// simply continue parsing the remainder of their
 			// messages.
 			case *lnwire.ErrUnknownAddrType:
@@ -1103,7 +1370,7 @@ out:
 				continue
 
 			// If the error we encountered wasn't just a message we
-			// didn't recognize, then we'll stop all processing s
+			// didn't recognize, then we'll stop all processing as
 			// this is a fatal error.
 			default:
 				break out
@@ -1126,19 +1393,22 @@ out:
 			atomic.StoreInt64(&p.pingTime, delay)
 
 		case *lnwire.Ping:
-			pongBytes := make([]byte, msg.NumPongBytes)
-			p.queueMsg(lnwire.NewPong(pongBytes), nil)
+			// First, we'll store their latest ping payload within
+			// the relevant atomic variable.
+			p.lastPingPayload.Store(msg.PaddingBytes[:])
 
-		case *lnwire.OpenChannel:
-			p.cfg.ProcessFundingOpen(msg, p)
-		case *lnwire.AcceptChannel:
-			p.cfg.ProcessFundingAccept(msg, p)
-		case *lnwire.FundingCreated:
-			p.cfg.ProcessFundingCreated(msg, p)
-		case *lnwire.FundingSigned:
-			p.cfg.ProcessFundingSigned(msg, p)
-		case *lnwire.FundingLocked:
-			p.cfg.ProcessFundingLocked(msg, p)
+			// Next, we'll send over the amount of specified pong
+			// bytes.
+			pong := lnwire.NewPong(p.cfg.PongBuf[0:msg.NumPongBytes])
+			p.queueMsg(pong, nil)
+
+		case *lnwire.OpenChannel,
+			*lnwire.AcceptChannel,
+			*lnwire.FundingCreated,
+			*lnwire.FundingSigned,
+			*lnwire.FundingLocked:
+
+			p.cfg.FundingManager.ProcessFundingMsg(msg, p)
 
 		case *lnwire.Shutdown:
 			select {
@@ -1192,6 +1462,13 @@ out:
 
 			discStream.AddMsg(msg)
 
+		case *lnwire.Custom:
+			err := p.handleCustomMessage(msg)
+			if err != nil {
+				p.storeError(err)
+				peerLog.Errorf("peer: %v, %v", p, err)
+			}
+
 		default:
 			// If the message we received is unknown to us, store
 			// the type to track the failure.
@@ -1227,6 +1504,17 @@ out:
 	p.Disconnect(errors.New("read handler closed"))
 
 	peerLog.Tracef("readHandler for peer %v done", p)
+}
+
+// handleCustomMessage handles the given custom message if a handler is
+// registered.
+func (p *Brontide) handleCustomMessage(msg *lnwire.Custom) error {
+	if p.cfg.HandleCustomMessage == nil {
+		return fmt.Errorf("no custom message handler for "+
+			"message type %v", uint16(msg.MsgType()))
+	}
+
+	return p.cfg.HandleCustomMessage(p.PubKey(), msg)
 }
 
 // isActiveChannel returns true if the provided channel id is active, otherwise
@@ -1276,8 +1564,6 @@ func (p *Brontide) storeError(err error) {
 //
 // NOTE: This method should only be called from within the readHandler.
 func (p *Brontide) handleError(msg *lnwire.Error) bool {
-	key := p.cfg.Addr.IdentityKey
-
 	// Store the error we have received.
 	p.storeError(msg)
 
@@ -1293,8 +1579,8 @@ func (p *Brontide) handleError(msg *lnwire.Error) bool {
 
 	// If the channel ID for the error message corresponds to a pending
 	// channel, then the funding manager will handle the error.
-	case p.cfg.IsPendingChannel(msg.ChanID, key):
-		p.cfg.ProcessFundingError(msg, key)
+	case p.cfg.FundingManager.IsPendingChannel(msg.ChanID, p):
+		p.cfg.FundingManager.ProcessFundingMsg(msg, p)
 		return false
 
 	// If not we hand the error to the channel link for this channel.
@@ -1393,12 +1679,10 @@ func messageSummary(msg lnwire.Message) string {
 			msg.NodeID, time.Unix(int64(msg.Timestamp), 0))
 
 	case *lnwire.Ping:
-		// No summary.
-		return ""
+		return fmt.Sprintf("ping_bytes=%x", msg.PaddingBytes[:])
 
 	case *lnwire.Pong:
-		// No summary.
-		return ""
+		return fmt.Sprintf("pong_bytes=%x", msg.PongBytes[:])
 
 	case *lnwire.UpdateFee:
 		return fmt.Sprintf("chan_id=%v, fee_update_sat=%v",
@@ -1433,6 +1717,8 @@ func messageSummary(msg lnwire.Message) string {
 			time.Unix(int64(msg.FirstTimestamp), 0),
 			msg.TimestampRange)
 
+	case *lnwire.Custom:
+		return fmt.Sprintf("type=%d", msg.Type)
 	}
 
 	return ""
@@ -1461,34 +1747,16 @@ func (p *Brontide) logWireMessage(msg lnwire.Message, read bool) {
 			preposition = "from"
 		}
 
-		return fmt.Sprintf("%v %v%s %v %s", summaryPrefix,
-			msg.MsgType(), summary, preposition, p)
-	}))
-
-	switch m := msg.(type) {
-	case *lnwire.ChannelReestablish:
-		if m.LocalUnrevokedCommitPoint != nil {
-			m.LocalUnrevokedCommitPoint.Curve = nil
+		var msgType string
+		if msg.MsgType() < lnwire.CustomTypeStart {
+			msgType = msg.MsgType().String()
+		} else {
+			msgType = "custom"
 		}
-	case *lnwire.RevokeAndAck:
-		m.NextRevocationKey.Curve = nil
-	case *lnwire.AcceptChannel:
-		m.FundingKey.Curve = nil
-		m.RevocationPoint.Curve = nil
-		m.PaymentPoint.Curve = nil
-		m.DelayedPaymentPoint.Curve = nil
-		m.HtlcPoint.Curve = nil
-		m.FirstCommitmentPoint.Curve = nil
-	case *lnwire.OpenChannel:
-		m.FundingKey.Curve = nil
-		m.RevocationPoint.Curve = nil
-		m.PaymentPoint.Curve = nil
-		m.DelayedPaymentPoint.Curve = nil
-		m.HtlcPoint.Curve = nil
-		m.FirstCommitmentPoint.Curve = nil
-	case *lnwire.FundingLocked:
-		m.NextPerCommitmentPoint.Curve = nil
-	}
+
+		return fmt.Sprintf("%v %v%s %v %s", summaryPrefix,
+			msgType, summary, preposition, p)
+	}))
 
 	prefix := "readMessage from"
 	if !read {
@@ -1516,10 +1784,7 @@ func (p *Brontide) writeMessage(msg lnwire.Message) error {
 		p.logWireMessage(msg, false)
 	}
 
-	noiseConn, ok := p.cfg.Conn.(*brontide.Conn)
-	if !ok {
-		return fmt.Errorf("brontide.Conn required to write messages")
-	}
+	noiseConn := p.cfg.Conn
 
 	flushMsg := func() error {
 		// Ensure the write deadline is set before we attempt to send
@@ -1661,6 +1926,8 @@ out:
 		}
 	}
 
+	// Avoid an exit deadlock by ensuring WaitGroups are decremented before
+	// disconnect.
 	p.wg.Done()
 
 	p.Disconnect(exitErr)
@@ -1747,13 +2014,52 @@ func (p *Brontide) pingHandler() {
 	defer pingTicker.Stop()
 
 	// TODO(roasbeef): make dynamic in order to create fake cover traffic
-	const numPingBytes = 16
+	const numPongBytes = 16
 
+	blockEpochs, err := p.cfg.ChainNotifier.RegisterBlockEpochNtfn(nil)
+	if err != nil {
+		peerLog.Errorf("unable to establish block epoch "+
+			"subscription: %v", err)
+		return
+	}
+	defer blockEpochs.Cancel()
+
+	var (
+		pingPayload [wire.MaxBlockHeaderPayload]byte
+		blockHeader *wire.BlockHeader
+	)
 out:
 	for {
 		select {
+		// Each time a new block comes in, we'll copy the raw header
+		// contents over to our ping payload declared above. Over time,
+		// we'll use this to disseminate the latest block header
+		// between all our peers, which can later be used to
+		// cross-check our own view of the network to mitigate various
+		// types of eclipse attacks.
+		case epoch, ok := <-blockEpochs.Epochs:
+			if !ok {
+				peerLog.Debugf("block notifications " +
+					"canceled")
+				return
+			}
+
+			blockHeader = epoch.BlockHeader
+			headerBuf := bytes.NewBuffer(pingPayload[0:0])
+			err := blockHeader.Serialize(headerBuf)
+			if err != nil {
+				peerLog.Errorf("unable to encode header: %v",
+					err)
+			}
+
 		case <-pingTicker.C:
-			p.queueMsg(lnwire.NewPing(numPingBytes), nil)
+
+			pingMsg := &lnwire.Ping{
+				NumPongBytes: numPongBytes,
+				PaddingBytes: pingPayload[:],
+			}
+
+			p.queueMsg(pingMsg, nil)
 		case <-p.quit:
 			break out
 		}
@@ -1826,7 +2132,7 @@ func (p *Brontide) ChannelSnapshots() []*channeldb.ChannelSnapshot {
 // the case of a cooperative channel close negotiation.
 func (p *Brontide) genDeliveryScript() ([]byte, error) {
 	deliveryAddr, err := p.cfg.Wallet.NewAddress(
-		lnwallet.WitnessPubKey, false,
+		lnwallet.WitnessPubKey, false, lnwallet.DefaultAccountName,
 	)
 	if err != nil {
 		return nil, err
@@ -1846,7 +2152,7 @@ func (p *Brontide) channelManager() {
 	defer p.wg.Done()
 
 	// reenableTimeout will fire once after the configured channel status
-	// interval  has elapsed. This will trigger us to sign new channel
+	// interval has elapsed. This will trigger us to sign new channel
 	// updates and broadcast them with the "disabled" flag unset.
 	reenableTimeout := time.After(p.cfg.ChanActiveTimeout)
 
@@ -1978,7 +2284,7 @@ out:
 			close(newChanReq.err)
 
 		// We've just received a local request to close an active
-		// channel. If will either kick of a cooperative channel
+		// channel. It will either kick of a cooperative channel
 		// closure negotiation, or be a notification of a breached
 		// contract that should be abandoned.
 		case req := <-p.localCloseChanReqs:
@@ -2073,8 +2379,11 @@ func (p *Brontide) reenableActiveChannels() {
 	// disabled bit to false and send out a new ChannelUpdate. If this
 	// channel is already active, the update won't be sent.
 	for _, chanPoint := range activePublicChans {
-		err := p.cfg.ChanStatusMgr.RequestEnable(chanPoint)
-		if err != nil {
+		err := p.cfg.ChanStatusMgr.RequestEnable(chanPoint, false)
+		if err == netann.ErrEnableManuallyDisabledChan {
+			peerLog.Debugf("Channel(%v) was manually disabled, ignoring "+
+				"automatic enable request", chanPoint)
+		} else if err != nil {
 			peerLog.Errorf("Unable to enable channel %v: %v",
 				chanPoint, err)
 		}
@@ -2105,18 +2414,21 @@ func (p *Brontide) fetchActiveChanCloser(chanID lnwire.ChannelID) (
 	// cooperative channel closure.
 	chanCloser, ok := p.activeChanCloses[chanID]
 	if !ok {
-		// If we need to create a chan closer for the first time, then
-		// we'll check to ensure that the channel is even in the proper
-		// state to allow a co-op channel closure.
-		if len(channel.ActiveHtlcs()) != 0 {
-			return nil, fmt.Errorf("cannot co-op close " +
-				"channel w/ active htlcs")
+		// Optimistically try a link shutdown, erroring out if it
+		// failed.
+		if err := p.tryLinkShutdown(chanID); err != nil {
+			peerLog.Errorf("failed link shutdown: %v", err)
+			return nil, err
 		}
 
-		// We'll create a valid closing state machine in order to respond to the
-		// initiated cooperative channel closure. First, we set the delivery
-		// script that our funds will be paid out to. If an upfront shutdown script
-		// was set, we will use it. Otherwise, we get a fresh delivery script.
+		// We'll create a valid closing state machine in order to
+		// respond to the initiated cooperative channel closure. First,
+		// we set the delivery script that our funds will be paid out
+		// to. If an upfront shutdown script was set, we will use it.
+		// Otherwise, we get a fresh delivery script.
+		//
+		// TODO: Expose option to allow upfront shutdown script from
+		// watch-only accounts.
 		deliveryScript := channel.LocalUpfrontShutdownScript()
 		if len(deliveryScript) == 0 {
 			var err error
@@ -2128,9 +2440,10 @@ func (p *Brontide) fetchActiveChanCloser(chanID lnwire.ChannelID) (
 		}
 
 		// In order to begin fee negotiations, we'll first compute our
-		// target ideal fee-per-kw. We'll set this to a lax value, as
-		// we weren't the ones that initiated the channel closure.
-		feePerKw, err := p.cfg.FeeEstimator.EstimateFeePerKW(6)
+		// target ideal fee-per-kw.
+		feePerKw, err := p.cfg.FeeEstimator.EstimateFeePerKW(
+			p.cfg.CoopCloseTargetConfs,
+		)
 		if err != nil {
 			peerLog.Errorf("unable to query fee estimator: %v", err)
 
@@ -2145,10 +2458,11 @@ func (p *Brontide) fetchActiveChanCloser(chanID lnwire.ChannelID) (
 
 		chanCloser = chancloser.NewChanCloser(
 			chancloser.ChanCloseCfg{
-				Channel:           channel,
-				UnregisterChannel: p.cfg.Switch.RemoveLink,
-				BroadcastTx:       p.cfg.Wallet.PublishTransaction,
-				DisableChannel:    p.cfg.ChanStatusMgr.RequestDisable,
+				Channel:     channel,
+				BroadcastTx: p.cfg.Wallet.PublishTransaction,
+				DisableChannel: func(chanPoint wire.OutPoint) error {
+					return p.cfg.ChanStatusMgr.RequestDisable(chanPoint, false)
+				},
 				Disconnect: func() error {
 					return p.cfg.DisconnectPeer(p.IdentityKey())
 				},
@@ -2172,7 +2486,7 @@ func (p *Brontide) fetchActiveChanCloser(chanID lnwire.ChannelID) (
 func chooseDeliveryScript(upfront,
 	requested lnwire.DeliveryAddress) (lnwire.DeliveryAddress, error) {
 
-	// If no upfront upfront shutdown script was provided, return the user
+	// If no upfront shutdown script was provided, return the user
 	// requested address (which may be nil).
 	if len(upfront) == 0 {
 		return requested, nil
@@ -2221,7 +2535,7 @@ func (p *Brontide) handleLocalCloseReq(req *htlcswitch.ChanClose) {
 	// A type of CloseRegular indicates that the user has opted to close
 	// out this channel on-chain, so we execute the cooperative channel
 	// closure workflow.
-	case htlcswitch.CloseRegular:
+	case contractcourt.CloseRegular:
 		// First, we'll choose a delivery address that we'll use to send the
 		// funds to in the case of a successful negotiation.
 
@@ -2259,12 +2573,21 @@ func (p *Brontide) handleLocalCloseReq(req *htlcswitch.ChanClose) {
 			return
 		}
 
+		// Optimistically try a link shutdown, erroring out if it
+		// failed.
+		if err := p.tryLinkShutdown(chanID); err != nil {
+			peerLog.Errorf("failed link shutdown: %v", err)
+			req.Err <- err
+			return
+		}
+
 		chanCloser := chancloser.NewChanCloser(
 			chancloser.ChanCloseCfg{
-				Channel:           channel,
-				UnregisterChannel: p.cfg.Switch.RemoveLink,
-				BroadcastTx:       p.cfg.Wallet.PublishTransaction,
-				DisableChannel:    p.cfg.ChanStatusMgr.RequestDisable,
+				Channel:     channel,
+				BroadcastTx: p.cfg.Wallet.PublishTransaction,
+				DisableChannel: func(chanPoint wire.OutPoint) error {
+					return p.cfg.ChanStatusMgr.RequestDisable(chanPoint, false)
+				},
 				Disconnect: func() error {
 					return p.cfg.DisconnectPeer(p.IdentityKey())
 				},
@@ -2297,7 +2620,7 @@ func (p *Brontide) handleLocalCloseReq(req *htlcswitch.ChanClose) {
 
 	// A type of CloseBreach indicates that the counterparty has breached
 	// the channel therefore we need to clean up our local state.
-	case htlcswitch.CloseBreach:
+	case contractcourt.CloseBreach:
 		// TODO(roasbeef): no longer need with newer beach logic?
 		peerLog.Infof("ChannelPoint(%v) has been breached, wiping "+
 			"channel", req.ChanPoint)
@@ -2321,6 +2644,13 @@ type linkFailureReport struct {
 // force closing the channel depending on severity, and sending the error
 // message back to the remote party.
 func (p *Brontide) handleLinkFailure(failure linkFailureReport) {
+	// Retrieve the channel from the map of active channels. We do this to
+	// have access to it even after WipeChannel remove it from the map.
+	chanID := lnwire.NewChanIDFromOutPoint(&failure.chanPoint)
+	p.activeChanMtx.Lock()
+	lnChan := p.activeChannels[chanID]
+	p.activeChanMtx.Unlock()
+
 	// We begin by wiping the link, which will remove it from the switch,
 	// such that it won't be attempted used for any more updates.
 	//
@@ -2331,7 +2661,7 @@ func (p *Brontide) handleLinkFailure(failure linkFailureReport) {
 	p.WipeChannel(&failure.chanPoint)
 
 	// If the error encountered was severe enough, we'll now force close the
-	// channel to prevent readding it to the switch in the future.
+	// channel to prevent reading it to the switch in the future.
 	if failure.linkErr.ForceClose {
 		peerLog.Warnf("Force closing link(%v)",
 			failure.shortChanID)
@@ -2346,6 +2676,17 @@ func (p *Brontide) handleLinkFailure(failure linkFailureReport) {
 			peerLog.Infof("channel(%v) force "+
 				"closed with txid %v",
 				failure.shortChanID, closeTx.TxHash())
+		}
+	}
+
+	// If this is a permanent failure, we will mark the channel borked.
+	if failure.linkErr.PermanentFailure && lnChan != nil {
+		peerLog.Warnf("Marking link(%v) borked due to permanent "+
+			"failure", failure.shortChanID)
+
+		if err := lnChan.State().MarkBorked(); err != nil {
+			peerLog.Errorf("Unable to mark channel %v borked: %v",
+				failure.shortChanID, err)
 		}
 	}
 
@@ -2368,6 +2709,55 @@ func (p *Brontide) handleLinkFailure(failure linkFailureReport) {
 				"remote peer: %v", err)
 		}
 	}
+}
+
+// tryLinkShutdown attempts to fetch a target link from the switch, calls
+// ShutdownIfChannelClean to optimistically trigger a link shutdown, and
+// removes the link from the switch. It returns an error if any step failed.
+func (p *Brontide) tryLinkShutdown(cid lnwire.ChannelID) error {
+	// Fetch the appropriate link and call ShutdownIfChannelClean to ensure
+	// no other updates can occur.
+	chanLink := p.fetchLinkFromKeyAndCid(cid)
+
+	// If the link happens to be nil, return ErrChannelNotFound so we can
+	// ignore the close message.
+	if chanLink == nil {
+		return ErrChannelNotFound
+	}
+
+	// Else, the link exists, so attempt to trigger shutdown. If this
+	// fails, we'll send an error message to the remote peer.
+	if err := chanLink.ShutdownIfChannelClean(); err != nil {
+		return err
+	}
+
+	// Next, we remove the link from the switch to shut down all of the
+	// link's goroutines and remove it from the switch's internal maps. We
+	// don't call WipeChannel as the channel must still be in the
+	// activeChannels map to process coop close messages.
+	p.cfg.Switch.RemoveLink(cid)
+
+	return nil
+}
+
+// fetchLinkFromKeyAndCid fetches a link from the switch via the remote's
+// public key and the channel id.
+func (p *Brontide) fetchLinkFromKeyAndCid(
+	cid lnwire.ChannelID) htlcswitch.ChannelUpdateHandler {
+
+	var chanLink htlcswitch.ChannelUpdateHandler
+
+	// We don't need to check the error here, and can instead just loop
+	// over the slice and return nil.
+	links, _ := p.cfg.Switch.GetLinksByInterface(p.cfg.PubKeyBytes)
+	for _, link := range links {
+		if link.ChanID() == cid {
+			chanLink = link
+			break
+		}
+	}
+
+	return chanLink
 }
 
 // finalizeChanClosure performs the final clean up steps once the cooperative
@@ -2541,12 +2931,35 @@ func (p *Brontide) RemoteFeatures() *lnwire.FeatureVector {
 	return p.remoteFeatures
 }
 
-// sendInitMsg sends the Init message to the remote peer. This message contains our
-// currently supported local and global features.
-func (p *Brontide) sendInitMsg() error {
+// sendInitMsg sends the Init message to the remote peer. This message contains
+// our currently supported local and global features.
+func (p *Brontide) sendInitMsg(legacyChan bool) error {
+	features := p.cfg.Features.Clone()
+	legacyFeatures := p.cfg.LegacyFeatures.Clone()
+
+	// If we have a legacy channel open with a peer, we downgrade static
+	// remote required to optional in case the peer does not understand the
+	// required feature bit. If we do not do this, the peer will reject our
+	// connection because it does not understand a required feature bit, and
+	// our channel will be unusable.
+	if legacyChan && features.RequiresFeature(lnwire.StaticRemoteKeyRequired) {
+		peerLog.Infof("Legacy channel open with peer: %x, "+
+			"downgrading static remote required feature bit to "+
+			"optional", p.PubKey())
+
+		// Unset and set in both the local and global features to
+		// ensure both sets are consistent and merge able by old and
+		// new nodes.
+		features.Unset(lnwire.StaticRemoteKeyRequired)
+		legacyFeatures.Unset(lnwire.StaticRemoteKeyRequired)
+
+		features.Set(lnwire.StaticRemoteKeyOptional)
+		legacyFeatures.Set(lnwire.StaticRemoteKeyOptional)
+	}
+
 	msg := lnwire.NewInitMessage(
-		p.cfg.LegacyFeatures.RawFeatureVector,
-		p.cfg.Features.RawFeatureVector,
+		legacyFeatures.RawFeatureVector,
+		features.RawFeatureVector,
 	)
 
 	return p.writeMessage(msg)
@@ -2575,7 +2988,7 @@ func (p *Brontide) resendChanSyncMsg(cid lnwire.ChannelID) error {
 
 	if !c.RemotePub.IsEqual(p.IdentityKey()) {
 		return fmt.Errorf("ignoring channel reestablish from "+
-			"peer=%x", p.IdentityKey())
+			"peer=%x", p.IdentityKey().SerializeCompressed())
 	}
 
 	peerLog.Debugf("Re-sending channel sync message for channel %v to "+
@@ -2785,11 +3198,11 @@ func (p *Brontide) handleCloseMsg(msg *closeMsg) {
 func (p *Brontide) HandleLocalCloseChanReqs(req *htlcswitch.ChanClose) {
 	select {
 	case p.localCloseChanReqs <- req:
-		peerLog.Infof("Local close channel request delivered to peer: %v",
-			p.PubKey())
+		peerLog.Infof("Local close channel request delivered to "+
+			"peer: %x", p.PubKey())
 	case <-p.quit:
-		peerLog.Infof("Unable to deliver local close channel request to peer "+
-			"%x", p.PubKey())
+		peerLog.Infof("Unable to deliver local close channel request "+
+			"to peer %x", p.PubKey())
 	}
 }
 
@@ -2836,4 +3249,20 @@ func (p *Brontide) BytesReceived() uint64 {
 // BytesSent returns the number of bytes sent to the peer.
 func (p *Brontide) BytesSent() uint64 {
 	return atomic.LoadUint64(&p.bytesSent)
+}
+
+// LastRemotePingPayload returns the last payload the remote party sent as part
+// of their ping.
+func (p *Brontide) LastRemotePingPayload() []byte {
+	pingPayload := p.lastPingPayload.Load()
+	if pingPayload == nil {
+		return []byte{}
+	}
+
+	pingBytes, ok := pingPayload.(lnwire.PingPayload)
+	if !ok {
+		return nil
+	}
+
+	return pingBytes
 }

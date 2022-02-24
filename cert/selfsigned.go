@@ -16,13 +16,6 @@ import (
 	"time"
 )
 
-const (
-	// DefaultAutogenValidity is the default validity of a self-signed
-	// certificate. The value corresponds to 14 months
-	// (14 months * 30 days * 24 hours).
-	DefaultAutogenValidity = 14 * 30 * 24 * time.Hour
-)
-
 var (
 	// End of ASN.1 time.
 	endOfTime = time.Date(2049, 12, 31, 23, 59, 59, 0, time.UTC)
@@ -32,8 +25,9 @@ var (
 )
 
 // ipAddresses returns the parserd IP addresses to use when creating the TLS
-// certificate.
-func ipAddresses(tlsExtraIPs []string) ([]net.IP, error) {
+// certificate. If tlsDisableAutofill is true, we don't include interface
+// addresses to protect users privacy.
+func ipAddresses(tlsExtraIPs []string, tlsDisableAutofill bool) ([]net.IP, error) {
 	// Collect the host's IP addresses, including loopback, in a slice.
 	ipAddresses := []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}
 
@@ -47,15 +41,20 @@ func ipAddresses(tlsExtraIPs []string) ([]net.IP, error) {
 		ipAddresses = append(ipAddresses, ipAddr)
 	}
 
-	// Add all the interface IPs that aren't already in the slice.
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return nil, err
-	}
-	for _, a := range addrs {
-		ipAddr, _, err := net.ParseCIDR(a.String())
-		if err == nil {
-			addIP(ipAddr)
+	// To protect their privacy, some users might not want to have all
+	// their network addresses include in the certificate as this could
+	// leak sensitive information.
+	if !tlsDisableAutofill {
+		// Add all the interface IPs that aren't already in the slice.
+		addrs, err := net.InterfaceAddrs()
+		if err != nil {
+			return nil, err
+		}
+		for _, a := range addrs {
+			ipAddr, _, err := net.ParseCIDR(a.String())
+			if err == nil {
+				addIP(ipAddr)
+			}
 		}
 	}
 
@@ -72,10 +71,14 @@ func ipAddresses(tlsExtraIPs []string) ([]net.IP, error) {
 
 // dnsNames returns the host and DNS names to use when creating the TLS
 // ceftificate.
-func dnsNames(tlsExtraDomains []string) (string, []string) {
+func dnsNames(tlsExtraDomains []string, tlsDisableAutofill bool) (string, []string) {
 	// Collect the host's names into a slice.
 	host, err := os.Hostname()
-	if err != nil {
+
+	// To further protect their privacy, some users might not want
+	// to have their hostname include in the certificate as this could
+	// leak sensitive information.
+	if err != nil || tlsDisableAutofill {
 		// Nothing much we can do here, other than falling back to
 		// localhost as fallback. A hostname can still be provided with
 		// the tlsExtraDomain parameter if the problem persists on a
@@ -88,6 +91,13 @@ func dnsNames(tlsExtraDomains []string) (string, []string) {
 		dnsNames = append(dnsNames, "localhost")
 	}
 	dnsNames = append(dnsNames, tlsExtraDomains...)
+
+	// Because we aren't including the hostname in the certificate when
+	// tlsDisableAutofill is set, we will use the first extra domain
+	// specified by the user, if it's set, as the Common Name.
+	if tlsDisableAutofill && len(tlsExtraDomains) > 0 {
+		host = tlsExtraDomains[0]
+	}
 
 	// Also add fake hostnames for unix sockets, otherwise hostname
 	// verification will fail in the client.
@@ -104,10 +114,10 @@ func dnsNames(tlsExtraDomains []string) (string, []string) {
 // and domains given. The certificate is considered up to date if it was
 // created with _exactly_ the IPs and domains given.
 func IsOutdated(cert *x509.Certificate, tlsExtraIPs,
-	tlsExtraDomains []string) (bool, error) {
+	tlsExtraDomains []string, tlsDisableAutofill bool) (bool, error) {
 
 	// Parse the slice of IP strings.
-	ips, err := ipAddresses(tlsExtraIPs)
+	ips, err := ipAddresses(tlsExtraIPs, tlsDisableAutofill)
 	if err != nil {
 		return false, err
 	}
@@ -147,7 +157,7 @@ func IsOutdated(cert *x509.Certificate, tlsExtraIPs,
 	}
 
 	// Get the full list of DNS names to use.
-	_, dnsNames := dnsNames(tlsExtraDomains)
+	_, dnsNames := dnsNames(tlsExtraDomains, tlsDisableAutofill)
 
 	// We do the same kind of deduplication for the DNS names.
 	dns1 := make(map[string]struct{})
@@ -183,10 +193,11 @@ func IsOutdated(cert *x509.Certificate, tlsExtraIPs,
 // desired hostnames for the service. For production/public use, consider a
 // real PKI.
 //
-// This function is adapted from https://github.com/btcsuite/btcd and
-// https://github.com/btcsuite/btcutil
+// This function is adapted from https://github.com/ltcsuite/ltcd and
+// https://github.com/ltcsuite/ltcd/ltcutil
 func GenCertPair(org, certFile, keyFile string, tlsExtraIPs,
-	tlsExtraDomains []string, certValidity time.Duration) error {
+	tlsExtraDomains []string, tlsDisableAutofill bool,
+	certValidity time.Duration) error {
 
 	now := time.Now()
 	validUntil := now.Add(certValidity)
@@ -204,8 +215,8 @@ func GenCertPair(org, certFile, keyFile string, tlsExtraIPs,
 
 	// Get all DNS names and IP addresses to use when creating the
 	// certificate.
-	host, dnsNames := dnsNames(tlsExtraDomains)
-	ipAddresses, err := ipAddresses(tlsExtraIPs)
+	host, dnsNames := dnsNames(tlsExtraDomains, tlsDisableAutofill)
+	ipAddresses, err := ipAddresses(tlsExtraIPs, tlsDisableAutofill)
 	if err != nil {
 		return err
 	}

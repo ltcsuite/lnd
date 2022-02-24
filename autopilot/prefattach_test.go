@@ -9,9 +9,9 @@ import (
 
 	prand "math/rand"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 type genGraphFunc func() (testGraph, func(), error)
@@ -253,9 +253,7 @@ func TestPrefAttachmentSelectGreedyAllocation(t *testing.T) {
 				t1.Fatalf("unable to create channel: %v", err)
 			}
 			peerPubBytes := edge1.Peer.PubKey()
-			peerPub, err := btcec.ParsePubKey(
-				peerPubBytes[:], btcec.S256(),
-			)
+			peerPub, err := btcec.ParsePubKey(peerPubBytes[:])
 			if err != nil {
 				t.Fatalf("unable to parse pubkey: %v", err)
 			}
@@ -422,10 +420,10 @@ func TestPrefAttachmentSelectSkipNodes(t *testing.T) {
 
 			// We'll simulate a channel update by adding the nodes
 			// to our set of channels.
-			var chans []Channel
+			var chans []LocalChannel
 			for _, candidate := range scores {
 				chans = append(chans,
-					Channel{
+					LocalChannel{
 						Node: candidate.NodeID,
 					},
 				)

@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/ltcsuite/lnd/channeldb"
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/multimutex"
 )
@@ -61,28 +61,15 @@ type networkResult struct {
 
 // serializeNetworkResult serializes the networkResult.
 func serializeNetworkResult(w io.Writer, n *networkResult) error {
-	if _, err := lnwire.WriteMessage(w, n.msg, 0); err != nil {
-		return err
-	}
-
-	return channeldb.WriteElements(w, n.unencrypted, n.isResolution)
+	return channeldb.WriteElements(w, n.msg, n.unencrypted, n.isResolution)
 }
 
 // deserializeNetworkResult deserializes the networkResult.
 func deserializeNetworkResult(r io.Reader) (*networkResult, error) {
-	var (
-		err error
-	)
-
 	n := &networkResult{}
 
-	n.msg, err = lnwire.ReadMessage(r, 0)
-	if err != nil {
-		return nil, err
-	}
-
 	if err := channeldb.ReadElements(r,
-		&n.unencrypted, &n.isResolution,
+		&n.msg, &n.unencrypted, &n.isResolution,
 	); err != nil {
 		return nil, err
 	}
@@ -96,7 +83,7 @@ func deserializeNetworkResult(r io.Reader) (*networkResult, error) {
 // is back. The Switch will checkpoint any received result to the store, and
 // the store will keep results and notify the callers about them.
 type networkResultStore struct {
-	db *channeldb.DB
+	backend kvdb.Backend
 
 	// results is a map from paymentIDs to channels where subscribers to
 	// payment results will be notified.
@@ -109,9 +96,9 @@ type networkResultStore struct {
 	paymentIDMtx *multimutex.Mutex
 }
 
-func newNetworkResultStore(db *channeldb.DB) *networkResultStore {
+func newNetworkResultStore(db kvdb.Backend) *networkResultStore {
 	return &networkResultStore{
-		db:           db,
+		backend:      db,
 		results:      make(map[uint64][]chan *networkResult),
 		paymentIDMtx: multimutex.NewMutex(),
 	}
@@ -128,6 +115,8 @@ func (store *networkResultStore) storeResult(paymentID uint64,
 	store.paymentIDMtx.Lock(paymentID)
 	defer store.paymentIDMtx.Unlock(paymentID)
 
+	log.Debugf("Storing result for paymentID=%v", paymentID)
+
 	// Serialize the payment result.
 	var b bytes.Buffer
 	if err := serializeNetworkResult(&b, result); err != nil {
@@ -137,7 +126,7 @@ func (store *networkResultStore) storeResult(paymentID uint64,
 	var paymentIDBytes [8]byte
 	binary.BigEndian.PutUint64(paymentIDBytes[:], paymentID)
 
-	err := kvdb.Batch(store.db.Backend, func(tx kvdb.RwTx) error {
+	err := kvdb.Batch(store.backend, func(tx kvdb.RwTx) error {
 		networkResults, err := tx.CreateTopLevelBucket(
 			networkResultStoreBucketKey,
 		)
@@ -175,12 +164,14 @@ func (store *networkResultStore) subscribeResult(paymentID uint64) (
 	store.paymentIDMtx.Lock(paymentID)
 	defer store.paymentIDMtx.Unlock(paymentID)
 
+	log.Debugf("Subscribing to result for paymentID=%v", paymentID)
+
 	var (
 		result     *networkResult
 		resultChan = make(chan *networkResult, 1)
 	)
 
-	err := kvdb.View(store.db, func(tx kvdb.RTx) error {
+	err := kvdb.View(store.backend, func(tx kvdb.RTx) error {
 		var err error
 		result, err = fetchResult(tx, paymentID)
 		switch {
@@ -197,6 +188,8 @@ func (store *networkResultStore) subscribeResult(paymentID uint64) (
 		default:
 			return nil
 		}
+	}, func() {
+		result = nil
 	})
 	if err != nil {
 		return nil, err
@@ -226,10 +219,12 @@ func (store *networkResultStore) getResult(pid uint64) (
 	*networkResult, error) {
 
 	var result *networkResult
-	err := kvdb.View(store.db, func(tx kvdb.RTx) error {
+	err := kvdb.View(store.backend, func(tx kvdb.RTx) error {
 		var err error
 		result, err = fetchResult(tx, pid)
 		return err
+	}, func() {
+		result = nil
 	})
 	if err != nil {
 		return nil, err
@@ -257,4 +252,49 @@ func fetchResult(tx kvdb.RTx, pid uint64) (*networkResult, error) {
 	r := bytes.NewReader(resultBytes)
 
 	return deserializeNetworkResult(r)
+}
+
+// cleanStore removes all entries from the store, except the payment IDs given.
+// NOTE: Since every result not listed in the keep map will be deleted, care
+// should be taken to ensure no new payment attempts are being made
+// concurrently while this process is ongoing, as its result might end up being
+// deleted.
+func (store *networkResultStore) cleanStore(keep map[uint64]struct{}) error {
+	return kvdb.Update(store.backend, func(tx kvdb.RwTx) error {
+		networkResults, err := tx.CreateTopLevelBucket(
+			networkResultStoreBucketKey,
+		)
+		if err != nil {
+			return err
+		}
+
+		// Iterate through the bucket, deleting all items not in the
+		// keep map.
+		var toClean [][]byte
+		if err := networkResults.ForEach(func(k, _ []byte) error {
+			pid := binary.BigEndian.Uint64(k)
+			if _, ok := keep[pid]; ok {
+				return nil
+			}
+
+			toClean = append(toClean, k)
+			return nil
+		}); err != nil {
+			return err
+		}
+
+		for _, k := range toClean {
+			err := networkResults.Delete(k)
+			if err != nil {
+				return err
+			}
+		}
+
+		if len(toClean) > 0 {
+			log.Infof("Removed %d stale entries from network "+
+				"result store", len(toClean))
+		}
+
+		return nil
+	}, func() {})
 }

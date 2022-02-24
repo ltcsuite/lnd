@@ -18,17 +18,17 @@ var typeStringTests = []typeStringTest{
 	{
 		name:   "commit no-reward",
 		typ:    blob.TypeAltruistCommit,
-		expStr: "[FlagCommitOutputs|No-FlagReward]",
+		expStr: "[No-FlagAnchorChannel|FlagCommitOutputs|No-FlagReward]",
 	},
 	{
 		name:   "commit reward",
 		typ:    blob.TypeRewardCommit,
-		expStr: "[FlagCommitOutputs|FlagReward]",
+		expStr: "[No-FlagAnchorChannel|FlagCommitOutputs|FlagReward]",
 	},
 	{
 		name:   "unknown flag",
 		typ:    unknownFlag.Type(),
-		expStr: "0000000000010000[No-FlagCommitOutputs|No-FlagReward]",
+		expStr: "0000000000010000[No-FlagAnchorChannel|No-FlagCommitOutputs|No-FlagReward]",
 	},
 }
 
@@ -121,6 +121,12 @@ func TestSupportedTypes(t *testing.T) {
 	// Assert that the package's default type is supported.
 	if !blob.IsSupportedType(blob.TypeAltruistCommit) {
 		t.Fatalf("default type %s is not supported", blob.TypeAltruistCommit)
+	}
+
+	// Assert that the altruist anchor commit types are supported.
+	if !blob.IsSupportedType(blob.TypeAltruistAnchorCommit) {
+		t.Fatalf("default type %s is not supported",
+			blob.TypeAltruistAnchorCommit)
 	}
 
 	// Assert that all claimed supported types are actually supported.

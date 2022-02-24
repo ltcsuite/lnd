@@ -3,7 +3,6 @@ package lnwire
 import (
 	"bytes"
 	"io"
-	"io/ioutil"
 
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 )
@@ -56,7 +55,7 @@ type ChannelAnnouncement struct {
 	// properly validate the set of signatures that cover these new fields,
 	// and ensure we're able to make upgrades to the network in a forwards
 	// compatible manner.
-	ExtraOpaqueData []byte
+	ExtraOpaqueData ExtraOpaqueData
 }
 
 // A compile time check to ensure ChannelAnnouncement implements the
@@ -68,7 +67,7 @@ var _ Message = (*ChannelAnnouncement)(nil)
 //
 // This is part of the lnwire.Message interface.
 func (a *ChannelAnnouncement) Decode(r io.Reader, pver uint32) error {
-	err := ReadElements(r,
+	return ReadElements(r,
 		&a.NodeSig1,
 		&a.NodeSig2,
 		&a.BitcoinSig1,
@@ -80,45 +79,60 @@ func (a *ChannelAnnouncement) Decode(r io.Reader, pver uint32) error {
 		&a.NodeID2,
 		&a.BitcoinKey1,
 		&a.BitcoinKey2,
+		&a.ExtraOpaqueData,
 	)
-	if err != nil {
-		return err
-	}
-
-	// Now that we've read out all the fields that we explicitly know of,
-	// we'll collect the remainder into the ExtraOpaqueData field. If there
-	// aren't any bytes, then we'll snip off the slice to avoid carrying
-	// around excess capacity.
-	a.ExtraOpaqueData, err = ioutil.ReadAll(r)
-	if err != nil {
-		return err
-	}
-	if len(a.ExtraOpaqueData) == 0 {
-		a.ExtraOpaqueData = nil
-	}
-
-	return nil
 }
 
 // Encode serializes the target ChannelAnnouncement into the passed io.Writer
 // observing the protocol version specified.
 //
 // This is part of the lnwire.Message interface.
-func (a *ChannelAnnouncement) Encode(w io.Writer, pver uint32) error {
-	return WriteElements(w,
-		a.NodeSig1,
-		a.NodeSig2,
-		a.BitcoinSig1,
-		a.BitcoinSig2,
-		a.Features,
-		a.ChainHash[:],
-		a.ShortChannelID,
-		a.NodeID1,
-		a.NodeID2,
-		a.BitcoinKey1,
-		a.BitcoinKey2,
-		a.ExtraOpaqueData,
-	)
+func (a *ChannelAnnouncement) Encode(w *bytes.Buffer, pver uint32) error {
+	if err := WriteSig(w, a.NodeSig1); err != nil {
+		return err
+	}
+
+	if err := WriteSig(w, a.NodeSig2); err != nil {
+		return err
+	}
+
+	if err := WriteSig(w, a.BitcoinSig1); err != nil {
+		return err
+	}
+
+	if err := WriteSig(w, a.BitcoinSig2); err != nil {
+		return err
+	}
+
+	if err := WriteRawFeatureVector(w, a.Features); err != nil {
+		return err
+	}
+
+	if err := WriteBytes(w, a.ChainHash[:]); err != nil {
+		return err
+	}
+
+	if err := WriteShortChannelID(w, a.ShortChannelID); err != nil {
+		return err
+	}
+
+	if err := WriteBytes(w, a.NodeID1[:]); err != nil {
+		return err
+	}
+
+	if err := WriteBytes(w, a.NodeID2[:]); err != nil {
+		return err
+	}
+
+	if err := WriteBytes(w, a.BitcoinKey1[:]); err != nil {
+		return err
+	}
+
+	if err := WriteBytes(w, a.BitcoinKey2[:]); err != nil {
+		return err
+	}
+
+	return WriteBytes(w, a.ExtraOpaqueData)
 }
 
 // MsgType returns the integer uniquely identifying this message type on the
@@ -129,32 +143,44 @@ func (a *ChannelAnnouncement) MsgType() MessageType {
 	return MsgChannelAnnouncement
 }
 
-// MaxPayloadLength returns the maximum allowed payload size for this message
-// observing the specified protocol version.
-//
-// This is part of the lnwire.Message interface.
-func (a *ChannelAnnouncement) MaxPayloadLength(pver uint32) uint32 {
-	return 65533
-}
-
 // DataToSign is used to retrieve part of the announcement message which should
 // be signed.
 func (a *ChannelAnnouncement) DataToSign() ([]byte, error) {
 	// We should not include the signatures itself.
-	var w bytes.Buffer
-	err := WriteElements(&w,
-		a.Features,
-		a.ChainHash[:],
-		a.ShortChannelID,
-		a.NodeID1,
-		a.NodeID2,
-		a.BitcoinKey1,
-		a.BitcoinKey2,
-		a.ExtraOpaqueData,
-	)
-	if err != nil {
+	b := make([]byte, 0, MaxMsgBody)
+	buf := bytes.NewBuffer(b)
+
+	if err := WriteRawFeatureVector(buf, a.Features); err != nil {
 		return nil, err
 	}
 
-	return w.Bytes(), nil
+	if err := WriteBytes(buf, a.ChainHash[:]); err != nil {
+		return nil, err
+	}
+
+	if err := WriteShortChannelID(buf, a.ShortChannelID); err != nil {
+		return nil, err
+	}
+
+	if err := WriteBytes(buf, a.NodeID1[:]); err != nil {
+		return nil, err
+	}
+
+	if err := WriteBytes(buf, a.NodeID2[:]); err != nil {
+		return nil, err
+	}
+
+	if err := WriteBytes(buf, a.BitcoinKey1[:]); err != nil {
+		return nil, err
+	}
+
+	if err := WriteBytes(buf, a.BitcoinKey2[:]); err != nil {
+		return nil, err
+	}
+
+	if err := WriteBytes(buf, a.ExtraOpaqueData); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
 }

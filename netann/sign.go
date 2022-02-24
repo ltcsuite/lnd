@@ -4,14 +4,14 @@ import (
 	"fmt"
 
 	"github.com/ltcsuite/lnd/input"
+	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwire"
-	"github.com/ltcsuite/ltcd/btcec"
 )
 
 // SignAnnouncement signs any type of gossip message that is announced on the
 // network.
-func SignAnnouncement(signer lnwallet.MessageSigner, pubKey *btcec.PublicKey,
+func SignAnnouncement(signer lnwallet.MessageSigner, keyLoc keychain.KeyLocator,
 	msg lnwire.Message) (input.Signature, error) {
 
 	var (
@@ -33,5 +33,5 @@ func SignAnnouncement(signer lnwallet.MessageSigner, pubKey *btcec.PublicKey,
 		return nil, fmt.Errorf("unable to get data to sign: %v", err)
 	}
 
-	return signer.SignMessage(pubKey, data)
+	return signer.SignMessage(keyLoc, data, true)
 }

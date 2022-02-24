@@ -1,19 +1,17 @@
-// +build rpctest
-
 package itest
 
 import (
 	"context"
-	"fmt"
 	"time"
 
-	"github.com/davecgh/go-spew/spew"
-	"github.com/ltcsuite/lnd"
 	"github.com/ltcsuite/lnd/lncfg"
 	"github.com/ltcsuite/lnd/lnrpc"
 	"github.com/ltcsuite/lnd/lnrpc/routerrpc"
 	"github.com/ltcsuite/lnd/lntest"
 	"github.com/ltcsuite/lnd/lntest/wait"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/stretchr/testify/require"
 )
 
 // testMultiHopHtlcLocalTimeout tests that in a multi-hop HTLC scenario, if the
@@ -22,7 +20,7 @@ import (
 // canceled backwards. Once the timeout has been reached, then we should sweep
 // it on-chain, and cancel the HTLC backwards.
 func testMultiHopHtlcLocalTimeout(net *lntest.NetworkHarness, t *harnessTest,
-	alice, bob *lntest.HarnessNode, c commitType) {
+	alice, bob *lntest.HarnessNode, c lnrpc.CommitmentType) {
 
 	ctxb := context.Background()
 
@@ -43,7 +41,7 @@ func testMultiHopHtlcLocalTimeout(net *lntest.NetworkHarness, t *harnessTest,
 	// while the second will be a proper fully valued HTLC.
 	const (
 		dustHtlcAmt    = ltcutil.Amount(100)
-		htlcAmt        = ltcutil.Amount(30000)
+		htlcAmt        = ltcutil.Amount(300_000)
 		finalCltvDelta = 40
 	)
 
@@ -57,8 +55,7 @@ func testMultiHopHtlcLocalTimeout(net *lntest.NetworkHarness, t *harnessTest,
 	payHash := makeFakePayHash(t)
 
 	_, err := alice.RouterClient.SendPaymentV2(
-		ctx,
-		&routerrpc.SendPaymentRequest{
+		ctx, &routerrpc.SendPaymentRequest{
 			Dest:           carolPubKey,
 			Amt:            int64(dustHtlcAmt),
 			PaymentHash:    dustPayHash,
@@ -67,13 +64,10 @@ func testMultiHopHtlcLocalTimeout(net *lntest.NetworkHarness, t *harnessTest,
 			FeeLimitMsat:   noFeeLimitMsat,
 		},
 	)
-	if err != nil {
-		t.Fatalf("unable to send alice htlc: %v", err)
-	}
+	require.NoError(t.t, err)
 
 	_, err = alice.RouterClient.SendPaymentV2(
-		ctx,
-		&routerrpc.SendPaymentRequest{
+		ctx, &routerrpc.SendPaymentRequest{
 			Dest:           carolPubKey,
 			Amt:            int64(htlcAmt),
 			PaymentHash:    payHash,
@@ -82,25 +76,19 @@ func testMultiHopHtlcLocalTimeout(net *lntest.NetworkHarness, t *harnessTest,
 			FeeLimitMsat:   noFeeLimitMsat,
 		},
 	)
-	if err != nil {
-		t.Fatalf("unable to send alice htlc: %v", err)
-	}
+	require.NoError(t.t, err)
 
 	// Verify that all nodes in the path now have two HTLC's with the
 	// proper parameters.
-	var predErr error
 	nodes := []*lntest.HarnessNode{alice, bob, carol}
-	err = wait.Predicate(func() bool {
-		predErr = assertActiveHtlcs(nodes, dustPayHash, payHash)
-		if predErr != nil {
-			return false
-		}
+	err = wait.NoError(func() error {
+		return assertActiveHtlcs(nodes, dustPayHash, payHash)
+	}, defaultTimeout)
+	require.NoError(t.t, err)
 
-		return true
-	}, time.Second*15)
-	if err != nil {
-		t.Fatalf("htlc mismatch: %v", predErr)
-	}
+	// Increase the fee estimate so that the following force close tx will
+	// be cpfp'ed.
+	net.SetFeeEstimate(30000)
 
 	// We'll now mine enough blocks to trigger Bob's broadcast of his
 	// commitment transaction due to the fact that the HTLC is about to
@@ -109,34 +97,30 @@ func testMultiHopHtlcLocalTimeout(net *lntest.NetworkHarness, t *harnessTest,
 	numBlocks := padCLTV(
 		uint32(finalCltvDelta - lncfg.DefaultOutgoingBroadcastDelta),
 	)
-	if _, err := net.Miner.Node.Generate(numBlocks); err != nil {
-		t.Fatalf("unable to generate blocks: %v", err)
-	}
+	_, err = net.Miner.Client.Generate(numBlocks)
+	require.NoError(t.t, err)
 
 	// Bob's force close transaction should now be found in the mempool. If
 	// there are anchors, we also expect Bob's anchor sweep.
 	expectedTxes := 1
-	if c == commitTypeAnchors {
+	hasAnchors := commitTypeHasAnchors(c)
+	if hasAnchors {
 		expectedTxes = 2
 	}
-
-	bobFundingTxid, err := lnd.GetChanPointFundingTxid(bobChanPoint)
-	if err != nil {
-		t.Fatalf("unable to get txid: %v", err)
-	}
 	_, err = waitForNTxsInMempool(
-		net.Miner.Node, expectedTxes, minerMempoolTimeout,
+		net.Miner.Client, expectedTxes, minerMempoolTimeout,
 	)
-	if err != nil {
-		t.Fatalf("unable to find closing txid: %v", err)
+	require.NoError(t.t, err)
+
+	bobFundingTxid, err := lnrpc.GetChanPointFundingTxid(bobChanPoint)
+	require.NoError(t.t, err)
+	bobChanOutpoint := wire.OutPoint{
+		Hash:  *bobFundingTxid,
+		Index: bobChanPoint.OutputIndex,
 	}
-	closeTx := getSpendingTxInMempool(
-		t, net.Miner.Node, minerMempoolTimeout, wire.OutPoint{
-			Hash:  *bobFundingTxid,
-			Index: bobChanPoint.OutputIndex,
-		},
+	closeTxid := assertSpendingTxInMempool(
+		t, net.Miner.Client, minerMempoolTimeout, bobChanOutpoint,
 	)
-	closeTxid := closeTx.TxHash()
 
 	// Mine a block to confirm the closing transaction.
 	mineBlocks(t, net, 1, expectedTxes)
@@ -145,151 +129,102 @@ func testMultiHopHtlcLocalTimeout(net *lntest.NetworkHarness, t *harnessTest,
 	// that we sent earlier. This means Alice should now only have a single
 	// HTLC on her channel.
 	nodes = []*lntest.HarnessNode{alice}
-	err = wait.Predicate(func() bool {
-		predErr = assertActiveHtlcs(nodes, payHash)
-		if predErr != nil {
-			return false
-		}
-
-		return true
-	}, time.Second*15)
-	if err != nil {
-		t.Fatalf("htlc mismatch: %v", predErr)
-	}
+	err = wait.NoError(func() error {
+		return assertActiveHtlcs(nodes, payHash)
+	}, defaultTimeout)
+	require.NoError(t.t, err)
 
 	// With the closing transaction confirmed, we should expect Bob's HTLC
 	// timeout transaction to be broadcast due to the expiry being reached.
 	// If there are anchors, we also expect Carol's anchor sweep now.
-	txes, err := getNTxsFromMempool(net.Miner.Node, expectedTxes, minerMempoolTimeout)
-	if err != nil {
-		t.Fatalf("unable to find bob's htlc timeout tx: %v", err)
-	}
+	_, err = getNTxsFromMempool(
+		net.Miner.Client, expectedTxes, minerMempoolTimeout,
+	)
+	require.NoError(t.t, err)
 
-	// Lookup the timeout transaction that is expected to spend from the
-	// closing tx. We distinguish it from a possibly anchor sweep by value.
-	var htlcTimeout *chainhash.Hash
-	for _, tx := range txes {
-		prevOp := tx.TxIn[0].PreviousOutPoint
-		if prevOp.Hash != closeTxid {
-			t.Fatalf("tx not spending from closing tx")
-		}
-
-		// Assume that the timeout tx doesn't spend an output of exactly
-		// the size of the anchor.
-		if closeTx.TxOut[prevOp.Index].Value != anchorSize {
-			hash := tx.TxHash()
-			htlcTimeout = &hash
-		}
+	// We'll also obtain the expected HTLC timeout transaction hash.
+	htlcOutpoint := wire.OutPoint{Hash: closeTxid, Index: 0}
+	commitOutpoint := wire.OutPoint{Hash: closeTxid, Index: 1}
+	if hasAnchors {
+		htlcOutpoint.Index = 2
+		commitOutpoint.Index = 3
 	}
-	if htlcTimeout == nil {
-		t.Fatalf("htlc timeout tx not found in mempool")
-	}
-
-	// We'll mine the remaining blocks in order to generate the sweep
-	// transaction of Bob's commitment output.
-	mineBlocks(t, net, defaultCSV, expectedTxes)
-
-	// Check that the sweep spends from the mined commitment.
-	txes, err = getNTxsFromMempool(net.Miner.Node, 1, minerMempoolTimeout)
-	if err != nil {
-		t.Fatalf("sweep not found: %v", err)
-	}
-	assertAllTxesSpendFrom(t, txes, closeTxid)
-
-	// Bob's pending channel report should show that he has a commitment
-	// output awaiting sweeping, and also that there's an outgoing HTLC
-	// output pending.
-	pendingChansRequest := &lnrpc.PendingChannelsRequest{}
-	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	pendingChanResp, err := bob.PendingChannels(ctxt, pendingChansRequest)
-	if err != nil {
-		t.Fatalf("unable to query for pending channels: %v", err)
-	}
-
-	if len(pendingChanResp.PendingForceClosingChannels) == 0 {
-		t.Fatalf("bob should have pending for close chan but doesn't")
-	}
-	forceCloseChan := pendingChanResp.PendingForceClosingChannels[0]
-	if forceCloseChan.LimboBalance == 0 {
-		t.Fatalf("bob should have nonzero limbo balance instead "+
-			"has: %v", forceCloseChan.LimboBalance)
-	}
-	if len(forceCloseChan.PendingHtlcs) == 0 {
-		t.Fatalf("bob should have pending htlc but doesn't")
-	}
-
-	// Now we'll mine an additional block, which should confirm Bob's commit
-	// sweep. This block should also prompt Bob to broadcast their second
-	// layer sweep due to the CSV on the HTLC timeout output.
-	mineBlocks(t, net, 1, 1)
-	assertSpendingTxInMempool(
-		t, net.Miner.Node, minerMempoolTimeout, wire.OutPoint{
-			Hash:  *htlcTimeout,
-			Index: 0,
-		},
+	htlcTimeoutTxid := assertSpendingTxInMempool(
+		t, net.Miner.Client, minerMempoolTimeout, htlcOutpoint,
 	)
 
-	// The block should have confirmed Bob's HTLC timeout transaction.
-	// Therefore, at this point, there should be no active HTLC's on the
-	// commitment transaction from Alice -> Bob.
-	nodes = []*lntest.HarnessNode{alice}
-	err = wait.Predicate(func() bool {
-		predErr = assertNumActiveHtlcs(nodes, 0)
-		if predErr != nil {
-			return false
-		}
-		return true
-	}, time.Second*15)
-	if err != nil {
-		t.Fatalf("alice's channel still has active htlc's: %v", predErr)
-	}
+	// Mine a block to confirm the expected transactions.
+	_ = mineBlocks(t, net, 1, expectedTxes)
+
+	// With Bob's HTLC timeout transaction confirmed, there should be no
+	// active HTLC's on the commitment transaction from Alice -> Bob.
+	err = wait.NoError(func() error {
+		return assertNumActiveHtlcs([]*lntest.HarnessNode{alice}, 0)
+	}, defaultTimeout)
+	require.NoError(t.t, err)
 
 	// At this point, Bob should show that the pending HTLC has advanced to
-	// the second stage and is to be swept.
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	pendingChanResp, err = bob.PendingChannels(ctxt, pendingChansRequest)
-	if err != nil {
-		t.Fatalf("unable to query for pending channels: %v", err)
-	}
-	forceCloseChan = pendingChanResp.PendingForceClosingChannels[0]
-	if forceCloseChan.PendingHtlcs[0].Stage != 2 {
-		t.Fatalf("bob's htlc should have advanced to the second stage: %v", err)
+	// the second stage and is ready to be swept once the timelock is up.
+	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
+	pendingChansRequest := &lnrpc.PendingChannelsRequest{}
+	pendingChanResp, err := bob.PendingChannels(ctxt, pendingChansRequest)
+	require.NoError(t.t, err)
+	require.Equal(t.t, 1, len(pendingChanResp.PendingForceClosingChannels))
+	forceCloseChan := pendingChanResp.PendingForceClosingChannels[0]
+	require.NotZero(t.t, forceCloseChan.LimboBalance)
+	require.Positive(t.t, forceCloseChan.BlocksTilMaturity)
+	require.Equal(t.t, 1, len(forceCloseChan.PendingHtlcs))
+	require.Equal(t.t, uint32(2), forceCloseChan.PendingHtlcs[0].Stage)
+
+	htlcTimeoutOutpoint := wire.OutPoint{Hash: htlcTimeoutTxid, Index: 0}
+	if c == lnrpc.CommitmentType_SCRIPT_ENFORCED_LEASE {
+		// Since Bob is the initiator of the script-enforced leased
+		// channel between him and Carol, he will incur an additional
+		// CLTV on top of the usual CSV delay on any outputs that he can
+		// sweep back to his wallet.
+		blocksTilMaturity := uint32(forceCloseChan.BlocksTilMaturity)
+		mineBlocks(t, net, blocksTilMaturity, 0)
+
+		// Check that the sweep spends the expected inputs.
+		_ = assertSpendingTxInMempool(
+			t, net.Miner.Client, minerMempoolTimeout,
+			commitOutpoint, htlcTimeoutOutpoint,
+		)
+	} else {
+		// Since Bob force closed the channel between him and Carol, he
+		// will incur the usual CSV delay on any outputs that he can
+		// sweep back to his wallet. We'll subtract one block from our
+		// current maturity period to assert on the mempool.
+		mineBlocks(t, net, uint32(forceCloseChan.BlocksTilMaturity-1), 0)
+
+		// Check that the sweep spends from the mined commitment.
+		_ = assertSpendingTxInMempool(
+			t, net.Miner.Client, minerMempoolTimeout, commitOutpoint,
+		)
+
+		// Mine a block to confirm Bob's commit sweep tx and assert it
+		// was in fact mined.
+		_ = mineBlocks(t, net, 1, 1)[0]
+
+		// Mine an additional block to prompt Bob to broadcast their
+		// second layer sweep due to the CSV on the HTLC timeout output.
+		mineBlocks(t, net, 1, 0)
+		_ = assertSpendingTxInMempool(
+			t, net.Miner.Client, minerMempoolTimeout,
+			htlcTimeoutOutpoint,
+		)
 	}
 
-	// Next, we'll mine a final block that should confirm the second-layer
-	// sweeping transaction.
-	if _, err := net.Miner.Node.Generate(1); err != nil {
-		t.Fatalf("unable to generate blocks: %v", err)
-	}
+	// Next, we'll mine a final block that should confirm the sweeping
+	// transactions left.
+	_, err = net.Miner.Client.Generate(1)
+	require.NoError(t.t, err)
 
 	// Once this transaction has been confirmed, Bob should detect that he
 	// no longer has any pending channels.
-	err = wait.Predicate(func() bool {
-		ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-		pendingChanResp, err = bob.PendingChannels(ctxt, pendingChansRequest)
-		if err != nil {
-			predErr = fmt.Errorf("unable to query for pending "+
-				"channels: %v", err)
-			return false
-		}
-		if len(pendingChanResp.PendingForceClosingChannels) != 0 {
-			predErr = fmt.Errorf("bob still has pending "+
-				"channels but shouldn't: %v",
-				spew.Sdump(pendingChanResp))
-			return false
-		}
-
-		return true
-
-	}, time.Second*15)
-	if err != nil {
-		t.Fatalf(predErr.Error())
-	}
+	err = waitForNumChannelPendingForceClose(bob, 0, nil)
+	require.NoError(t.t, err)
 
 	// Coop close channel, expect no anchors.
-	ctxt, _ = context.WithTimeout(ctxb, channelCloseTimeout)
-	closeChannelAndAssertType(
-		ctxt, t, net, alice, aliceChanPoint, false,
-		false,
-	)
+	closeChannelAndAssertType(t, net, alice, aliceChanPoint, false, false)
 }

@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"fmt"
 
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/btcec/v2/ecdsa"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/wallet"
 	"github.com/ltcsuite/ltcwallet/walletdb"
@@ -92,7 +94,7 @@ func (b *BtcWalletKeyRing) keyScope() (*waddrmgr.ScopedKeyManager, error) {
 
 	// Otherwise, we'll first do a check to ensure that the root manager
 	// isn't locked, as otherwise we won't be able to *use* the scope.
-	if b.wallet.Manager.IsLocked() {
+	if !b.wallet.Manager.WatchOnly() && b.wallet.Manager.IsLocked() {
 		return nil, fmt.Errorf("cannot create BtcWalletKeyRing with " +
 			"locked waddrmgr.Manager")
 	}
@@ -215,16 +217,22 @@ func (b *BtcWalletKeyRing) DeriveKey(keyLoc KeyLocator) (KeyDescriptor, error) {
 
 		// If the account doesn't exist, then we may need to create it
 		// for the first time in order to derive the keys that we
-		// require.
-		err = b.createAccountIfNotExists(addrmgrNs, keyLoc.Family, scope)
-		if err != nil {
-			return err
+		// require. We skip this if we're using a remote signer in which
+		// case we _need_ to create all accounts when creating the
+		// wallet, so it must exist now.
+		if !b.wallet.Manager.WatchOnly() {
+			err = b.createAccountIfNotExists(
+				addrmgrNs, keyLoc.Family, scope,
+			)
+			if err != nil {
+				return err
+			}
 		}
 
 		path := waddrmgr.DerivationPath{
-			Account: uint32(keyLoc.Family),
-			Branch:  0,
-			Index:   uint32(keyLoc.Index),
+			InternalAccount: uint32(keyLoc.Family),
+			Branch:          0,
+			Index:           keyLoc.Index,
 		}
 		addr, err := scope.DeriveFromKeyPath(addrmgrNs, path)
 		if err != nil {
@@ -252,23 +260,43 @@ func (b *BtcWalletKeyRing) DerivePrivKey(keyDesc KeyDescriptor) (
 
 	var key *btcec.PrivateKey
 
-	db := b.wallet.Database()
-	err := walletdb.Update(db, func(tx walletdb.ReadWriteTx) error {
-		addrmgrNs := tx.ReadWriteBucket(waddrmgrNamespaceKey)
+	scope, err := b.keyScope()
+	if err != nil {
+		return nil, err
+	}
 
-		scope, err := b.keyScope()
-		if err != nil {
-			return err
+	// First, attempt to see if we can read the key directly from
+	// btcwallet's internal cache, if we can then we can skip all the
+	// operations below (fast path).
+	if keyDesc.PubKey == nil {
+		keyPath := waddrmgr.DerivationPath{
+			InternalAccount: uint32(keyDesc.Family),
+			Account:         uint32(keyDesc.Family),
+			Branch:          0,
+			Index:           keyDesc.Index,
 		}
+		privKey, err := scope.DeriveFromKeyPathCache(keyPath)
+		if err == nil {
+			return privKey, nil
+		}
+	}
+
+	db := b.wallet.Database()
+	err = walletdb.Update(db, func(tx walletdb.ReadWriteTx) error {
+		addrmgrNs := tx.ReadWriteBucket(waddrmgrNamespaceKey)
 
 		// If the account doesn't exist, then we may need to create it
 		// for the first time in order to derive the keys that we
-		// require.
-		err = b.createAccountIfNotExists(
-			addrmgrNs, keyDesc.Family, scope,
-		)
-		if err != nil {
-			return err
+		// require. We skip this if we're using a remote signer in which
+		// case we _need_ to create all accounts when creating the
+		// wallet, so it must exist now.
+		if !b.wallet.Manager.WatchOnly() {
+			err = b.createAccountIfNotExists(
+				addrmgrNs, keyDesc.Family, scope,
+			)
+			if err != nil {
+				return err
+			}
 		}
 
 		// If the public key isn't set or they have a non-zero index,
@@ -278,9 +306,9 @@ func (b *BtcWalletKeyRing) DerivePrivKey(keyDesc KeyDescriptor) (
 			// Now that we know the account exists, we can safely
 			// derive the full private key from the given path.
 			path := waddrmgr.DerivationPath{
-				Account: uint32(keyDesc.Family),
-				Branch:  0,
-				Index:   uint32(keyDesc.Index),
+				InternalAccount: uint32(keyDesc.Family),
+				Branch:          0,
+				Index:           keyDesc.Index,
 			}
 			addr, err := scope.DeriveFromKeyPath(addrmgrNs, path)
 			if err != nil {
@@ -299,9 +327,9 @@ func (b *BtcWalletKeyRing) DerivePrivKey(keyDesc KeyDescriptor) (
 		// need to scan for the private key, assuming that we know the
 		// valid key family.
 		nextPath := waddrmgr.DerivationPath{
-			Account: uint32(keyDesc.Family),
-			Branch:  0,
-			Index:   0,
+			InternalAccount: uint32(keyDesc.Family),
+			Branch:          0,
+			Index:           0,
 		}
 
 		// We'll now iterate through our key range in an attempt to
@@ -364,41 +392,63 @@ func (b *BtcWalletKeyRing) ECDH(keyDesc KeyDescriptor,
 		return [32]byte{}, err
 	}
 
-	s := &btcec.PublicKey{}
-	x, y := btcec.S256().ScalarMult(pub.X, pub.Y, privKey.D.Bytes())
-	s.X = x
-	s.Y = y
+	var (
+		pubJacobian btcec.JacobianPoint
+		s           btcec.JacobianPoint
+	)
+	pub.AsJacobian(&pubJacobian)
 
-	h := sha256.Sum256(s.SerializeCompressed())
+	btcec.ScalarMultNonConst(&privKey.Key, &pubJacobian, &s)
+	s.ToAffine()
+	sPubKey := btcec.NewPublicKey(&s.X, &s.Y)
+	h := sha256.Sum256(sPubKey.SerializeCompressed())
 
 	return h, nil
 }
 
-// SignDigest signs the given SHA256 message digest with the private key
-// described in the key descriptor.
+// SignMessage signs the given message, single or double SHA256 hashing it
+// first, with the private key described in the key locator.
 //
-// NOTE: This is part of the keychain.DigestSignerRing interface.
-func (b *BtcWalletKeyRing) SignDigest(keyDesc KeyDescriptor,
-	digest [32]byte) (*btcec.Signature, error) {
+// NOTE: This is part of the keychain.MessageSignerRing interface.
+func (b *BtcWalletKeyRing) SignMessage(keyLoc KeyLocator,
+	msg []byte, doubleHash bool) (*ecdsa.Signature, error) {
 
-	privKey, err := b.DerivePrivKey(keyDesc)
+	privKey, err := b.DerivePrivKey(KeyDescriptor{
+		KeyLocator: keyLoc,
+	})
 	if err != nil {
 		return nil, err
 	}
-	return privKey.Sign(digest[:])
+
+	var digest []byte
+	if doubleHash {
+		digest = chainhash.DoubleHashB(msg)
+	} else {
+		digest = chainhash.HashB(msg)
+	}
+	return ecdsa.Sign(privKey, digest), nil
 }
 
-// SignDigestCompact signs the given SHA256 message digest with the private key
-// described in the key descriptor and returns the signature in the compact,
-// public key recoverable format.
+// SignMessageCompact signs the given message, single or double SHA256 hashing
+// it first, with the private key described in the key locator and returns
+// the signature in the compact, public key recoverable format.
 //
-// NOTE: This is part of the keychain.DigestSignerRing interface.
-func (b *BtcWalletKeyRing) SignDigestCompact(keyDesc KeyDescriptor,
-	digest [32]byte) ([]byte, error) {
+// NOTE: This is part of the keychain.MessageSignerRing interface.
+func (b *BtcWalletKeyRing) SignMessageCompact(keyLoc KeyLocator,
+	msg []byte, doubleHash bool) ([]byte, error) {
 
-	privKey, err := b.DerivePrivKey(keyDesc)
+	privKey, err := b.DerivePrivKey(KeyDescriptor{
+		KeyLocator: keyLoc,
+	})
 	if err != nil {
 		return nil, err
 	}
-	return btcec.SignCompact(btcec.S256(), privKey, digest[:], true)
+
+	var digest []byte
+	if doubleHash {
+		digest = chainhash.DoubleHashB(msg)
+	} else {
+		digest = chainhash.HashB(msg)
+	}
+	return ecdsa.SignCompact(privKey, digest, true)
 }

@@ -1,19 +1,22 @@
 package lnd
 
 import (
-	"context"
-
 	"github.com/btcsuite/btclog"
 	sphinx "github.com/ltcsuite/lightning-onion"
 	"github.com/ltcsuite/lnd/autopilot"
 	"github.com/ltcsuite/lnd/build"
 	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/chainreg"
+	"github.com/ltcsuite/lnd/chanacceptor"
 	"github.com/ltcsuite/lnd/chanbackup"
 	"github.com/ltcsuite/lnd/chanfitness"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/channelnotifier"
+	"github.com/ltcsuite/lnd/cluster"
 	"github.com/ltcsuite/lnd/contractcourt"
 	"github.com/ltcsuite/lnd/discovery"
+	"github.com/ltcsuite/lnd/funding"
+	"github.com/ltcsuite/lnd/healthcheck"
 	"github.com/ltcsuite/lnd/htlcswitch"
 	"github.com/ltcsuite/lnd/invoices"
 	"github.com/ltcsuite/lnd/lnrpc/autopilotrpc"
@@ -24,21 +27,24 @@ import (
 	"github.com/ltcsuite/lnd/lnrpc/verrpc"
 	"github.com/ltcsuite/lnd/lnrpc/walletrpc"
 	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwallet/btcwallet"
 	"github.com/ltcsuite/lnd/lnwallet/chancloser"
 	"github.com/ltcsuite/lnd/lnwallet/chanfunding"
+	"github.com/ltcsuite/lnd/lnwallet/rpcwallet"
 	"github.com/ltcsuite/lnd/monitoring"
 	"github.com/ltcsuite/lnd/netann"
 	"github.com/ltcsuite/lnd/peer"
 	"github.com/ltcsuite/lnd/peernotifier"
 	"github.com/ltcsuite/lnd/routing"
 	"github.com/ltcsuite/lnd/routing/localchans"
+	"github.com/ltcsuite/lnd/rpcperms"
 	"github.com/ltcsuite/lnd/signal"
 	"github.com/ltcsuite/lnd/sweep"
+	"github.com/ltcsuite/lnd/tor"
 	"github.com/ltcsuite/lnd/watchtower"
 	"github.com/ltcsuite/lnd/watchtower/wtclient"
 	"github.com/ltcsuite/ltcd/connmgr"
 	"github.com/ltcsuite/neutrino"
-	"google.golang.org/grpc"
 )
 
 // replaceableLogger is a thin wrapper around a logger that is used so the
@@ -78,18 +84,39 @@ var (
 	ltndLog = addLndPkgLogger("LTND")
 	rpcsLog = addLndPkgLogger("RPCS")
 	srvrLog = addLndPkgLogger("SRVR")
-	fndgLog = addLndPkgLogger("FNDG")
-	utxnLog = addLndPkgLogger("UTXN")
-	brarLog = addLndPkgLogger("BRAR")
 	atplLog = addLndPkgLogger("ATPL")
 )
 
+// genSubLogger creates a logger for a subsystem. We provide an instance of
+// a signal.Interceptor to be able to shutdown in the case of a critical error.
+func genSubLogger(root *build.RotatingLogWriter,
+	interceptor signal.Interceptor) func(string) btclog.Logger {
+
+	// Create a shutdown function which will request shutdown from our
+	// interceptor if it is listening.
+	shutdown := func() {
+		if !interceptor.Listening() {
+			return
+		}
+
+		interceptor.RequestShutdown()
+	}
+
+	// Return a function which will create a sublogger from our root
+	// logger without shutdown fn.
+	return func(tag string) btclog.Logger {
+		return root.GenSubLogger(tag, shutdown)
+	}
+}
+
 // SetupLoggers initializes all package-global logger variables.
-func SetupLoggers(root *build.RotatingLogWriter) {
+func SetupLoggers(root *build.RotatingLogWriter, interceptor signal.Interceptor) {
+	genLogger := genSubLogger(root, interceptor)
+
 	// Now that we have the proper root logger, we can replace the
 	// placeholder lnd package loggers.
 	for _, l := range lndPkgLoggers {
-		l.Logger = build.NewSubLogger(l.subsystem, root.GenSubLogger)
+		l.Logger = build.NewSubLogger(l.subsystem, genLogger)
 		SetSubLogger(root, l.subsystem, l.Logger)
 	}
 
@@ -98,47 +125,62 @@ func SetupLoggers(root *build.RotatingLogWriter) {
 	signal.UseLogger(ltndLog)
 	autopilot.UseLogger(atplLog)
 
-	AddSubLogger(root, "LNWL", lnwallet.UseLogger)
-	AddSubLogger(root, "DISC", discovery.UseLogger)
-	AddSubLogger(root, "NTFN", chainntnfs.UseLogger)
-	AddSubLogger(root, "CHDB", channeldb.UseLogger)
-	AddSubLogger(root, "HSWC", htlcswitch.UseLogger)
-	AddSubLogger(root, "CMGR", connmgr.UseLogger)
-	AddSubLogger(root, "BTCN", neutrino.UseLogger)
-	AddSubLogger(root, "CNCT", contractcourt.UseLogger)
-	AddSubLogger(root, "SPHX", sphinx.UseLogger)
-	AddSubLogger(root, "SWPR", sweep.UseLogger)
-	AddSubLogger(root, "SGNR", signrpc.UseLogger)
-	AddSubLogger(root, "WLKT", walletrpc.UseLogger)
-	AddSubLogger(root, "ARPC", autopilotrpc.UseLogger)
-	AddSubLogger(root, "INVC", invoices.UseLogger)
-	AddSubLogger(root, "NANN", netann.UseLogger)
-	AddSubLogger(root, "WTWR", watchtower.UseLogger)
-	AddSubLogger(root, "NTFR", chainrpc.UseLogger)
-	AddSubLogger(root, "IRPC", invoicesrpc.UseLogger)
-	AddSubLogger(root, "CHNF", channelnotifier.UseLogger)
-	AddSubLogger(root, "CHBU", chanbackup.UseLogger)
-	AddSubLogger(root, "PROM", monitoring.UseLogger)
-	AddSubLogger(root, "WTCL", wtclient.UseLogger)
-	AddSubLogger(root, "PRNF", peernotifier.UseLogger)
-	AddSubLogger(root, "CHFD", chanfunding.UseLogger)
-	AddSubLogger(root, "PEER", peer.UseLogger)
-	AddSubLogger(root, "CHCL", chancloser.UseLogger)
+	AddSubLogger(root, "LNWL", interceptor, lnwallet.UseLogger)
+	AddSubLogger(root, "DISC", interceptor, discovery.UseLogger)
+	AddSubLogger(root, "NTFN", interceptor, chainntnfs.UseLogger)
+	AddSubLogger(root, "CHDB", interceptor, channeldb.UseLogger)
+	AddSubLogger(root, "HSWC", interceptor, htlcswitch.UseLogger)
+	AddSubLogger(root, "CMGR", interceptor, connmgr.UseLogger)
+	AddSubLogger(root, "BTCN", interceptor, neutrino.UseLogger)
+	AddSubLogger(root, "CNCT", interceptor, contractcourt.UseLogger)
+	AddSubLogger(root, "UTXN", interceptor, contractcourt.UseNurseryLogger)
+	AddSubLogger(root, "BRAR", interceptor, contractcourt.UseBreachLogger)
+	AddSubLogger(root, "SPHX", interceptor, sphinx.UseLogger)
+	AddSubLogger(root, "SWPR", interceptor, sweep.UseLogger)
+	AddSubLogger(root, "SGNR", interceptor, signrpc.UseLogger)
+	AddSubLogger(root, "WLKT", interceptor, walletrpc.UseLogger)
+	AddSubLogger(root, "ARPC", interceptor, autopilotrpc.UseLogger)
+	AddSubLogger(root, "INVC", interceptor, invoices.UseLogger)
+	AddSubLogger(root, "NANN", interceptor, netann.UseLogger)
+	AddSubLogger(root, "WTWR", interceptor, watchtower.UseLogger)
+	AddSubLogger(root, "NTFR", interceptor, chainrpc.UseLogger)
+	AddSubLogger(root, "IRPC", interceptor, invoicesrpc.UseLogger)
+	AddSubLogger(root, "CHNF", interceptor, channelnotifier.UseLogger)
+	AddSubLogger(root, "CHBU", interceptor, chanbackup.UseLogger)
+	AddSubLogger(root, "PROM", interceptor, monitoring.UseLogger)
+	AddSubLogger(root, "WTCL", interceptor, wtclient.UseLogger)
+	AddSubLogger(root, "PRNF", interceptor, peernotifier.UseLogger)
+	AddSubLogger(root, "CHFD", interceptor, chanfunding.UseLogger)
+	AddSubLogger(root, "PEER", interceptor, peer.UseLogger)
+	AddSubLogger(root, "CHCL", interceptor, chancloser.UseLogger)
 
-	AddSubLogger(root, routing.Subsystem, routing.UseLogger, localchans.UseLogger)
-	AddSubLogger(root, routerrpc.Subsystem, routerrpc.UseLogger)
-	AddSubLogger(root, chanfitness.Subsystem, chanfitness.UseLogger)
-	AddSubLogger(root, verrpc.Subsystem, verrpc.UseLogger)
+	AddSubLogger(root, routing.Subsystem, interceptor, routing.UseLogger, localchans.UseLogger)
+	AddSubLogger(root, routerrpc.Subsystem, interceptor, routerrpc.UseLogger)
+	AddSubLogger(root, chanfitness.Subsystem, interceptor, chanfitness.UseLogger)
+	AddSubLogger(root, verrpc.Subsystem, interceptor, verrpc.UseLogger)
+	AddSubLogger(root, healthcheck.Subsystem, interceptor, healthcheck.UseLogger)
+	AddSubLogger(root, chainreg.Subsystem, interceptor, chainreg.UseLogger)
+	AddSubLogger(root, chanacceptor.Subsystem, interceptor, chanacceptor.UseLogger)
+	AddSubLogger(root, funding.Subsystem, interceptor, funding.UseLogger)
+	AddSubLogger(root, cluster.Subsystem, interceptor, cluster.UseLogger)
+	AddSubLogger(root, rpcperms.Subsystem, interceptor, rpcperms.UseLogger)
+	AddSubLogger(root, tor.Subsystem, interceptor, tor.UseLogger)
+	AddSubLogger(root, btcwallet.Subsystem, interceptor, btcwallet.UseLogger)
+	AddSubLogger(root, rpcwallet.Subsystem, interceptor, rpcwallet.UseLogger)
 }
 
 // AddSubLogger is a helper method to conveniently create and register the
 // logger of one or more sub systems.
 func AddSubLogger(root *build.RotatingLogWriter, subsystem string,
-	useLoggers ...func(btclog.Logger)) {
+	interceptor signal.Interceptor, useLoggers ...func(btclog.Logger)) {
+
+	// genSubLogger will return a callback for creating a logger instance,
+	// which we will give to the root logger.
+	genLogger := genSubLogger(root, interceptor)
 
 	// Create and register just a single logger to prevent them from
 	// overwriting each other internally.
-	logger := build.NewSubLogger(subsystem, root.GenSubLogger)
+	logger := build.NewSubLogger(subsystem, genLogger)
 	SetSubLogger(root, subsystem, logger, useLoggers...)
 }
 
@@ -167,37 +209,4 @@ func (c logClosure) String() string {
 // logging system.
 func newLogClosure(c func() string) logClosure {
 	return logClosure(c)
-}
-
-// errorLogUnaryServerInterceptor is a simple UnaryServerInterceptor that will
-// automatically log any errors that occur when serving a client's unary
-// request.
-func errorLogUnaryServerInterceptor(logger btclog.Logger) grpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo,
-		handler grpc.UnaryHandler) (interface{}, error) {
-
-		resp, err := handler(ctx, req)
-		if err != nil {
-			// TODO(roasbeef): also log request details?
-			logger.Errorf("[%v]: %v", info.FullMethod, err)
-		}
-
-		return resp, err
-	}
-}
-
-// errorLogStreamServerInterceptor is a simple StreamServerInterceptor that
-// will log any errors that occur while processing a client or server streaming
-// RPC.
-func errorLogStreamServerInterceptor(logger btclog.Logger) grpc.StreamServerInterceptor {
-	return func(srv interface{}, ss grpc.ServerStream,
-		info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-
-		err := handler(srv, ss)
-		if err != nil {
-			logger.Errorf("[%v]: %v", info.FullMethod, err)
-		}
-
-		return err
-	}
 }

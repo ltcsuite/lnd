@@ -6,12 +6,15 @@ import (
 	"net"
 
 	"github.com/ltcsuite/lnd/autopilot"
+	"github.com/ltcsuite/lnd/chainreg"
+	"github.com/ltcsuite/lnd/funding"
 	"github.com/ltcsuite/lnd/lncfg"
+	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/tor"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 )
 
 // validateAtplConfig is a helper method that makes sure the passed
@@ -76,6 +79,7 @@ type chanController struct {
 	minConfs      int32
 	confTarget    uint32
 	chanMinHtlcIn lnwire.MilliSatoshi
+	netParams     chainreg.LitecoinNetParams
 }
 
 // OpenChannel opens a channel to a target peer, with a capacity of the
@@ -86,7 +90,7 @@ func (c *chanController) OpenChannel(target *btcec.PublicKey,
 
 	// With the connection established, we'll now establish our connection
 	// to the target peer, waiting for the first update before we exit.
-	feePerKw, err := c.server.cc.feeEstimator.EstimateFeePerKW(
+	feePerKw, err := c.server.cc.FeeEstimator.EstimateFeePerKW(
 		c.confTarget,
 	)
 	if err != nil {
@@ -95,18 +99,18 @@ func (c *chanController) OpenChannel(target *btcec.PublicKey,
 
 	// Construct the open channel request and send it to the server to begin
 	// the funding workflow.
-	req := &openChanReq{
-		targetPubkey:     target,
-		chainHash:        *activeNetParams.GenesisHash,
-		subtractFees:     true,
-		localFundingAmt:  amt,
-		pushAmt:          0,
-		minHtlcIn:        c.chanMinHtlcIn,
-		fundingFeePerKw:  feePerKw,
-		private:          c.private,
-		remoteCsvDelay:   0,
-		minConfs:         c.minConfs,
-		maxValueInFlight: 0,
+	req := &funding.InitFundingMsg{
+		TargetPubkey:     target,
+		ChainHash:        *c.netParams.GenesisHash,
+		SubtractFees:     true,
+		LocalFundingAmt:  amt,
+		PushAmt:          0,
+		MinHtlcIn:        c.chanMinHtlcIn,
+		FundingFeePerKw:  feePerKw,
+		Private:          c.private,
+		RemoteCsvDelay:   0,
+		MinConfs:         c.minConfs,
+		MaxValueInFlight: 0,
 	}
 
 	updateStream, errChan := c.server.OpenChannel(req)
@@ -123,14 +127,6 @@ func (c *chanController) OpenChannel(target *btcec.PublicKey,
 func (c *chanController) CloseChannel(chanPoint *wire.OutPoint) error {
 	return nil
 }
-func (c *chanController) SpliceIn(chanPoint *wire.OutPoint,
-	amt ltcutil.Amount) (*autopilot.Channel, error) {
-	return nil, nil
-}
-func (c *chanController) SpliceOut(chanPoint *wire.OutPoint,
-	amt ltcutil.Amount) (*autopilot.Channel, error) {
-	return nil, nil
-}
 
 // A compile time assertion to ensure chanController meets the
 // autopilot.ChannelController interface.
@@ -141,7 +137,8 @@ var _ autopilot.ChannelController = (*chanController)(nil)
 // interfaces needed to drive it won't be launched before the Manager's
 // StartAgent method is called.
 func initAutoPilot(svr *server, cfg *lncfg.AutoPilot,
-	chainCfg *lncfg.Chain) (*autopilot.ManagerCfg, error) {
+	minHTLCIn lnwire.MilliSatoshi, netParams chainreg.LitecoinNetParams) (
+	*autopilot.ManagerCfg, error) {
 
 	atplLog.Infof("Instantiating autopilot with active=%v, "+
 		"max_channels=%d, allocation=%f, min_chan_size=%d, "+
@@ -180,12 +177,15 @@ func initAutoPilot(svr *server, cfg *lncfg.AutoPilot,
 			private:       cfg.Private,
 			minConfs:      cfg.MinConfs,
 			confTarget:    cfg.ConfTarget,
-			chanMinHtlcIn: chainCfg.MinHTLCIn,
+			chanMinHtlcIn: minHTLCIn,
+			netParams:     netParams,
 		},
 		WalletBalance: func() (ltcutil.Amount, error) {
-			return svr.cc.wallet.ConfirmedBalance(cfg.MinConfs)
+			return svr.cc.Wallet.ConfirmedBalance(
+				cfg.MinConfs, lnwallet.DefaultAccountName,
+			)
 		},
-		Graph:       autopilot.ChannelGraphFromDatabase(svr.localChanDB.ChannelGraph()),
+		Graph:       autopilot.ChannelGraphFromDatabase(svr.graphDB),
 		Constraints: atplConstraints,
 		ConnectToPeer: func(target *btcec.PublicKey, addrs []net.Addr) (bool, error) {
 			// First, we'll check if we're already connected to the
@@ -206,7 +206,7 @@ func initAutoPilot(svr *server, cfg *lncfg.AutoPilot,
 
 			lnAddr := &lnwire.NetAddress{
 				IdentityKey: target,
-				ChainNet:    activeNetParams.Net,
+				ChainNet:    netParams.Net,
 			}
 
 			// We'll attempt to successively connect to each of the
@@ -223,7 +223,9 @@ func initAutoPilot(svr *server, cfg *lncfg.AutoPilot,
 						"address type %T", addr)
 				}
 
-				err := svr.ConnectToPeer(lnAddr, false)
+				err := svr.ConnectToPeer(
+					lnAddr, false, svr.cfg.ConnectionTimeout,
+				)
 				if err != nil {
 					// If we weren't able to connect to the
 					// peer at this address, then we'll move
@@ -252,28 +254,47 @@ func initAutoPilot(svr *server, cfg *lncfg.AutoPilot,
 	return &autopilot.ManagerCfg{
 		Self:     self,
 		PilotCfg: &pilotCfg,
-		ChannelState: func() ([]autopilot.Channel, error) {
+		ChannelState: func() ([]autopilot.LocalChannel, error) {
 			// We'll fetch the current state of open
 			// channels from the database to use as initial
 			// state for the auto-pilot agent.
-			activeChannels, err := svr.remoteChanDB.FetchAllChannels()
+			activeChannels, err := svr.chanStateDB.FetchAllChannels()
 			if err != nil {
 				return nil, err
 			}
-			chanState := make([]autopilot.Channel,
+			chanState := make([]autopilot.LocalChannel,
 				len(activeChannels))
 			for i, channel := range activeChannels {
-				chanState[i] = autopilot.Channel{
-					ChanID:   channel.ShortChanID(),
-					Capacity: channel.Capacity,
+				localCommit := channel.LocalCommitment
+				balance := localCommit.LocalBalance.ToSatoshis()
+
+				chanState[i] = autopilot.LocalChannel{
+					ChanID:  channel.ShortChanID(),
+					Balance: balance,
 					Node: autopilot.NewNodeID(
-						channel.IdentityPub),
+						channel.IdentityPub,
+					),
 				}
 			}
 
 			return chanState, nil
 		},
-		SubscribeTransactions: svr.cc.wallet.SubscribeTransactions,
+		ChannelInfo: func(chanPoint wire.OutPoint) (
+			*autopilot.LocalChannel, error) {
+
+			channel, err := svr.chanStateDB.FetchChannel(nil, chanPoint)
+			if err != nil {
+				return nil, err
+			}
+
+			localCommit := channel.LocalCommitment
+			return &autopilot.LocalChannel{
+				ChanID:  channel.ShortChanID(),
+				Balance: localCommit.LocalBalance.ToSatoshis(),
+				Node:    autopilot.NewNodeID(channel.IdentityPub),
+			}, nil
+		},
+		SubscribeTransactions: svr.cc.Wallet.SubscribeTransactions,
 		SubscribeTopology:     svr.chanRouter.SubscribeTopology,
 	}, nil
 }

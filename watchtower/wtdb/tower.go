@@ -6,8 +6,8 @@ import (
 	"io"
 	"net"
 
-	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
 // TowerID is a unique 64-bit identifier allocated to each unique watchtower.

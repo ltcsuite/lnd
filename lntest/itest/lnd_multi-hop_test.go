@@ -1,5 +1,3 @@
-// +build rpctest
-
 package itest
 
 import (
@@ -12,8 +10,9 @@ import (
 	"github.com/ltcsuite/lnd/lntest"
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
+	"github.com/stretchr/testify/require"
 )
 
 func testMultiHopHtlcClaims(net *lntest.NetworkHarness, t *harnessTest) {
@@ -21,7 +20,7 @@ func testMultiHopHtlcClaims(net *lntest.NetworkHarness, t *harnessTest) {
 	type testCase struct {
 		name string
 		test func(net *lntest.NetworkHarness, t *harnessTest, alice,
-			bob *lntest.HarnessNode, c commitType)
+			bob *lntest.HarnessNode, c lnrpc.CommitmentType)
 	}
 
 	subTests := []testCase{
@@ -63,43 +62,51 @@ func testMultiHopHtlcClaims(net *lntest.NetworkHarness, t *harnessTest) {
 			name: "remote chain claim",
 			test: testMultiHopHtlcRemoteChainClaim,
 		},
+		{
+			// bob: outgoing and incoming, sweep all on chain
+			name: "local htlc aggregation",
+			test: testMultiHopHtlcAggregation,
+		},
 	}
 
-	commitTypes := []commitType{
-		commitTypeLegacy,
-		commitTypeAnchors,
+	commitTypes := []lnrpc.CommitmentType{
+		lnrpc.CommitmentType_LEGACY,
+		lnrpc.CommitmentType_ANCHORS,
+		lnrpc.CommitmentType_SCRIPT_ENFORCED_LEASE,
 	}
 
 	for _, commitType := range commitTypes {
+		commitType := commitType
 		testName := fmt.Sprintf("committype=%v", commitType.String())
 
 		success := t.t.Run(testName, func(t *testing.T) {
 			ht := newHarnessTest(t, net)
 
-			args := commitType.Args()
-			alice, err := net.NewNode("Alice", args)
-			if err != nil {
-				t.Fatalf("unable to create new node: %v", err)
-			}
+			args := nodeArgsForCommitType(commitType)
+			alice := net.NewNode(t, "Alice", args)
 			defer shutdownAndAssert(net, ht, alice)
 
-			bob, err := net.NewNode("Bob", args)
-			if err != nil {
-				t.Fatalf("unable to create new node: %v", err)
-			}
+			bob := net.NewNode(t, "Bob", args)
 			defer shutdownAndAssert(net, ht, bob)
 
-			ctxb := context.Background()
-			ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-			if err := net.ConnectNodes(ctxt, alice, bob); err != nil {
-				t.Fatalf("unable to connect alice to bob: %v", err)
-			}
+			net.ConnectNodes(t, alice, bob)
 
 			for _, subTest := range subTests {
 				subTest := subTest
 
+				logLine := fmt.Sprintf(
+					"---- multi-hop htlc subtest "+
+						"%s/%s ----\n",
+					testName, subTest.name,
+				)
+				net.Alice.AddToLog(logLine)
+
 				success := ht.t.Run(subTest.name, func(t *testing.T) {
 					ht := newHarnessTest(t, net)
+
+					// Start each test with the default
+					// static fee estimate.
+					net.SetFeeEstimate(12500)
 
 					subTest.test(net, ht, alice, bob, commitType)
 				})
@@ -143,8 +150,12 @@ func waitForInvoiceAccepted(t *harnessTest, node *lntest.HarnessNode,
 
 // checkPaymentStatus asserts that the given node list a payment with the given
 // preimage has the expected status.
-func checkPaymentStatus(ctxt context.Context, node *lntest.HarnessNode,
-	preimage lntypes.Preimage, status lnrpc.Payment_PaymentStatus) error {
+func checkPaymentStatus(node *lntest.HarnessNode, preimage lntypes.Preimage,
+	status lnrpc.Payment_PaymentStatus) error {
+
+	ctxb := context.Background()
+	ctxt, cancel := context.WithTimeout(ctxb, defaultTimeout)
+	defer cancel()
 
 	req := &lnrpc.ListPaymentsRequest{
 		IncludeIncomplete: true,
@@ -196,51 +207,45 @@ func checkPaymentStatus(ctxt context.Context, node *lntest.HarnessNode,
 }
 
 func createThreeHopNetwork(t *harnessTest, net *lntest.NetworkHarness,
-	alice, bob *lntest.HarnessNode, carolHodl bool, c commitType) (
+	alice, bob *lntest.HarnessNode, carolHodl bool, c lnrpc.CommitmentType) (
 	*lnrpc.ChannelPoint, *lnrpc.ChannelPoint, *lntest.HarnessNode) {
 
-	ctxb := context.Background()
-
-	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
-	err := net.EnsureConnected(ctxt, alice, bob)
-	if err != nil {
-		t.Fatalf("unable to connect peers: %v", err)
-	}
+	net.EnsureConnected(t.t, alice, bob)
 
 	// Make sure there are enough utxos for anchoring.
 	for i := 0; i < 2; i++ {
-		ctxt, _ = context.WithTimeout(context.Background(), defaultTimeout)
-		err = net.SendCoins(ctxt, ltcutil.SatoshiPerBitcoin, alice)
-		if err != nil {
-			t.Fatalf("unable to send coins to Alice: %v", err)
-		}
-
-		ctxt, _ = context.WithTimeout(context.Background(), defaultTimeout)
-		err = net.SendCoins(ctxt, ltcutil.SatoshiPerBitcoin, bob)
-		if err != nil {
-			t.Fatalf("unable to send coins to Bob: %v", err)
-		}
+		net.SendCoins(t.t, ltcutil.SatoshiPerBitcoin, alice)
+		net.SendCoins(t.t, ltcutil.SatoshiPerBitcoin, bob)
 	}
 
 	// We'll start the test by creating a channel between Alice and Bob,
 	// which will act as the first leg for out multi-hop HTLC.
 	const chanAmt = 1000000
-	ctxt, _ = context.WithTimeout(ctxb, channelOpenTimeout)
+	var aliceFundingShim *lnrpc.FundingShim
+	var thawHeight uint32
+	if c == lnrpc.CommitmentType_SCRIPT_ENFORCED_LEASE {
+		_, minerHeight, err := net.Miner.Client.GetBestBlock()
+		require.NoError(t.t, err)
+		thawHeight = uint32(minerHeight + 144)
+		aliceFundingShim, _, _ = deriveFundingShim(
+			net, t, alice, bob, chanAmt, thawHeight, true,
+		)
+	}
 	aliceChanPoint := openChannelAndAssert(
-		ctxt, t, net, alice, bob,
+		t, net, alice, bob,
 		lntest.OpenChannelParams{
-			Amt: chanAmt,
+			Amt:            chanAmt,
+			CommitmentType: c,
+			FundingShim:    aliceFundingShim,
 		},
 	)
 
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = alice.WaitForNetworkChannelOpen(ctxt, aliceChanPoint)
+	err := alice.WaitForNetworkChannelOpen(aliceChanPoint)
 	if err != nil {
 		t.Fatalf("alice didn't report channel: %v", err)
 	}
 
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = bob.WaitForNetworkChannelOpen(ctxt, aliceChanPoint)
+	err = bob.WaitForNetworkChannelOpen(aliceChanPoint)
 	if err != nil {
 		t.Fatalf("bob didn't report channel: %v", err)
 	}
@@ -248,52 +253,47 @@ func createThreeHopNetwork(t *harnessTest, net *lntest.NetworkHarness,
 	// Next, we'll create a new node "carol" and have Bob connect to her. If
 	// the carolHodl flag is set, we'll make carol always hold onto the
 	// HTLC, this way it'll force Bob to go to chain to resolve the HTLC.
-	carolFlags := c.Args()
+	carolFlags := nodeArgsForCommitType(c)
 	if carolHodl {
 		carolFlags = append(carolFlags, "--hodl.exit-settle")
 	}
-	carol, err := net.NewNode("Carol", carolFlags)
-	if err != nil {
-		t.Fatalf("unable to create new node: %v", err)
-	}
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	if err := net.ConnectNodes(ctxt, bob, carol); err != nil {
-		t.Fatalf("unable to connect bob to carol: %v", err)
-	}
+	carol := net.NewNode(t.t, "Carol", carolFlags)
+
+	net.ConnectNodes(t.t, bob, carol)
 
 	// Make sure Carol has enough utxos for anchoring. Because the anchor by
 	// itself often doesn't meet the dust limit, a utxo from the wallet
 	// needs to be attached as an additional input. This can still lead to a
 	// positively-yielding transaction.
 	for i := 0; i < 2; i++ {
-		ctxt, _ = context.WithTimeout(context.Background(), defaultTimeout)
-		err = net.SendCoins(ctxt, ltcutil.SatoshiPerBitcoin, carol)
-		if err != nil {
-			t.Fatalf("unable to send coins to Alice: %v", err)
-		}
+		net.SendCoins(t.t, ltcutil.SatoshiPerBitcoin, carol)
 	}
 
 	// We'll then create a channel from Bob to Carol. After this channel is
 	// open, our topology looks like:  A -> B -> C.
-	ctxt, _ = context.WithTimeout(ctxb, channelOpenTimeout)
+	var bobFundingShim *lnrpc.FundingShim
+	if c == lnrpc.CommitmentType_SCRIPT_ENFORCED_LEASE {
+		bobFundingShim, _, _ = deriveFundingShim(
+			net, t, bob, carol, chanAmt, thawHeight, true,
+		)
+	}
 	bobChanPoint := openChannelAndAssert(
-		ctxt, t, net, bob, carol,
+		t, net, bob, carol,
 		lntest.OpenChannelParams{
-			Amt: chanAmt,
+			Amt:            chanAmt,
+			CommitmentType: c,
+			FundingShim:    bobFundingShim,
 		},
 	)
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = bob.WaitForNetworkChannelOpen(ctxt, bobChanPoint)
+	err = bob.WaitForNetworkChannelOpen(bobChanPoint)
 	if err != nil {
 		t.Fatalf("alice didn't report channel: %v", err)
 	}
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = carol.WaitForNetworkChannelOpen(ctxt, bobChanPoint)
+	err = carol.WaitForNetworkChannelOpen(bobChanPoint)
 	if err != nil {
 		t.Fatalf("bob didn't report channel: %v", err)
 	}
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = alice.WaitForNetworkChannelOpen(ctxt, bobChanPoint)
+	err = alice.WaitForNetworkChannelOpen(bobChanPoint)
 	if err != nil {
 		t.Fatalf("bob didn't report channel: %v", err)
 	}

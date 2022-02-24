@@ -4,13 +4,13 @@ import (
 	"fmt"
 
 	"github.com/ltcsuite/lnd/input"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2/ecdsa"
 )
 
 // Sig is a fixed-sized ECDSA signature. Unlike Bitcoin, we use fixed sized
 // signatures on the wire, instead of DER encoded signatures. This type
 // provides several methods to convert to/from a regular Bitcoin DER encoded
-// signature (raw bytes and *btcec.Signature).
+// signature (raw bytes and *ecdsa.Signature).
 type Sig [64]byte
 
 // NewSigFromRawSignature returns a Sig from a Bitcoin raw signature encoded in
@@ -27,7 +27,7 @@ func NewSigFromRawSignature(sig []byte) (Sig, error) {
 	// which means the length of R is the 4th byte and the length of S
 	// is the second byte after R ends. 0x02 signifies a length-prefixed,
 	// zero-padded, big-endian bigint. 0x30 signifies a DER signature.
-	// See the Serialize() method for btcec.Signature for details.
+	// See the Serialize() method for ecdsa.Signature for details.
 	rLen := sig[3]
 	sLen := sig[5+rLen]
 
@@ -64,9 +64,15 @@ func NewSigFromRawSignature(sig []byte) (Sig, error) {
 }
 
 // NewSigFromSignature creates a new signature as used on the wire, from an
-// existing btcec.Signature.
+// existing ecdsa.Signature.
 func NewSigFromSignature(e input.Signature) (Sig, error) {
 	if e == nil {
+		return Sig{}, fmt.Errorf("cannot decode empty signature")
+	}
+
+	// Nil is still a valid interface, apparently. So we need a more
+	// explicit check here.
+	if ecsig, ok := e.(*ecdsa.Signature); ok && ecsig == nil {
 		return Sig{}, fmt.Errorf("cannot decode empty signature")
 	}
 
@@ -74,12 +80,12 @@ func NewSigFromSignature(e input.Signature) (Sig, error) {
 	return NewSigFromRawSignature(e.Serialize())
 }
 
-// ToSignature converts the fixed-sized signature to a btcec.Signature objects
+// ToSignature converts the fixed-sized signature to a ecdsa.Signature objects
 // which can be used for signature validation checks.
-func (b *Sig) ToSignature() (*btcec.Signature, error) {
+func (b *Sig) ToSignature() (*ecdsa.Signature, error) {
 	// Parse the signature with strict checks.
 	sigBytes := b.ToSignatureBytes()
-	sig, err := btcec.ParseDERSignature(sigBytes, btcec.S256())
+	sig, err := ecdsa.ParseDERSignature(sigBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +119,7 @@ func (b *Sig) ToSignatureBytes() []byte {
 
 // extractCanonicalPadding is a utility function to extract the canonical
 // padding of a big-endian integer from the wire encoding (a 0-padded
-// big-endian integer) such that it passes btcec.canonicalPadding test.
+// big-endian integer) such that it passes ecdsa.canonicalPadding test.
 func extractCanonicalPadding(b []byte) []byte {
 	for i := 0; i < len(b); i++ {
 		// Found first non-zero byte.

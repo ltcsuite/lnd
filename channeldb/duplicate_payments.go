@@ -7,11 +7,11 @@ import (
 	"io"
 	"time"
 
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/routing/route"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
 var (
@@ -53,7 +53,7 @@ type duplicateHTLCAttemptInfo struct {
 	attemptID uint64
 
 	// sessionKey is the ephemeral key used for this attempt.
-	sessionKey *btcec.PrivateKey
+	sessionKey [btcec.PrivKeyBytesLen]byte
 
 	// route is the route attempted to send the HTLC.
 	route route.Route
@@ -99,7 +99,7 @@ func deserializeDuplicatePaymentCreationInfo(r io.Reader) (
 
 	c := &PaymentCreationInfo{}
 
-	if _, err := io.ReadFull(r, c.PaymentHash[:]); err != nil {
+	if _, err := io.ReadFull(r, c.PaymentIdentifier[:]); err != nil {
 		return nil, err
 	}
 
@@ -181,7 +181,7 @@ func fetchDuplicatePayment(bucket kvdb.RBucket) (*MPPayment, error) {
 			HTLCAttemptInfo: HTLCAttemptInfo{
 				AttemptID:  attempt.attemptID,
 				Route:      attempt.route,
-				SessionKey: attempt.sessionKey,
+				sessionKey: attempt.sessionKey,
 			},
 		}
 

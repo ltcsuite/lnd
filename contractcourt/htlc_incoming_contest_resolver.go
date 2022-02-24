@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/htlcswitch/hop"
 	"github.com/ltcsuite/lnd/invoices"
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 // htlcIncomingContestResolver is a ContractResolver that's able to resolve an
@@ -31,7 +31,7 @@ type htlcIncomingContestResolver struct {
 
 	// htlcSuccessResolver is the inner resolver that may be utilized if we
 	// learn of the preimage.
-	htlcSuccessResolver
+	*htlcSuccessResolver
 }
 
 // newIncomingContestResolver instantiates a new incoming htlc contest resolver.
@@ -45,7 +45,7 @@ func newIncomingContestResolver(
 
 	return &htlcIncomingContestResolver{
 		htlcExpiry:          htlc.RefundTimeout,
-		htlcSuccessResolver: *success,
+		htlcSuccessResolver: success,
 	}
 }
 
@@ -189,7 +189,7 @@ func (h *htlcIncomingContestResolver) Resolve() (ContractResolver, error) {
 				return nil, err
 			}
 
-			return &h.htlcSuccessResolver, nil
+			return h.htlcSuccessResolver, nil
 
 		// If the htlc was failed, mark the htlc as
 		// resolved.
@@ -293,7 +293,7 @@ func (h *htlcIncomingContestResolver) Resolve() (ContractResolver, error) {
 				return nil, err
 			}
 
-			return &h.htlcSuccessResolver, nil
+			return h.htlcSuccessResolver, nil
 		}
 
 		witnessUpdates = preimageSubscription.WitnessUpdates
@@ -315,7 +315,7 @@ func (h *htlcIncomingContestResolver) Resolve() (ContractResolver, error) {
 			// We've learned of the preimage and this information
 			// has been added to our inner resolver. We return it so
 			// it can continue contract resolution.
-			return &h.htlcSuccessResolver, nil
+			return h.htlcSuccessResolver, nil
 
 		case hodlItem := <-hodlChan:
 			htlcResolution := hodlItem.(invoices.HtlcResolution)
@@ -420,7 +420,7 @@ func newIncomingContestResolverFromReader(r io.Reader, resCfg ResolverConfig) (
 	if err != nil {
 		return nil, err
 	}
-	h.htlcSuccessResolver = *successResolver
+	h.htlcSuccessResolver = successResolver
 
 	return h, nil
 }
@@ -431,6 +431,13 @@ func newIncomingContestResolverFromReader(r io.Reader, resCfg ResolverConfig) (
 // NOTE: Part of the htlcContractResolver interface.
 func (h *htlcIncomingContestResolver) Supplement(htlc channeldb.HTLC) {
 	h.htlc = htlc
+}
+
+// SupplementState allows the user of a ContractResolver to supplement it with
+// state required for the proper resolution of a contract.
+//
+// NOTE: Part of the ContractResolver interface.
+func (h *htlcIncomingContestResolver) SupplementState(_ *channeldb.OpenChannel) {
 }
 
 // decodePayload (re)decodes the hop payload of a received htlc.

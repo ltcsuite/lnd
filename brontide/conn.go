@@ -9,7 +9,8 @@ import (
 
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnwire"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/lnd/tor"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
 // Conn is an implementation of net.Conn which enforces an authenticated key
@@ -34,12 +35,12 @@ var _ net.Conn = (*Conn)(nil)
 // public key. In the case of a handshake failure, the connection is closed and
 // a non-nil error is returned.
 func Dial(local keychain.SingleKeyECDH, netAddr *lnwire.NetAddress,
-	dialer func(string, string) (net.Conn, error)) (*Conn, error) {
+	timeout time.Duration, dialer tor.DialFunc) (*Conn, error) {
 
 	ipAddr := netAddr.Address.String()
 	var conn net.Conn
 	var err error
-	conn, err = dialer("tcp", ipAddr)
+	conn, err = dialer("tcp", ipAddr, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -61,8 +62,8 @@ func Dial(local keychain.SingleKeyECDH, netAddr *lnwire.NetAddress,
 	}
 
 	// We'll ensure that we get ActTwo from the remote peer in a timely
-	// manner. If they don't respond within 1s, then we'll kill the
-	// connection.
+	// manner. If they don't respond within handshakeReadTimeout, then
+	// we'll kill the connection.
 	err = conn.SetReadDeadline(time.Now().Add(handshakeReadTimeout))
 	if err != nil {
 		b.conn.Close()
@@ -228,7 +229,7 @@ func (c *Conn) Flush() (int, error) {
 	return c.noise.Flush(c.conn)
 }
 
-// Close closes the connection.  Any blocked Read or Write operations will be
+// Close closes the connection. Any blocked Read or Write operations will be
 // unblocked and return errors.
 //
 // Part of the net.Conn interface.
@@ -260,7 +261,7 @@ func (c *Conn) SetDeadline(t time.Time) error {
 	return c.conn.SetDeadline(t)
 }
 
-// SetReadDeadline sets the deadline for future Read calls.  A zero value for t
+// SetReadDeadline sets the deadline for future Read calls. A zero value for t
 // means Read will not time out.
 //
 // Part of the net.Conn interface.
@@ -268,9 +269,9 @@ func (c *Conn) SetReadDeadline(t time.Time) error {
 	return c.conn.SetReadDeadline(t)
 }
 
-// SetWriteDeadline sets the deadline for future Write calls.  Even if write
+// SetWriteDeadline sets the deadline for future Write calls. Even if write
 // times out, it may return n > 0, indicating that some of the data was
-// successfully written.  A zero value for t means Write will not time out.
+// successfully written. A zero value for t means Write will not time out.
 //
 // Part of the net.Conn interface.
 func (c *Conn) SetWriteDeadline(t time.Time) error {

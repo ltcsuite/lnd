@@ -1,6 +1,6 @@
 package migration_01_to_11
 
-import "github.com/ltcsuite/lnd/channeldb/kvdb"
+import "github.com/ltcsuite/lnd/kvdb"
 
 // fetchPaymentStatus fetches the payment status of the payment. If the payment
 // isn't found, it will default to "StatusUnknown".

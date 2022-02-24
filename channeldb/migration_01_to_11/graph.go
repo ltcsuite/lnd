@@ -9,12 +9,12 @@ import (
 	"net"
 	"time"
 
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
-	"github.com/ltcsuite/lnd/lnwire"
-	"github.com/ltcsuite/ltcd/btcec"
+	lnwire "github.com/ltcsuite/lnd/channeldb/migration/lnwire21"
+	"github.com/ltcsuite/lnd/kvdb"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 )
 
 var (
@@ -190,6 +190,8 @@ func (c *ChannelGraph) SourceNode() (*LightningNode, error) {
 		source = node
 
 		return nil
+	}, func() {
+		source = nil
 	})
 	if err != nil {
 		return nil, err
@@ -242,7 +244,7 @@ func (c *ChannelGraph) SetSourceNode(node *LightningNode) error {
 		// Finally, we commit the information of the lightning node
 		// itself.
 		return addLightningNode(tx, node)
-	})
+	}, func() {})
 }
 
 func addLightningNode(tx kvdb.RwTx, node *LightningNode) error {
@@ -382,7 +384,7 @@ func (l *LightningNode) PubKey() (*btcec.PublicKey, error) {
 		return l.pubKey, nil
 	}
 
-	key, err := btcec.ParsePubKey(l.PubKeyBytes[:], btcec.S256())
+	key, err := btcec.ParsePubKey(l.PubKeyBytes[:])
 	if err != nil {
 		return nil, err
 	}

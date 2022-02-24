@@ -3,7 +3,7 @@ package lnwire
 import (
 	"testing"
 
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 func TestMilliSatoshiConversion(t *testing.T) {

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	lnwire "github.com/ltcsuite/lnd/channeldb/migration/lnwire21"
 	"github.com/ltcsuite/lnd/channeldb/migration_01_to_11/zpay32"
-	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/kvdb"
 	bitcoinCfg "github.com/ltcsuite/ltcd/chaincfg"
 	litecoinCfg "github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/wire"

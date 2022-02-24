@@ -1,11 +1,12 @@
 package lnwire
 
 import (
+	"bytes"
 	"io"
 )
 
 // CommitSig is sent by either side to stage any pending HTLC's in the
-// receiver's pending set into a new commitment state.  Implicitly, the new
+// receiver's pending set into a new commitment state. Implicitly, the new
 // commitment transaction constructed which has been signed by CommitSig
 // includes all HTLC's in the remote node's pending set. A CommitSig message
 // may be sent after a series of UpdateAddHTLC/UpdateFulfillHTLC messages in
@@ -34,11 +35,18 @@ type CommitSig struct {
 	// should be signed, for each incoming HTLC the HTLC timeout
 	// transaction should be signed.
 	HtlcSigs []Sig
+
+	// ExtraData is the set of data that was appended to this message to
+	// fill out the full maximum transport message size. These fields can
+	// be used to specify optional data such as custom TLV fields.
+	ExtraData ExtraOpaqueData
 }
 
 // NewCommitSig creates a new empty CommitSig message.
 func NewCommitSig() *CommitSig {
-	return &CommitSig{}
+	return &CommitSig{
+		ExtraData: make([]byte, 0),
+	}
 }
 
 // A compile time check to ensure CommitSig implements the lnwire.Message
@@ -54,6 +62,7 @@ func (c *CommitSig) Decode(r io.Reader, pver uint32) error {
 		&c.ChanID,
 		&c.CommitSig,
 		&c.HtlcSigs,
+		&c.ExtraData,
 	)
 }
 
@@ -61,12 +70,20 @@ func (c *CommitSig) Decode(r io.Reader, pver uint32) error {
 // observing the protocol version specified.
 //
 // This is part of the lnwire.Message interface.
-func (c *CommitSig) Encode(w io.Writer, pver uint32) error {
-	return WriteElements(w,
-		c.ChanID,
-		c.CommitSig,
-		c.HtlcSigs,
-	)
+func (c *CommitSig) Encode(w *bytes.Buffer, pver uint32) error {
+	if err := WriteChannelID(w, c.ChanID); err != nil {
+		return err
+	}
+
+	if err := WriteSig(w, c.CommitSig); err != nil {
+		return err
+	}
+
+	if err := WriteSigs(w, c.HtlcSigs); err != nil {
+		return err
+	}
+
+	return WriteBytes(w, c.ExtraData)
 }
 
 // MsgType returns the integer uniquely identifying this message type on the
@@ -75,15 +92,6 @@ func (c *CommitSig) Encode(w io.Writer, pver uint32) error {
 // This is part of the lnwire.Message interface.
 func (c *CommitSig) MsgType() MessageType {
 	return MsgCommitSig
-}
-
-// MaxPayloadLength returns the maximum allowed payload size for a
-// CommitSig complete message observing the specified protocol version.
-//
-// This is part of the lnwire.Message interface.
-func (c *CommitSig) MaxPayloadLength(uint32) uint32 {
-	// 32 + 64 + 2 + max_allowed_htlcs
-	return MaxMessagePayload
 }
 
 // TargetChanID returns the channel id of the link for which this message is

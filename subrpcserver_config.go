@@ -6,6 +6,7 @@ import (
 
 	"github.com/btcsuite/btclog"
 	"github.com/ltcsuite/lnd/autopilot"
+	"github.com/ltcsuite/lnd/chainreg"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/htlcswitch"
 	"github.com/ltcsuite/lnd/invoices"
@@ -81,7 +82,8 @@ type subRPCServerConfigs struct {
 //
 // NOTE: This MUST be called before any callers are permitted to execute the
 // FetchConfig method.
-func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config, cc *chainControl,
+func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config,
+	cc *chainreg.ChainControl,
 	networkDir string, macService *macaroons.Service,
 	atpl *autopilot.Manager,
 	invoiceRegistry *invoices.InvoiceRegistry,
@@ -90,12 +92,15 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config, cc *chainControl
 	chanRouter *routing.ChannelRouter,
 	routerBackend *routerrpc.RouterBackend,
 	nodeSigner *netann.NodeSigner,
-	chanDB *channeldb.DB,
+	graphDB *channeldb.ChannelGraph,
+	chanStateDB *channeldb.ChannelStateDB,
 	sweeper *sweep.UtxoSweeper,
 	tower *watchtower.Standalone,
 	towerClient wtclient.Client,
+	anchorTowerClient wtclient.Client,
 	tcpResolver lncfg.TCPResolver,
 	genInvoiceFeatures func() *lnwire.FeatureVector,
+	genAmpInvoiceFeatures func() *lnwire.FeatureVector,
 	rpcLogger btclog.Logger) error {
 
 	// First, we'll use reflect to obtain a version of the config struct
@@ -132,10 +137,10 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config, cc *chainControl
 				reflect.ValueOf(networkDir),
 			)
 			subCfgValue.FieldByName("Signer").Set(
-				reflect.ValueOf(cc.signer),
+				reflect.ValueOf(cc.Signer),
 			)
 			subCfgValue.FieldByName("KeyRing").Set(
-				reflect.ValueOf(cc.keyRing),
+				reflect.ValueOf(cc.KeyRing),
 			)
 
 		case *walletrpc.Config:
@@ -148,22 +153,22 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config, cc *chainControl
 				reflect.ValueOf(macService),
 			)
 			subCfgValue.FieldByName("FeeEstimator").Set(
-				reflect.ValueOf(cc.feeEstimator),
+				reflect.ValueOf(cc.FeeEstimator),
 			)
 			subCfgValue.FieldByName("Wallet").Set(
-				reflect.ValueOf(cc.wallet),
+				reflect.ValueOf(cc.Wallet),
 			)
 			subCfgValue.FieldByName("CoinSelectionLocker").Set(
-				reflect.ValueOf(cc.wallet),
+				reflect.ValueOf(cc.Wallet),
 			)
 			subCfgValue.FieldByName("KeyRing").Set(
-				reflect.ValueOf(cc.keyRing),
+				reflect.ValueOf(cc.KeyRing),
 			)
 			subCfgValue.FieldByName("Sweeper").Set(
 				reflect.ValueOf(sweeper),
 			)
 			subCfgValue.FieldByName("Chain").Set(
-				reflect.ValueOf(cc.chainIO),
+				reflect.ValueOf(cc.ChainIO),
 			)
 			subCfgValue.FieldByName("ChainParams").Set(
 				reflect.ValueOf(activeNetParams),
@@ -186,7 +191,7 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config, cc *chainControl
 				reflect.ValueOf(macService),
 			)
 			subCfgValue.FieldByName("ChainNotifier").Set(
-				reflect.ValueOf(cc.chainNotifier),
+				reflect.ValueOf(cc.ChainNotifier),
 			)
 
 		case *invoicesrpc.Config:
@@ -211,17 +216,23 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config, cc *chainControl
 				reflect.ValueOf(nodeSigner),
 			)
 			defaultDelta := cfg.Bitcoin.TimeLockDelta
-			if cfg.registeredChains.PrimaryChain() == litecoinChain {
+			if cfg.registeredChains.PrimaryChain() == chainreg.LitecoinChain {
 				defaultDelta = cfg.Litecoin.TimeLockDelta
 			}
 			subCfgValue.FieldByName("DefaultCLTVExpiry").Set(
 				reflect.ValueOf(defaultDelta),
 			)
-			subCfgValue.FieldByName("ChanDB").Set(
-				reflect.ValueOf(chanDB),
+			subCfgValue.FieldByName("GraphDB").Set(
+				reflect.ValueOf(graphDB),
+			)
+			subCfgValue.FieldByName("ChanStateDB").Set(
+				reflect.ValueOf(chanStateDB),
 			)
 			subCfgValue.FieldByName("GenInvoiceFeatures").Set(
 				reflect.ValueOf(genInvoiceFeatures),
+			)
+			subCfgValue.FieldByName("GenAmpInvoiceFeatures").Set(
+				reflect.ValueOf(genAmpInvoiceFeatures),
 			)
 
 		// RouterRPC isn't conditionally compiled and doesn't need to be
@@ -241,12 +252,15 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config, cc *chainControl
 		case *wtclientrpc.Config:
 			subCfgValue := extractReflectValue(subCfg)
 
-			if towerClient != nil {
+			if towerClient != nil && anchorTowerClient != nil {
 				subCfgValue.FieldByName("Active").Set(
 					reflect.ValueOf(towerClient != nil),
 				)
 				subCfgValue.FieldByName("Client").Set(
 					reflect.ValueOf(towerClient),
+				)
+				subCfgValue.FieldByName("AnchorClient").Set(
+					reflect.ValueOf(anchorTowerClient),
 				)
 			}
 			subCfgValue.FieldByName("Resolver").Set(

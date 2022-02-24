@@ -6,10 +6,10 @@ import (
 	"io"
 	"time"
 
-	"github.com/ltcsuite/ltcd/wire"
+	lnwire "github.com/ltcsuite/lnd/channeldb/migration/lnwire21"
 	"github.com/ltcsuite/lnd/lntypes"
-	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/tlv"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 const (

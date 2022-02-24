@@ -1,20 +1,25 @@
+//go:build invoicesrpc
 // +build invoicesrpc
 
 package invoicesrpc
 
 import (
 	"context"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"gopkg.in/macaroon-bakery.v2/bakery"
 
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/lnrpc"
 	"github.com/ltcsuite/lnd/lntypes"
+	"github.com/ltcsuite/lnd/macaroons"
 )
 
 const (
@@ -57,6 +62,10 @@ var (
 			Entity: "invoices",
 			Action: "write",
 		}},
+		"/invoicesrpc.Invoices/LookupInvoiceV2": {{
+			Entity: "invoices",
+			Action: "write",
+		}},
 	}
 
 	// DefaultInvoicesMacFilename is the default name of the invoices
@@ -65,10 +74,20 @@ var (
 	DefaultInvoicesMacFilename = "invoices.macaroon"
 )
 
+// ServerShell is a shell struct holding a reference to the actual sub-server.
+// It is used to register the gRPC sub-server with the root server before we
+// have the necessary dependencies to populate the actual sub-server.
+type ServerShell struct {
+	InvoicesServer
+}
+
 // Server is a sub-server of the main RPC server: the invoices RPC. This sub
 // RPC server allows external callers to access the status of the invoices
 // currently active within lnd, as well as configuring it at runtime.
 type Server struct {
+	// Required by the grpc-gateway/v2 library for forward compatibility.
+	UnimplementedInvoicesServer
+
 	quit chan struct{}
 
 	cfg *Config
@@ -91,16 +110,19 @@ func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
 	)
 
 	// Now that we know the full path of the invoices macaroon, we can
-	// check to see if we need to create it or not.
-	if !lnrpc.FileExists(macFilePath) && cfg.MacService != nil {
+	// check to see if we need to create it or not. If stateless_init is set
+	// then we don't write the macaroons.
+	if cfg.MacService != nil && !cfg.MacService.StatelessInit &&
+		!lnrpc.FileExists(macFilePath) {
+
 		log.Infof("Baking macaroons for invoices RPC Server at: %v",
 			macFilePath)
 
 		// At this point, we know that the invoices macaroon doesn't
 		// yet, exist, so we need to create it with the help of the
 		// main macaroon service.
-		invoicesMac, err := cfg.MacService.Oven.NewMacaroon(
-			context.Background(), bakery.LatestVersion, nil,
+		invoicesMac, err := cfg.MacService.NewMacaroon(
+			context.Background(), macaroons.DefaultRootKeyID,
 			macaroonOps...,
 		)
 		if err != nil {
@@ -112,7 +134,7 @@ func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
 		}
 		err = ioutil.WriteFile(macFilePath, invoicesMacBytes, 0644)
 		if err != nil {
-			os.Remove(macFilePath)
+			_ = os.Remove(macFilePath)
 			return nil, nil, err
 		}
 	}
@@ -153,11 +175,11 @@ func (s *Server) Name() string {
 // RPC server to register itself with the main gRPC root server. Until this is
 // called, each sub-server won't be able to have requests routed towards it.
 //
-// NOTE: This is part of the lnrpc.SubServer interface.
-func (s *Server) RegisterWithRootServer(grpcServer *grpc.Server) error {
+// NOTE: This is part of the lnrpc.GrpcHandler interface.
+func (r *ServerShell) RegisterWithRootServer(grpcServer *grpc.Server) error {
 	// We make sure that we register it with the main gRPC server to ensure
 	// all our methods are routed properly.
-	RegisterInvoicesServer(grpcServer, s)
+	RegisterInvoicesServer(grpcServer, r)
 
 	log.Debugf("Invoices RPC server successfully registered with root " +
 		"gRPC server")
@@ -169,8 +191,8 @@ func (s *Server) RegisterWithRootServer(grpcServer *grpc.Server) error {
 // RPC server to register itself with the main REST mux server. Until this is
 // called, each sub-server won't be able to have requests routed towards it.
 //
-// NOTE: This is part of the lnrpc.SubServer interface.
-func (s *Server) RegisterWithRestServer(ctx context.Context,
+// NOTE: This is part of the lnrpc.GrpcHandler interface.
+func (r *ServerShell) RegisterWithRestServer(ctx context.Context,
 	mux *runtime.ServeMux, dest string, opts []grpc.DialOption) error {
 
 	// We make sure that we register it with the main REST server to ensure
@@ -185,6 +207,25 @@ func (s *Server) RegisterWithRestServer(ctx context.Context,
 	log.Debugf("Invoices REST server successfully registered with " +
 		"root REST server")
 	return nil
+}
+
+// CreateSubServer populates the subserver's dependencies using the passed
+// SubServerConfigDispatcher. This method should fully initialize the
+// sub-server instance, making it ready for action. It returns the macaroon
+// permissions that the sub-server wishes to pass on to the root server for all
+// methods routed towards it.
+//
+// NOTE: This is part of the lnrpc.GrpcHandler interface.
+func (r *ServerShell) CreateSubServer(configRegistry lnrpc.SubServerConfigDispatcher) (
+	lnrpc.SubServer, lnrpc.MacaroonPerms, error) {
+
+	subServer, macPermissions, err := createNewSubServer(configRegistry)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	r.InvoicesServer = subServer
+	return subServer, macPermissions, nil
 }
 
 // SubscribeSingleInvoice returns a uni-directional stream (server -> client)
@@ -216,6 +257,15 @@ func (s *Server) SubscribeSingleInvoice(req *SubscribeSingleInvoiceRequest,
 			if err := updateStream.Send(rpcInvoice); err != nil {
 				return err
 			}
+
+			// If we have reached a terminal state, close the
+			// stream with no error.
+			if newInvoice.State.IsFinal() {
+				return nil
+			}
+
+		case <-updateStream.Context().Done():
+			return updateStream.Context().Err()
 
 		case <-s.quit:
 			return nil
@@ -269,13 +319,15 @@ func (s *Server) AddHoldInvoice(ctx context.Context,
 	invoice *AddHoldInvoiceRequest) (*AddHoldInvoiceResp, error) {
 
 	addInvoiceCfg := &AddInvoiceConfig{
-		AddInvoice:         s.cfg.InvoiceRegistry.AddInvoice,
-		IsChannelActive:    s.cfg.IsChannelActive,
-		ChainParams:        s.cfg.ChainParams,
-		NodeSigner:         s.cfg.NodeSigner,
-		DefaultCLTVExpiry:  s.cfg.DefaultCLTVExpiry,
-		ChanDB:             s.cfg.ChanDB,
-		GenInvoiceFeatures: s.cfg.GenInvoiceFeatures,
+		AddInvoice:            s.cfg.InvoiceRegistry.AddInvoice,
+		IsChannelActive:       s.cfg.IsChannelActive,
+		ChainParams:           s.cfg.ChainParams,
+		NodeSigner:            s.cfg.NodeSigner,
+		DefaultCLTVExpiry:     s.cfg.DefaultCLTVExpiry,
+		ChanDB:                s.cfg.ChanStateDB,
+		Graph:                 s.cfg.GraphDB,
+		GenInvoiceFeatures:    s.cfg.GenInvoiceFeatures,
+		GenAmpInvoiceFeatures: s.cfg.GenAmpInvoiceFeatures,
 	}
 
 	hash, err := lntypes.MakeHash(invoice.Hash)
@@ -288,6 +340,11 @@ func (s *Server) AddHoldInvoice(ctx context.Context,
 		return nil, err
 	}
 
+	// Convert the passed routing hints to the required format.
+	routeHints, err := CreateZpay32HopHints(invoice.RouteHints)
+	if err != nil {
+		return nil, err
+	}
 	addInvoiceData := &AddInvoiceData{
 		Memo:            invoice.Memo,
 		Hash:            &hash,
@@ -299,6 +356,7 @@ func (s *Server) AddHoldInvoice(ctx context.Context,
 		Private:         invoice.Private,
 		HodlInvoice:     true,
 		Preimage:        nil,
+		RouteHints:      routeHints,
 	}
 
 	_, dbInvoice, err := AddInvoice(ctx, addInvoiceCfg, addInvoiceData)
@@ -307,6 +365,76 @@ func (s *Server) AddHoldInvoice(ctx context.Context,
 	}
 
 	return &AddHoldInvoiceResp{
+		AddIndex:       dbInvoice.AddIndex,
 		PaymentRequest: string(dbInvoice.PaymentRequest),
+		PaymentAddr:    dbInvoice.Terms.PaymentAddr[:],
 	}, nil
+}
+
+// LookupInvoiceV2 attempts to look up at invoice. An invoice can be referenced
+// using either its payment hash, payment address, or set ID.
+func (s *Server) LookupInvoiceV2(ctx context.Context,
+	req *LookupInvoiceMsg) (*lnrpc.Invoice, error) {
+
+	var invoiceRef channeldb.InvoiceRef
+
+	// First, we'll attempt to parse out the invoice ref from the proto
+	// oneof.  If none of the three currently supported types was
+	// specified, then we'll exit with an error.
+	switch {
+	case req.GetPaymentHash() != nil:
+		payHash, err := lntypes.MakeHash(req.GetPaymentHash())
+		if err != nil {
+			return nil, status.Error(
+				codes.InvalidArgument,
+				fmt.Sprintf("unable to parse pay hash: %v", err),
+			)
+		}
+
+		invoiceRef = channeldb.InvoiceRefByHash(payHash)
+
+	case req.GetPaymentAddr() != nil &&
+		req.LookupModifier == LookupModifier_HTLC_SET_BLANK:
+
+		var payAddr [32]byte
+		copy(payAddr[:], req.GetPaymentAddr())
+
+		invoiceRef = channeldb.InvoiceRefByAddrBlankHtlc(payAddr)
+
+	case req.GetPaymentAddr() != nil:
+		var payAddr [32]byte
+		copy(payAddr[:], req.GetPaymentAddr())
+
+		invoiceRef = channeldb.InvoiceRefByAddr(payAddr)
+
+	case req.GetSetId() != nil &&
+		req.LookupModifier == LookupModifier_HTLC_SET_ONLY:
+
+		var setID [32]byte
+		copy(setID[:], req.GetSetId())
+
+		invoiceRef = channeldb.InvoiceRefBySetIDFiltered(setID)
+
+	case req.GetSetId() != nil:
+		var setID [32]byte
+		copy(setID[:], req.GetSetId())
+
+		invoiceRef = channeldb.InvoiceRefBySetID(setID)
+
+	default:
+		return nil, status.Error(codes.InvalidArgument,
+			"invoice ref must be set")
+	}
+
+	// Attempt to locate the invoice, returning a nice "not found" error if
+	// we can't find it in the database.
+	invoice, err := s.cfg.InvoiceRegistry.LookupInvoiceByRef(invoiceRef)
+	switch {
+	case err == channeldb.ErrInvoiceNotFound:
+		return nil, status.Error(codes.NotFound, err.Error())
+	case err != nil:
+		return nil, err
+	}
+
+	return CreateRPCInvoice(&invoice, s.cfg.ChainParams)
 }

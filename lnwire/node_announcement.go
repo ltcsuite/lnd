@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"image/color"
 	"io"
-	"io/ioutil"
 	"net"
 	"unicode/utf8"
 )
@@ -34,9 +33,9 @@ func (e ErrInvalidNodeAlias) Error() string {
 	return "node alias has non-utf8 characters"
 }
 
-// NodeAlias a hex encoded UTF-8 string that may be displayed as an alternative
-// to the node's ID. Notice that aliases are not unique and may be freely
-// chosen by the node operators.
+// NodeAlias is a hex encoded UTF-8 string that may be displayed as an
+// alternative to the node's ID. Notice that aliases are not unique and may be
+// freely chosen by the node operators.
 type NodeAlias [32]byte
 
 // NewNodeAlias creates a new instance of a NodeAlias. Verification is
@@ -98,7 +97,7 @@ type NodeAnnouncement struct {
 	// properly validate the set of signatures that cover these new fields,
 	// and ensure we're able to make upgrades to the network in a forwards
 	// compatible manner.
-	ExtraOpaqueData []byte
+	ExtraOpaqueData ExtraOpaqueData
 }
 
 // A compile time check to ensure NodeAnnouncement implements the
@@ -110,7 +109,7 @@ var _ Message = (*NodeAnnouncement)(nil)
 //
 // This is part of the lnwire.Message interface.
 func (a *NodeAnnouncement) Decode(r io.Reader, pver uint32) error {
-	err := ReadElements(r,
+	return ReadElements(r,
 		&a.Signature,
 		&a.Features,
 		&a.Timestamp,
@@ -118,40 +117,44 @@ func (a *NodeAnnouncement) Decode(r io.Reader, pver uint32) error {
 		&a.RGBColor,
 		&a.Alias,
 		&a.Addresses,
+		&a.ExtraOpaqueData,
 	)
-	if err != nil {
-		return err
-	}
-
-	// Now that we've read out all the fields that we explicitly know of,
-	// we'll collect the remainder into the ExtraOpaqueData field. If there
-	// aren't any bytes, then we'll snip off the slice to avoid carrying
-	// around excess capacity.
-	a.ExtraOpaqueData, err = ioutil.ReadAll(r)
-	if err != nil {
-		return err
-	}
-	if len(a.ExtraOpaqueData) == 0 {
-		a.ExtraOpaqueData = nil
-	}
-
-	return nil
 }
 
 // Encode serializes the target NodeAnnouncement into the passed io.Writer
 // observing the protocol version specified.
 //
-func (a *NodeAnnouncement) Encode(w io.Writer, pver uint32) error {
-	return WriteElements(w,
-		a.Signature,
-		a.Features,
-		a.Timestamp,
-		a.NodeID,
-		a.RGBColor,
-		a.Alias,
-		a.Addresses,
-		a.ExtraOpaqueData,
-	)
+// This is part of the lnwire.Message interface.
+func (a *NodeAnnouncement) Encode(w *bytes.Buffer, pver uint32) error {
+	if err := WriteSig(w, a.Signature); err != nil {
+		return err
+	}
+
+	if err := WriteRawFeatureVector(w, a.Features); err != nil {
+		return err
+	}
+
+	if err := WriteUint32(w, a.Timestamp); err != nil {
+		return err
+	}
+
+	if err := WriteBytes(w, a.NodeID[:]); err != nil {
+		return err
+	}
+
+	if err := WriteColorRGBA(w, a.RGBColor); err != nil {
+		return err
+	}
+
+	if err := WriteNodeAlias(w, a.Alias); err != nil {
+		return err
+	}
+
+	if err := WriteNetAddrs(w, a.Addresses); err != nil {
+		return err
+	}
+
+	return WriteBytes(w, a.ExtraOpaqueData)
 }
 
 // MsgType returns the integer uniquely identifying this message type on the
@@ -162,31 +165,40 @@ func (a *NodeAnnouncement) MsgType() MessageType {
 	return MsgNodeAnnouncement
 }
 
-// MaxPayloadLength returns the maximum allowed payload size for this message
-// observing the specified protocol version.
-//
-// This is part of the lnwire.Message interface.
-func (a *NodeAnnouncement) MaxPayloadLength(pver uint32) uint32 {
-	return 65533
-}
-
 // DataToSign returns the part of the message that should be signed.
 func (a *NodeAnnouncement) DataToSign() ([]byte, error) {
 
 	// We should not include the signatures itself.
-	var w bytes.Buffer
-	err := WriteElements(&w,
-		a.Features,
-		a.Timestamp,
-		a.NodeID,
-		a.RGBColor,
-		a.Alias[:],
-		a.Addresses,
-		a.ExtraOpaqueData,
-	)
-	if err != nil {
+	buffer := make([]byte, 0, MaxMsgBody)
+	buf := bytes.NewBuffer(buffer)
+
+	if err := WriteRawFeatureVector(buf, a.Features); err != nil {
 		return nil, err
 	}
 
-	return w.Bytes(), nil
+	if err := WriteUint32(buf, a.Timestamp); err != nil {
+		return nil, err
+	}
+
+	if err := WriteBytes(buf, a.NodeID[:]); err != nil {
+		return nil, err
+	}
+
+	if err := WriteColorRGBA(buf, a.RGBColor); err != nil {
+		return nil, err
+	}
+
+	if err := WriteNodeAlias(buf, a.Alias); err != nil {
+		return nil, err
+	}
+
+	if err := WriteNetAddrs(buf, a.Addresses); err != nil {
+		return nil, err
+	}
+
+	if err := WriteBytes(buf, a.ExtraOpaqueData); err != nil {
+		return nil, err
+	}
+
+	return buf.Bytes(), nil
 }

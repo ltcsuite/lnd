@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/ltcsuite/lnd/lnwire"
+	lnwire "github.com/ltcsuite/lnd/channeldb/migration/lnwire21"
 )
 
 var (

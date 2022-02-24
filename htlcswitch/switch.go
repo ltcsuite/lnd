@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,17 +12,17 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/channeldb"
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
 	"github.com/ltcsuite/lnd/clock"
 	"github.com/ltcsuite/lnd/contractcourt"
 	"github.com/ltcsuite/lnd/htlcswitch/hop"
+	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/ticker"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 )
 
 const (
@@ -70,6 +71,15 @@ var (
 	// ErrLocalAddFailed signals that the ADD htlc for a local payment
 	// failed to be processed.
 	ErrLocalAddFailed = errors.New("local add HTLC failed")
+
+	// errDustThresholdExceeded is only surfaced to callers of SendHTLC and
+	// signals that sending the HTLC would exceed the outgoing link's dust
+	// threshold.
+	errDustThresholdExceeded = errors.New("dust threshold exceeded")
+
+	// DefaultDustThreshold is the default threshold after which we'll fail
+	// payments if they are dust. This is currently set to 500m msats.
+	DefaultDustThreshold = lnwire.MilliSatoshi(500_000_000)
 )
 
 // plexPacket encapsulates switch packet and adds error channel to receive
@@ -79,26 +89,12 @@ type plexPacket struct {
 	err chan error
 }
 
-// ChannelCloseType is an enum which signals the type of channel closure the
-// peer should execute.
-type ChannelCloseType uint8
-
-const (
-	// CloseRegular indicates a regular cooperative channel closure
-	// should be attempted.
-	CloseRegular ChannelCloseType = iota
-
-	// CloseBreach indicates that a channel breach has been detected, and
-	// the link should immediately be marked as unavailable.
-	CloseBreach
-)
-
 // ChanClose represents a request which close a particular channel specified by
 // its id.
 type ChanClose struct {
 	// CloseType is a variable which signals the type of channel closure the
 	// peer should execute.
-	CloseType ChannelCloseType
+	CloseType contractcourt.ChannelCloseType
 
 	// ChanPoint represent the id of the channel which should be closed.
 	ChanPoint *wire.OutPoint
@@ -134,9 +130,18 @@ type Config struct {
 	// subsystem.
 	LocalChannelClose func(pubKey []byte, request *ChanClose)
 
-	// DB is the channeldb instance that will be used to back the switch's
+	// DB is the database backend that will be used to back the switch's
 	// persistent circuit map.
-	DB *channeldb.DB
+	DB kvdb.Backend
+
+	// FetchAllOpenChannels is a function that fetches all currently open
+	// channels from the channel database.
+	FetchAllOpenChannels func() ([]*channeldb.OpenChannel, error)
+
+	// FetchClosedChannels is a function that fetches all closed channels
+	// from the channel database.
+	FetchClosedChannels func(
+		pendingOnly bool) ([]*channeldb.ChannelCloseSummary, error)
 
 	// SwitchPackager provides access to the forwarding packages of all
 	// active channels. This gives the switch the ability to read arbitrary
@@ -191,6 +196,10 @@ type Config struct {
 	// will expiry this long after the Adds are added to a mailbox via
 	// AddPacket.
 	HTLCExpiry time.Duration
+
+	// DustThreshold is the threshold in milli-satoshis after which we'll
+	// fail incoming or outgoing dust payments for a particular channel.
+	DustThreshold lnwire.MilliSatoshi
 }
 
 // Switch is the central messaging bus for all incoming/outgoing HTLCs.
@@ -218,8 +227,8 @@ type Switch struct {
 	cfg *Config
 
 	// networkResults stores the results of payments initiated by the user.
-	// results. The store is used to later look up the payments and notify
-	// the user of the result when they are complete. Each payment attempt
+	// The store is used to later look up the payments and notify the
+	// user of the result when they are complete. Each payment attempt
 	// should be given a unique integer ID when it is created, otherwise
 	// results might be overwritten.
 	networkResults *networkResultStore
@@ -294,6 +303,8 @@ type Switch struct {
 func New(cfg Config, currentHeight uint32) (*Switch, error) {
 	circuitMap, err := NewCircuitMap(&CircuitMapConfig{
 		DB:                    cfg.DB,
+		FetchAllOpenChannels:  cfg.FetchAllOpenChannels,
+		FetchClosedChannels:   cfg.FetchClosedChannels,
 		ExtractErrorEncrypter: cfg.ExtractErrorEncrypter,
 	})
 	if err != nil {
@@ -362,28 +373,31 @@ func (s *Switch) ProcessContractResolution(msg contractcourt.ResolutionMsg) erro
 }
 
 // GetPaymentResult returns the the result of the payment attempt with the
-// given paymentID. The method returns a channel where the payment result will
-// be sent when available, or an error is encountered during forwarding. When a
-// result is received on the channel, the HTLC is guaranteed to no longer be in
-// flight. The switch shutting down is signaled by closing the channel. If the
-// paymentID is unknown, ErrPaymentIDNotFound will be returned.
-func (s *Switch) GetPaymentResult(paymentID uint64, paymentHash lntypes.Hash,
+// given attemptID. The paymentHash should be set to the payment's overall
+// hash, or in case of AMP payments the payment's unique identifier.
+//
+// The method returns a channel where the payment result will be sent when
+// available, or an error is encountered during forwarding. When a result is
+// received on the channel, the HTLC is guaranteed to no longer be in flight.
+// The switch shutting down is signaled by closing the channel. If the
+// attemptID is unknown, ErrPaymentIDNotFound will be returned.
+func (s *Switch) GetPaymentResult(attemptID uint64, paymentHash lntypes.Hash,
 	deobfuscator ErrorDecrypter) (<-chan *PaymentResult, error) {
 
 	var (
-		nChan  <-chan *networkResult
-		err    error
-		outKey = CircuitKey{
+		nChan <-chan *networkResult
+		err   error
+		inKey = CircuitKey{
 			ChanID: hop.Source,
-			HtlcID: paymentID,
+			HtlcID: attemptID,
 		}
 	)
 
 	// If the payment is not found in the circuit map, check whether a
 	// result is already available.
 	// Assumption: no one will add this payment ID other than the caller.
-	if s.circuits.LookupCircuit(outKey) == nil {
-		res, err := s.networkResults.getResult(paymentID)
+	if s.circuits.LookupCircuit(inKey) == nil {
+		res, err := s.networkResults.getResult(attemptID)
 		if err != nil {
 			return nil, err
 		}
@@ -393,7 +407,7 @@ func (s *Switch) GetPaymentResult(paymentID uint64, paymentHash lntypes.Hash,
 	} else {
 		// The payment was committed to the circuits, subscribe for a
 		// result.
-		nChan, err = s.networkResults.subscribeResult(paymentID)
+		nChan, err = s.networkResults.subscribeResult(attemptID)
 		if err != nil {
 			return nil, err
 		}
@@ -419,9 +433,12 @@ func (s *Switch) GetPaymentResult(paymentID uint64, paymentHash lntypes.Hash,
 			return
 		}
 
+		log.Debugf("Received network result %T for attemptID=%v", n.msg,
+			attemptID)
+
 		// Extract the result and pass it to the result channel.
 		result, err := s.extractResult(
-			deobfuscator, n, paymentID, paymentHash,
+			deobfuscator, n, attemptID, paymentHash,
 		)
 		if err != nil {
 			e := fmt.Errorf("unable to extract result: %v", err)
@@ -437,11 +454,19 @@ func (s *Switch) GetPaymentResult(paymentID uint64, paymentHash lntypes.Hash,
 	return resultChan, nil
 }
 
+// CleanStore calls the underlying result store, telling it is safe to delete
+// all entries except the ones in the keepPids map. This should be called
+// preiodically to let the switch clean up payment results that we have
+// handled.
+func (s *Switch) CleanStore(keepPids map[uint64]struct{}) error {
+	return s.networkResults.cleanStore(keepPids)
+}
+
 // SendHTLC is used by other subsystems which aren't belong to htlc switch
-// package in order to send the htlc update. The paymentID used MUST be unique
+// package in order to send the htlc update. The attemptID used MUST be unique
 // for this HTLC, and MUST be used only once, otherwise the switch might reject
 // it.
-func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID, paymentID uint64,
+func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID, attemptID uint64,
 	htlc *lnwire.UpdateAddHTLC) error {
 
 	// Generate and send new update packet, if error will be received on
@@ -449,9 +474,54 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID, paymentID uint64,
 	// system and something wrong happened.
 	packet := &htlcPacket{
 		incomingChanID: hop.Source,
-		incomingHTLCID: paymentID,
+		incomingHTLCID: attemptID,
 		outgoingChanID: firstHop,
 		htlc:           htlc,
+	}
+
+	// Attempt to fetch the target link before creating a circuit so that
+	// we don't leave dangling circuits. The getLocalLink method does not
+	// require the circuit variable to be set on the *htlcPacket.
+	link, linkErr := s.getLocalLink(packet, htlc)
+	if linkErr != nil {
+		// Notify the htlc notifier of a link failure on our outgoing
+		// link. Incoming timelock/amount values are not set because
+		// they are not present for local sends.
+		s.cfg.HtlcNotifier.NotifyLinkFailEvent(
+			newHtlcKey(packet),
+			HtlcInfo{
+				OutgoingTimeLock: htlc.Expiry,
+				OutgoingAmt:      htlc.Amount,
+			},
+			HtlcEventTypeSend,
+			linkErr,
+			false,
+		)
+
+		return linkErr
+	}
+
+	// Evaluate whether this HTLC would increase our exposure to dust. If
+	// it does, don't send it out and instead return an error.
+	if s.evaluateDustThreshold(link, htlc.Amount, false) {
+		// Notify the htlc notifier of a link failure on our outgoing
+		// link. We use the FailTemporaryChannelFailure in place of a
+		// more descriptive error message.
+		linkErr := NewLinkError(
+			&lnwire.FailTemporaryChannelFailure{},
+		)
+		s.cfg.HtlcNotifier.NotifyLinkFailEvent(
+			newHtlcKey(packet),
+			HtlcInfo{
+				OutgoingTimeLock: htlc.Expiry,
+				OutgoingAmt:      htlc.Amount,
+			},
+			HtlcEventTypeSend,
+			linkErr,
+			false,
+		)
+
+		return errDustThresholdExceeded
 	}
 
 	circuit := newPaymentCircuit(&htlc.PaymentHash, packet)
@@ -473,28 +543,7 @@ func (s *Switch) SendHTLC(firstHop lnwire.ShortChannelID, paymentID uint64,
 	// Send packet to link.
 	packet.circuit = circuit
 
-	// User has created the htlc update therefore we should find the
-	// appropriate channel link and send the payment over this link.
-	link, linkErr := s.getLocalLink(packet, htlc)
-	if linkErr != nil {
-		// Notify the htlc notifier of a link failure on our
-		// outgoing link. Incoming timelock/amount values are
-		// not set because they are not present for local sends.
-		s.cfg.HtlcNotifier.NotifyLinkFailEvent(
-			newHtlcKey(packet),
-			HtlcInfo{
-				OutgoingTimeLock: htlc.Expiry,
-				OutgoingAmt:      htlc.Amount,
-			},
-			HtlcEventTypeSend,
-			linkErr,
-			false,
-		)
-
-		return linkErr
-	}
-
-	return link.HandleLocalAddPacket(packet)
+	return link.handleLocalAddPacket(packet)
 }
 
 // UpdateForwardingPolicies sends a message to the switch to update the
@@ -782,7 +831,7 @@ func (s *Switch) getLocalLink(pkt *htlcPacket, htlc *lnwire.UpdateAddHTLC) (
 func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 	defer s.wg.Done()
 
-	paymentID := pkt.incomingHTLCID
+	attemptID := pkt.incomingHTLCID
 
 	// The error reason will be unencypted in case this a local
 	// failure or a converted error.
@@ -795,9 +844,9 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 
 	// Store the result to the db. This will also notify subscribers about
 	// the result.
-	if err := s.networkResults.storeResult(paymentID, n); err != nil {
+	if err := s.networkResults.storeResult(attemptID, n); err != nil {
 		log.Errorf("Unable to complete payment for pid=%v: %v",
-			paymentID, err)
+			attemptID, err)
 		return
 	}
 
@@ -833,9 +882,10 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 	key := newHtlcKey(pkt)
 	eventType := getEventType(pkt)
 
-	switch pkt.htlc.(type) {
+	switch htlc := pkt.htlc.(type) {
 	case *lnwire.UpdateFulfillHTLC:
-		s.cfg.HtlcNotifier.NotifySettleEvent(key, eventType)
+		s.cfg.HtlcNotifier.NotifySettleEvent(key, htlc.PaymentPreimage,
+			eventType)
 
 	case *lnwire.UpdateFailHTLC:
 		s.cfg.HtlcNotifier.NotifyForwardingFailEvent(key, eventType)
@@ -845,7 +895,7 @@ func (s *Switch) handleLocalResponse(pkt *htlcPacket) {
 // extractResult uses the given deobfuscator to extract the payment result from
 // the given network message.
 func (s *Switch) extractResult(deobfuscator ErrorDecrypter, n *networkResult,
-	paymentID uint64, paymentHash lntypes.Hash) (*PaymentResult, error) {
+	attemptID uint64, paymentHash lntypes.Hash) (*PaymentResult, error) {
 
 	switch htlc := n.msg.(type) {
 
@@ -860,7 +910,7 @@ func (s *Switch) extractResult(deobfuscator ErrorDecrypter, n *networkResult,
 	// user payment and return fail response.
 	case *lnwire.UpdateFailHTLC:
 		paymentErr := s.parseFailedPayment(
-			deobfuscator, paymentID, paymentHash, n.unencrypted,
+			deobfuscator, attemptID, paymentHash, n.unencrypted,
 			n.isResolution, htlc,
 		)
 
@@ -882,7 +932,7 @@ func (s *Switch) extractResult(deobfuscator ErrorDecrypter, n *networkResult,
 // 3) A failure from the remote party, which will need to be decrypted using
 //    the payment deobfuscator.
 func (s *Switch) parseFailedPayment(deobfuscator ErrorDecrypter,
-	paymentID uint64, paymentHash lntypes.Hash, unencrypted,
+	attemptID uint64, paymentHash lntypes.Hash, unencrypted,
 	isResolution bool, htlc *lnwire.UpdateFailHTLC) error {
 
 	switch {
@@ -906,7 +956,7 @@ func (s *Switch) parseFailedPayment(deobfuscator ErrorDecrypter,
 
 			log.Errorf("%v: (hash=%v, pid=%d): %v",
 				linkError.FailureDetail.FailureString(),
-				paymentHash, paymentID, err)
+				paymentHash, attemptID, err)
 
 			return linkError
 		}
@@ -924,9 +974,9 @@ func (s *Switch) parseFailedPayment(deobfuscator ErrorDecrypter,
 			OutgoingFailureOnChainTimeout,
 		)
 
-		log.Info("%v: hash=%v, pid=%d",
+		log.Infof("%v: hash=%v, pid=%d",
 			linkError.FailureDetail.FailureString(),
-			paymentHash, paymentID)
+			paymentHash, attemptID)
 
 		return linkError
 
@@ -939,7 +989,7 @@ func (s *Switch) parseFailedPayment(deobfuscator ErrorDecrypter,
 		if err != nil {
 			log.Errorf("unable to de-obfuscate onion failure "+
 				"(hash=%v, pid=%d): %v",
-				paymentHash, paymentID, err)
+				paymentHash, attemptID, err)
 
 			return ErrUnreadableFailureMessage
 		}
@@ -1010,9 +1060,9 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 		// trying all links to utilize our available bandwidth.
 		linkErrs := make(map[lnwire.ShortChannelID]*LinkError)
 
-		// Try to find destination channel link with appropriate
+		// Find all destination channel links with appropriate
 		// bandwidth.
-		var destination ChannelLink
+		var destinations []ChannelLink
 		for _, link := range interfaceLinks {
 			var failure *LinkError
 
@@ -1035,10 +1085,11 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 				)
 			}
 
-			// Stop searching if this link can forward the htlc.
+			// If this link can forward the htlc, add it to the set
+			// of destinations.
 			if failure == nil {
-				destination = link
-				break
+				destinations = append(destinations, link)
+				continue
 			}
 
 			linkErrs[link.ShortChanID()] = failure
@@ -1048,7 +1099,7 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 		// satisfying the current policy, then we'll send back an
 		// error, but ensure we send back the error sourced at the
 		// *target* link.
-		if destination == nil {
+		if len(destinations) == 0 {
 			// At this point, some or all of the links rejected the
 			// HTLC so we couldn't forward it. So we'll try to look
 			// up the error that came from the source.
@@ -1075,10 +1126,60 @@ func (s *Switch) handlePacketForward(packet *htlcPacket) error {
 			return s.failAddPacket(packet, linkErr)
 		}
 
+		// Choose a random link out of the set of links that can forward
+		// this htlc. The reason for randomization is to evenly
+		// distribute the htlc load without making assumptions about
+		// what the best channel is.
+		destination := destinations[rand.Intn(len(destinations))]
+
+		// Retrieve the incoming link by its ShortChannelID. Note that
+		// the incomingChanID is never set to hop.Source here.
+		s.indexMtx.RLock()
+		incomingLink, err := s.getLinkByShortID(packet.incomingChanID)
+		s.indexMtx.RUnlock()
+		if err != nil {
+			// If we couldn't find the incoming link, we can't
+			// evaluate the incoming's exposure to dust, so we just
+			// fail the HTLC back.
+			linkErr := NewLinkError(
+				&lnwire.FailTemporaryChannelFailure{},
+			)
+
+			return s.failAddPacket(packet, linkErr)
+		}
+
+		// Evaluate whether this HTLC would increase our exposure to
+		// dust on the incoming link. If it does, fail it backwards.
+		if s.evaluateDustThreshold(
+			incomingLink, packet.incomingAmount, true,
+		) {
+			// The incoming dust exceeds the threshold, so we fail
+			// the add back.
+			linkErr := NewLinkError(
+				&lnwire.FailTemporaryChannelFailure{},
+			)
+
+			return s.failAddPacket(packet, linkErr)
+		}
+
+		// Also evaluate whether this HTLC would increase our exposure
+		// to dust on the destination link. If it does, fail it back.
+		if s.evaluateDustThreshold(
+			destination, packet.amount, false,
+		) {
+			// The outgoing dust exceeds the threshold, so we fail
+			// the add back.
+			linkErr := NewLinkError(
+				&lnwire.FailTemporaryChannelFailure{},
+			)
+
+			return s.failAddPacket(packet, linkErr)
+		}
+
 		// Send the packet to the destination channel link which
 		// manages the channel.
 		packet.outgoingChanID = destination.ShortChanID()
-		return destination.HandleSwitchPacket(packet)
+		return destination.handleSwitchPacket(packet)
 
 	case *lnwire.UpdateFailHTLC, *lnwire.UpdateFulfillHTLC:
 		// If the source of this packet has not been set, use the
@@ -1365,7 +1466,7 @@ func (s *Switch) closeCircuit(pkt *htlcPacket) (*PaymentCircuit, error) {
 // we're the originator of the payment, so the link stops attempting to
 // re-broadcast.
 func (s *Switch) ackSettleFail(settleFailRefs ...channeldb.SettleFailRef) error {
-	return kvdb.Batch(s.cfg.DB.Backend, func(tx kvdb.RwTx) error {
+	return kvdb.Batch(s.cfg.DB, func(tx kvdb.RwTx) error {
 		return s.cfg.SwitchPackager.AckSettleFails(tx, settleFailRefs...)
 	})
 }
@@ -1431,7 +1532,8 @@ func (s *Switch) teardownCircuit(pkt *htlcPacket) error {
 // a starting point for close negotiation. The deliveryScript parameter is an
 // optional parameter which sets a user specified script to close out to.
 func (s *Switch) CloseLink(chanPoint *wire.OutPoint,
-	closeType ChannelCloseType, targetFeePerKw chainfee.SatPerKWeight,
+	closeType contractcourt.ChannelCloseType,
+	targetFeePerKw chainfee.SatPerKWeight,
 	deliveryScript lnwire.DeliveryAddress) (chan interface{}, chan error) {
 
 	// TODO(roasbeef) abstract out the close updates.
@@ -1768,7 +1870,7 @@ func (s *Switch) Start() error {
 // forwarding packages and reforwards any Settle or Fail HTLCs found. This is
 // used to resurrect the switch's mailboxes after a restart.
 func (s *Switch) reforwardResponses() error {
-	openChannels, err := s.cfg.DB.FetchAllOpenChannels()
+	openChannels, err := s.cfg.FetchAllOpenChannels()
 	if err != nil {
 		return err
 	}
@@ -1811,12 +1913,14 @@ func (s *Switch) reforwardResponses() error {
 func (s *Switch) loadChannelFwdPkgs(source lnwire.ShortChannelID) ([]*channeldb.FwdPkg, error) {
 
 	var fwdPkgs []*channeldb.FwdPkg
-	if err := kvdb.Update(s.cfg.DB, func(tx kvdb.RwTx) error {
+	if err := kvdb.View(s.cfg.DB, func(tx kvdb.RTx) error {
 		var err error
 		fwdPkgs, err = s.cfg.SwitchPackager.LoadChannelFwdPkgs(
 			tx, source,
 		)
 		return err
+	}, func() {
+		fwdPkgs = nil
 	}); err != nil {
 		return nil, err
 	}
@@ -1917,7 +2021,7 @@ func (s *Switch) Stop() error {
 		return errors.New("htlc switch already shutdown")
 	}
 
-	log.Infof("HTLC Switch shutting down")
+	log.Info("HTLC Switch shutting down")
 
 	close(s.quit)
 
@@ -1929,6 +2033,15 @@ func (s *Switch) Stop() error {
 	s.mailOrchestrator.Stop()
 
 	return nil
+}
+
+// CreateAndAddLink will create a link and then add it to the internal maps
+// when given a ChannelLinkConfig and LightningChannel.
+func (s *Switch) CreateAndAddLink(linkCfg ChannelLinkConfig,
+	lnChan *lnwallet.LightningChannel) error {
+
+	link := NewChannelLink(linkCfg, lnChan)
+	return s.AddLink(link)
 }
 
 // AddLink is used to initiate the handling of the add link command. The
@@ -1997,7 +2110,9 @@ func (s *Switch) addLiveLink(link ChannelLink) {
 
 // GetLink is used to initiate the handling of the get link command. The
 // request will be propagated/handled to/in the main goroutine.
-func (s *Switch) GetLink(chanID lnwire.ChannelID) (ChannelLink, error) {
+func (s *Switch) GetLink(chanID lnwire.ChannelID) (ChannelUpdateHandler,
+	error) {
+
 	s.indexMtx.RLock()
 	defer s.indexMtx.RUnlock()
 
@@ -2016,6 +2131,17 @@ func (s *Switch) getLink(chanID lnwire.ChannelID) (ChannelLink, error) {
 	}
 
 	return link, nil
+}
+
+// GetLinkByShortID attempts to return the link which possesses the target short
+// channel ID.
+func (s *Switch) GetLinkByShortID(chanID lnwire.ShortChannelID) (ChannelLink,
+	error) {
+
+	s.indexMtx.RLock()
+	defer s.indexMtx.RUnlock()
+
+	return s.getLinkByShortID(chanID)
 }
 
 // getLinkByShortID attempts to return the link which possesses the target
@@ -2139,11 +2265,26 @@ func (s *Switch) UpdateShortChanID(chanID lnwire.ChannelID) error {
 
 // GetLinksByInterface fetches all the links connected to a particular node
 // identified by the serialized compressed form of its public key.
-func (s *Switch) GetLinksByInterface(hop [33]byte) ([]ChannelLink, error) {
+func (s *Switch) GetLinksByInterface(hop [33]byte) ([]ChannelUpdateHandler,
+	error) {
+
 	s.indexMtx.RLock()
 	defer s.indexMtx.RUnlock()
 
-	return s.getLinks(hop)
+	var handlers []ChannelUpdateHandler
+
+	links, err := s.getLinks(hop)
+	if err != nil {
+		return nil, err
+	}
+
+	// Range over the returned []ChannelLink to convert them into
+	// []ChannelUpdateHandler.
+	for _, link := range links {
+		handlers = append(handlers, link)
+	}
+
+	return handlers, nil
 }
 
 // getLinks is function which returns the channel links of the peer by hop
@@ -2170,23 +2311,17 @@ func (s *Switch) CircuitModifier() CircuitModifier {
 	return s.circuits
 }
 
+// CircuitLookup returns a reference to subset of the interfaces provided by the
+// circuit map, to allow looking up circuits.
+func (s *Switch) CircuitLookup() CircuitLookup {
+	return s.circuits
+}
+
 // commitCircuits persistently adds a circuit to the switch's circuit map.
 func (s *Switch) commitCircuits(circuits ...*PaymentCircuit) (
 	*CircuitFwdActions, error) {
 
 	return s.circuits.CommitCircuits(circuits...)
-}
-
-// openCircuits preemptively writes the keystones for Adds that are about to be
-// added to a commitment txn.
-func (s *Switch) openCircuits(keystones ...Keystone) error {
-	return s.circuits.OpenCircuits(keystones...)
-}
-
-// deleteCircuits persistently removes the circuit, and keystone if present,
-// from the circuit map.
-func (s *Switch) deleteCircuits(inKeys ...CircuitKey) error {
-	return s.circuits.DeleteCircuits(inKeys...)
 }
 
 // FlushForwardingEvents flushes out the set of pending forwarding events to
@@ -2221,4 +2356,74 @@ func (s *Switch) FlushForwardingEvents() error {
 // BestHeight returns the best height known to the switch.
 func (s *Switch) BestHeight() uint32 {
 	return atomic.LoadUint32(&s.bestHeight)
+}
+
+// evaluateDustThreshold takes in a ChannelLink, HTLC amount, and a boolean to
+// determine whether the default dust threshold has been exceeded. This
+// heuristic takes into account the trimmed-to-dust mechanism. The sum of the
+// commitment's dust with the mailbox's dust with the amount is checked against
+// the default threshold. If incoming is true, then the amount is not included
+// in the sum as it was already included in the commitment's dust. A boolean is
+// returned telling the caller whether the HTLC should be failed back.
+func (s *Switch) evaluateDustThreshold(link ChannelLink,
+	amount lnwire.MilliSatoshi, incoming bool) bool {
+
+	// Retrieve the link's current commitment feerate and dustClosure.
+	feeRate := link.getFeeRate()
+	isDust := link.getDustClosure()
+
+	// Evaluate if the HTLC is dust on either sides' commitment.
+	isLocalDust := isDust(feeRate, incoming, true, amount.ToSatoshis())
+	isRemoteDust := isDust(feeRate, incoming, false, amount.ToSatoshis())
+
+	if !(isLocalDust || isRemoteDust) {
+		// If the HTLC is not dust on either commitment, it's fine to
+		// forward.
+		return false
+	}
+
+	// Fetch the dust sums currently in the mailbox for this link.
+	cid := link.ChanID()
+	sid := link.ShortChanID()
+	mailbox := s.mailOrchestrator.GetOrCreateMailBox(cid, sid)
+	localMailDust, remoteMailDust := mailbox.DustPackets()
+
+	// If the htlc is dust on the local commitment, we'll obtain the dust
+	// sum for it.
+	if isLocalDust {
+		localSum := link.getDustSum(false)
+		localSum += localMailDust
+
+		// Optionally include the HTLC amount only for outgoing
+		// HTLCs.
+		if !incoming {
+			localSum += amount
+		}
+
+		// Finally check against the defined dust threshold.
+		if localSum > s.cfg.DustThreshold {
+			return true
+		}
+	}
+
+	// Also check if the htlc is dust on the remote commitment, if we've
+	// reached this point.
+	if isRemoteDust {
+		remoteSum := link.getDustSum(true)
+		remoteSum += remoteMailDust
+
+		// Optionally include the HTLC amount only for outgoing
+		// HTLCs.
+		if !incoming {
+			remoteSum += amount
+		}
+
+		// Finally check against the defined dust threshold.
+		if remoteSum > s.cfg.DustThreshold {
+			return true
+		}
+	}
+
+	// If we reached this point, this HTLC is fine to forward.
+	return false
 }

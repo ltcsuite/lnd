@@ -1,3 +1,4 @@
+//go:build signrpc
 // +build signrpc
 
 package signrpc
@@ -10,12 +11,13 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnrpc"
 	"github.com/ltcsuite/lnd/lnwire"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/lnd/macaroons"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
@@ -75,11 +77,21 @@ var (
 	DefaultSignerMacFilename = "signer.macaroon"
 )
 
+// ServerShell is a shell struct holding a reference to the actual sub-server.
+// It is used to register the gRPC sub-server with the root server before we
+// have the necessary dependencies to populate the actual sub-server.
+type ServerShell struct {
+	SignerServer
+}
+
 // Server is a sub-server of the main RPC server: the signer RPC. This sub RPC
 // server allows external callers to access the full signing capabilities of
 // lnd. This allows callers to create custom protocols, external to lnd, even
 // backed by multiple distinct lnd across independent failure domains.
 type Server struct {
+	// Required by the grpc-gateway/v2 library for forward compatibility.
+	UnimplementedSignerServer
+
 	cfg *Config
 }
 
@@ -102,17 +114,20 @@ func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
 	}
 
 	// Now that we know the full path of the signer macaroon, we can check
-	// to see if we need to create it or not.
+	// to see if we need to create it or not. If stateless_init is set
+	// then we don't write the macaroons.
 	macFilePath := cfg.SignerMacPath
-	if cfg.MacService != nil && !lnrpc.FileExists(macFilePath) {
+	if cfg.MacService != nil && !cfg.MacService.StatelessInit &&
+		!lnrpc.FileExists(macFilePath) {
+
 		log.Infof("Making macaroons for Signer RPC Server at: %v",
 			macFilePath)
 
 		// At this point, we know that the signer macaroon doesn't yet,
 		// exist, so we need to create it with the help of the main
 		// macaroon service.
-		signerMac, err := cfg.MacService.Oven.NewMacaroon(
-			context.Background(), bakery.LatestVersion, nil,
+		signerMac, err := cfg.MacService.NewMacaroon(
+			context.Background(), macaroons.DefaultRootKeyID,
 			macaroonOps...,
 		)
 		if err != nil {
@@ -124,7 +139,7 @@ func New(cfg *Config) (*Server, lnrpc.MacaroonPerms, error) {
 		}
 		err = ioutil.WriteFile(macFilePath, signerMacBytes, 0644)
 		if err != nil {
-			os.Remove(macFilePath)
+			_ = os.Remove(macFilePath)
 			return nil, nil, err
 		}
 	}
@@ -163,11 +178,11 @@ func (s *Server) Name() string {
 // is called, each sub-server won't be able to have
 // requests routed towards it.
 //
-// NOTE: This is part of the lnrpc.SubServer interface.
-func (s *Server) RegisterWithRootServer(grpcServer *grpc.Server) error {
+// NOTE: This is part of the lnrpc.GrpcHandler interface.
+func (r *ServerShell) RegisterWithRootServer(grpcServer *grpc.Server) error {
 	// We make sure that we register it with the main gRPC server to ensure
 	// all our methods are routed properly.
-	RegisterSignerServer(grpcServer, s)
+	RegisterSignerServer(grpcServer, r)
 
 	log.Debugf("Signer RPC server successfully register with root gRPC " +
 		"server")
@@ -179,8 +194,8 @@ func (s *Server) RegisterWithRootServer(grpcServer *grpc.Server) error {
 // RPC server to register itself with the main REST mux server. Until this is
 // called, each sub-server won't be able to have requests routed towards it.
 //
-// NOTE: This is part of the lnrpc.SubServer interface.
-func (s *Server) RegisterWithRestServer(ctx context.Context,
+// NOTE: This is part of the lnrpc.GrpcHandler interface.
+func (r *ServerShell) RegisterWithRestServer(ctx context.Context,
 	mux *runtime.ServeMux, dest string, opts []grpc.DialOption) error {
 
 	// We make sure that we register it with the main REST server to ensure
@@ -197,6 +212,25 @@ func (s *Server) RegisterWithRestServer(ctx context.Context,
 	return nil
 }
 
+// CreateSubServer populates the subserver's dependencies using the passed
+// SubServerConfigDispatcher. This method should fully initialize the
+// sub-server instance, making it ready for action. It returns the macaroon
+// permissions that the sub-server wishes to pass on to the root server for all
+// methods routed towards it.
+//
+// NOTE: This is part of the lnrpc.GrpcHandler interface.
+func (r *ServerShell) CreateSubServer(configRegistry lnrpc.SubServerConfigDispatcher) (
+	lnrpc.SubServer, lnrpc.MacaroonPerms, error) {
+
+	subServer, macPermissions, err := createNewSubServer(configRegistry)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	r.SignerServer = subServer
+	return subServer, macPermissions, nil
+}
+
 // SignOutputRaw generates a signature for the passed transaction according to
 // the data within the passed SignReq. If we're unable to find the keys that
 // correspond to the KeyLocators in the SignReq then we'll return an error.
@@ -204,7 +238,8 @@ func (s *Server) RegisterWithRestServer(ctx context.Context,
 // provides an invalid transaction, then we'll return with an error.
 //
 // NOTE: The resulting signature should be void of a sighash byte.
-func (s *Server) SignOutputRaw(ctx context.Context, in *SignReq) (*SignResp, error) {
+func (s *Server) SignOutputRaw(ctx context.Context, in *SignReq) (*SignResp,
+	error) {
 
 	switch {
 	// If the client doesn't specify a transaction, then there's nothing to
@@ -253,27 +288,11 @@ func (s *Server) SignOutputRaw(ctx context.Context, in *SignReq) (*SignResp, err
 		// If this method doesn't return nil, then we know that user is
 		// attempting to include a raw serialized pub key.
 		if keyDesc.GetRawKeyBytes() != nil {
-			rawKeyBytes := keyDesc.GetRawKeyBytes()
-
-			switch {
-			// If the user provided a raw key, but it's of the
-			// wrong length, then we'll return with an error.
-			case len(rawKeyBytes) != 0 && len(rawKeyBytes) != 33:
-
-				return nil, fmt.Errorf("pubkey must be " +
-					"serialized in compressed format if " +
-					"specified")
-
-			// If a proper raw key was provided, then we'll attempt
-			// to decode and parse it.
-			case len(rawKeyBytes) != 0 && len(rawKeyBytes) == 33:
-				targetPubKey, err = btcec.ParsePubKey(
-					rawKeyBytes, btcec.S256(),
-				)
-				if err != nil {
-					return nil, fmt.Errorf("unable to "+
-						"parse pubkey: %v", err)
-				}
+			targetPubKey, err = parseRawKeyBytes(
+				keyDesc.GetRawKeyBytes(),
+			)
+			if err != nil {
+				return nil, err
 			}
 		}
 
@@ -291,9 +310,12 @@ func (s *Server) SignOutputRaw(ctx context.Context, in *SignReq) (*SignResp, err
 
 		// If a witness script isn't passed, then we can't proceed, as
 		// in the p2wsh case, we can't properly generate the sighash.
+		// A P2WKH doesn't need a witness script. But SignOutputRaw
+		// still needs to know the PK script that was used for the
+		// output. We'll send it in the WitnessScript field, the
+		// SignOutputRaw RPC will know what to do with it when creating
+		// the sighash.
 		if len(signDesc.WitnessScript) == 0 {
-			// TODO(roasbeef): if regualr p2wkh, then at times
-			// internally we allow script to go by
 			return nil, fmt.Errorf("witness script MUST be " +
 				"specified")
 		}
@@ -303,7 +325,7 @@ func (s *Server) SignOutputRaw(ctx context.Context, in *SignReq) (*SignResp, err
 		var tweakPrivKey *btcec.PrivateKey
 		if len(signDesc.DoubleTweak) != 0 {
 			tweakPrivKey, _ = btcec.PrivKeyFromBytes(
-				btcec.S256(), signDesc.DoubleTweak,
+				signDesc.DoubleTweak,
 			)
 		}
 
@@ -428,7 +450,7 @@ func (s *Server) ComputeInputScript(ctx context.Context,
 
 // SignMessage signs a message with the key specified in the key locator. The
 // returned signature is fixed-size LN wire format encoded.
-func (s *Server) SignMessage(ctx context.Context,
+func (s *Server) SignMessage(_ context.Context,
 	in *SignMessageReq) (*SignMessageResp, error) {
 
 	if in.Msg == nil {
@@ -439,20 +461,33 @@ func (s *Server) SignMessage(ctx context.Context,
 	}
 
 	// Describe the private key we'll be using for signing.
-	keyDescriptor := keychain.KeyDescriptor{
-		KeyLocator: keychain.KeyLocator{
-			Family: keychain.KeyFamily(in.KeyLoc.KeyFamily),
-			Index:  uint32(in.KeyLoc.KeyIndex),
-		},
+	keyLocator := keychain.KeyLocator{
+		Family: keychain.KeyFamily(in.KeyLoc.KeyFamily),
+		Index:  uint32(in.KeyLoc.KeyIndex),
 	}
 
-	// The signature is over the sha256 hash of the message.
-	var digest [32]byte
-	copy(digest[:], chainhash.HashB(in.Msg))
+	// To allow a watch-only wallet to forward the SignMessageCompact to an
+	// endpoint that doesn't add the message prefix, we allow this RPC to
+	// also return the compact signature format instead of adding a flag to
+	// the lnrpc.SignMessage call that removes the message prefix.
+	if in.CompactSig {
+		sigBytes, err := s.cfg.KeyRing.SignMessageCompact(
+			keyLocator, in.Msg, in.DoubleHash,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("can't sign the hash: %v", err)
+		}
+
+		return &SignMessageResp{
+			Signature: sigBytes,
+		}, nil
+	}
 
 	// Create the raw ECDSA signature first and convert it to the final wire
 	// format after.
-	sig, err := s.cfg.KeyRing.SignDigest(keyDescriptor, digest)
+	sig, err := s.cfg.KeyRing.SignMessage(
+		keyLocator, in.Msg, in.DoubleHash,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("can't sign the hash: %v", err)
 	}
@@ -480,7 +515,7 @@ func (s *Server) VerifyMessage(ctx context.Context,
 	if in.Pubkey == nil {
 		return nil, fmt.Errorf("a pubkey to verify MUST be passed in")
 	}
-	pubkey, err := btcec.ParsePubKey(in.Pubkey, btcec.S256())
+	pubkey, err := btcec.ParsePubKey(in.Pubkey)
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse pubkey: %v", err)
 	}
@@ -506,38 +541,82 @@ func (s *Server) VerifyMessage(ctx context.Context,
 
 // DeriveSharedKey returns a shared secret key by performing Diffie-Hellman key
 // derivation between the ephemeral public key in the request and the node's
-// key specified in the key_loc parameter (or the node's identity private key
-// if no key locator is specified):
-//     P_shared = privKeyNode * ephemeralPubkey
+// key specified in the key_desc parameter. Either a key locator or a raw public
+// key is expected in the key_desc, if neither is supplied, defaults to the
+// node's identity private key. The old key_loc parameter in the request
+// shouldn't be used anymore.
 // The resulting shared public key is serialized in the compressed format and
 // hashed with sha256, resulting in the final key length of 256bit.
 func (s *Server) DeriveSharedKey(_ context.Context, in *SharedKeyRequest) (
 	*SharedKeyResponse, error) {
 
-	if len(in.EphemeralPubkey) != 33 {
-		return nil, fmt.Errorf("ephemeral pubkey must be " +
-			"serialized in compressed format")
-	}
-	ephemeralPubkey, err := btcec.ParsePubKey(
-		in.EphemeralPubkey, btcec.S256(),
-	)
+	// Check that EphemeralPubkey is valid.
+	ephemeralPubkey, err := parseRawKeyBytes(in.EphemeralPubkey)
 	if err != nil {
-		return nil, fmt.Errorf("unable to parse pubkey: %v", err)
+		return nil, fmt.Errorf("error in ephemeral pubkey: %v", err)
+	}
+	if ephemeralPubkey == nil {
+		return nil, fmt.Errorf("must provide ephemeral pubkey")
 	}
 
-	// By default, use the node identity private key.
-	locator := keychain.KeyLocator{
-		Family: keychain.KeyFamilyNodeKey,
-		Index:  0,
+	// Check for backward compatibility. The caller either specifies the old
+	// key_loc field, or the new key_desc field, but not both.
+	if in.KeyDesc != nil && in.KeyLoc != nil {
+		return nil, fmt.Errorf("use either key_desc or key_loc")
 	}
-	if in.KeyLoc != nil {
-		locator.Family = keychain.KeyFamily(in.KeyLoc.KeyFamily)
-		locator.Index = uint32(in.KeyLoc.KeyIndex)
+
+	// When key_desc is used, the key_desc.key_loc is expected as the caller
+	// needs to specify the KeyFamily.
+	if in.KeyDesc != nil && in.KeyDesc.KeyLoc == nil {
+		return nil, fmt.Errorf("when setting key_desc the field " +
+			"key_desc.key_loc must also be set")
+	}
+
+	// We extract two params, rawKeyBytes and keyLoc. Notice their initial
+	// values will be overwritten if not using the deprecated RPC param.
+	var rawKeyBytes []byte
+	keyLoc := in.KeyLoc
+	if in.KeyDesc != nil {
+		keyLoc = in.KeyDesc.GetKeyLoc()
+		rawKeyBytes = in.KeyDesc.GetRawKeyBytes()
+	}
+
+	// When no keyLoc is supplied, defaults to the node's identity private
+	// key.
+	if keyLoc == nil {
+		keyLoc = &KeyLocator{
+			KeyFamily: int32(keychain.KeyFamilyNodeKey),
+			KeyIndex:  0,
+		}
+	}
+
+	// Check the caller is using either the key index or the raw public key
+	// to perform the ECDH, we can't have both.
+	if rawKeyBytes != nil && keyLoc.KeyIndex != 0 {
+		return nil, fmt.Errorf("use either raw_key_bytes or key_index")
+	}
+
+	// Check the raw public key is valid. Notice that if the rawKeyBytes is
+	// empty, the parseRawKeyBytes won't return an error, a nil
+	// *btcec.PublicKey is returned instead.
+	pk, err := parseRawKeyBytes(rawKeyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("error in raw pubkey: %v", err)
+	}
+
+	// Create a key descriptor. When the KeyIndex is not specified, it uses
+	// the empty value 0, and when the raw public key is not specified, the
+	// pk is nil.
+	keyDescriptor := keychain.KeyDescriptor{
+		KeyLocator: keychain.KeyLocator{
+			Family: keychain.KeyFamily(keyLoc.KeyFamily),
+			Index:  uint32(keyLoc.KeyIndex),
+		},
+		PubKey: pk,
 	}
 
 	// Derive the shared key using ECDH and hashing the serialized
 	// compressed shared point.
-	keyDescriptor := keychain.KeyDescriptor{KeyLocator: locator}
 	sharedKeyHash, err := s.cfg.KeyRing.ECDH(keyDescriptor, ephemeralPubkey)
 	if err != nil {
 		err := fmt.Errorf("unable to derive shared key: %v", err)
@@ -546,4 +625,30 @@ func (s *Server) DeriveSharedKey(_ context.Context, in *SharedKeyRequest) (
 	}
 
 	return &SharedKeyResponse{SharedKey: sharedKeyHash[:]}, nil
+}
+
+// parseRawKeyBytes checks that the provided raw public key is valid and returns
+// the public key. A nil public key is returned if the length of the rawKeyBytes
+// is zero.
+func parseRawKeyBytes(rawKeyBytes []byte) (*btcec.PublicKey, error) {
+	switch {
+
+	case len(rawKeyBytes) == 33:
+		// If a proper raw key was provided, then we'll attempt
+		// to decode and parse it.
+		return btcec.ParsePubKey(
+			rawKeyBytes,
+		)
+
+	case len(rawKeyBytes) == 0:
+		// No key is provided, return nil.
+		return nil, nil
+
+	default:
+		// If the user provided a raw key, but it's of the
+		// wrong length, then we'll return with an error.
+		return nil, fmt.Errorf("pubkey must be " +
+			"serialized in compressed format if " +
+			"specified")
+	}
 }

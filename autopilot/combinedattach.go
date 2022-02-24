@@ -3,7 +3,7 @@ package autopilot
 import (
 	"fmt"
 
-	"github.com/ltcsuite/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 // WeightedHeuristic is a tuple that associates a weight to an
@@ -70,7 +70,7 @@ func (c *WeightedCombAttachment) Name() string {
 // is the maximum possible improvement in connectivity.
 //
 // NOTE: This is a part of the AttachmentHeuristic interface.
-func (c *WeightedCombAttachment) NodeScores(g ChannelGraph, chans []Channel,
+func (c *WeightedCombAttachment) NodeScores(g ChannelGraph, chans []LocalChannel,
 	chanSize ltcutil.Amount, nodes map[NodeID]struct{}) (
 	map[NodeID]*NodeScore, error) {
 

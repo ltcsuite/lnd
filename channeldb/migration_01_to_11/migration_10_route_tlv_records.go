@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"io"
 
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
+	"github.com/ltcsuite/lnd/kvdb"
 )
 
 // MigrateRouteSerialization migrates the way we serialize routes across the

@@ -9,7 +9,7 @@ import (
 	"github.com/ltcsuite/lnd/lnpeer"
 	"github.com/ltcsuite/lnd/lntest/wait"
 	"github.com/ltcsuite/lnd/lnwire"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
 // newTestReliableSender creates a new reliable sender instance used for
@@ -20,7 +20,7 @@ func newTestReliableSender(t *testing.T) *reliableSender {
 	cfg := &reliableSenderCfg{
 		NotifyWhenOnline: func(pubKey [33]byte,
 			peerChan chan<- lnpeer.Peer) {
-			pk, err := btcec.ParsePubKey(pubKey[:], btcec.S256())
+			pk, err := btcec.ParsePubKey(pubKey[:])
 			if err != nil {
 				t.Fatalf("unable to parse pubkey: %v", err)
 			}

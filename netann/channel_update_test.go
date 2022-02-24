@@ -5,21 +5,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/netann"
 	"github.com/ltcsuite/lnd/routing"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/btcec/v2/ecdsa"
 )
 
 type mockSigner struct {
 	err error
 }
 
-func (m *mockSigner) SignMessage(pk *btcec.PublicKey,
-	msg []byte) (input.Signature, error) {
+func (m *mockSigner) SignMessage(_ keychain.KeyLocator,
+	_ []byte, _ bool) (*ecdsa.Signature, error) {
 
 	if m.err != nil {
 		return nil, m.err
@@ -31,8 +31,8 @@ func (m *mockSigner) SignMessage(pk *btcec.PublicKey,
 var _ lnwallet.MessageSigner = (*mockSigner)(nil)
 
 var (
-	privKey, _    = btcec.NewPrivateKey(btcec.S256())
-	privKeySigner = &keychain.PrivKeyDigestSigner{PrivKey: privKey}
+	privKey, _    = btcec.NewPrivateKey()
+	privKeySigner = keychain.NewPrivKeyMessageSigner(privKey, testKeyLoc)
 
 	pubKey = privKey.PubKey()
 
@@ -130,7 +130,7 @@ func TestUpdateDisableFlag(t *testing.T) {
 			// Attempt to update and sign the new update, specifying
 			// disabled or enabled as prescribed in the test case.
 			err := netann.SignChannelUpdate(
-				tc.signer, pubKey, newUpdate,
+				tc.signer, testKeyLoc, newUpdate,
 				netann.ChanUpdSetDisable(tc.disable),
 				netann.ChanUpdSetTimestamp,
 			)

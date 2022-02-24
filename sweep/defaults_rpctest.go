@@ -1,3 +1,4 @@
+//go:build rpctest
 // +build rpctest
 
 package sweep
@@ -13,5 +14,5 @@ var (
 	//
 	// To speed up integration tests waiting for a sweep to happen, the
 	// batch window is shortened.
-	DefaultBatchWindowDuration = 2 * time.Second
+	DefaultBatchWindowDuration = 8 * time.Second
 )

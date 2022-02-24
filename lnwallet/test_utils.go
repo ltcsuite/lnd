@@ -16,10 +16,10 @@ import (
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/shachain"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 )
 
 var (
@@ -93,6 +93,11 @@ var (
 		0xc5, 0x6c, 0xbb, 0xac, 0x46, 0x22, 0x08, 0x22,
 		0x21, 0xa8, 0x76, 0x8d, 0x1d, 0x09,
 	}
+
+	aliceDustLimit = ltcutil.Amount(200)
+	bobDustLimit   = ltcutil.Amount(1300)
+
+	testChannelCapacity float64 = 10
 )
 
 // CreateTestChannels creates to fully populated channels to be used within
@@ -106,16 +111,15 @@ var (
 func CreateTestChannels(chanType channeldb.ChannelType) (
 	*LightningChannel, *LightningChannel, func(), error) {
 
-	channelCapacity, err := ltcutil.NewAmount(10)
+	channelCapacity, err := ltcutil.NewAmount(testChannelCapacity)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
 	channelBal := channelCapacity / 2
-	aliceDustLimit := ltcutil.Amount(200)
-	bobDustLimit := ltcutil.Amount(1300)
 	csvTimeoutAlice := uint32(5)
 	csvTimeoutBob := uint32(4)
+	isAliceInitiator := true
 
 	prevOut := &wire.OutPoint{
 		Hash:  chainhash.Hash(testHdSeed),
@@ -134,14 +138,14 @@ func CreateTestChannels(chanType channeldb.ChannelType) (
 		copy(key[:], testWalletPrivKey[:])
 		key[0] ^= byte(i + 1)
 
-		aliceKey, _ := btcec.PrivKeyFromBytes(btcec.S256(), key)
+		aliceKey, _ := btcec.PrivKeyFromBytes(key)
 		aliceKeys = append(aliceKeys, aliceKey)
 
 		key = make([]byte, len(bobsPrivKey))
 		copy(key[:], bobsPrivKey)
 		key[0] ^= byte(i + 1)
 
-		bobKey, _ := btcec.PrivKeyFromBytes(btcec.S256(), key)
+		bobKey, _ := btcec.PrivKeyFromBytes(key)
 		bobKeys = append(bobKeys, bobKey)
 	}
 
@@ -220,7 +224,7 @@ func CreateTestChannels(chanType channeldb.ChannelType) (
 
 	aliceCommitTx, bobCommitTx, err := CreateCommitmentTxns(
 		channelBal, channelBal, &aliceCfg, &bobCfg, aliceCommitPoint,
-		bobCommitPoint, *fundingTxIn, chanType,
+		bobCommitPoint, *fundingTxIn, chanType, isAliceInitiator, 0,
 	)
 	if err != nil {
 		return nil, nil, nil, err
@@ -262,7 +266,7 @@ func CreateTestChannels(chanType channeldb.ChannelType) (
 	)
 	bobBalance := lnwire.NewMSatFromSatoshis(channelBal)
 
-	aliceCommit := channeldb.ChannelCommitment{
+	aliceLocalCommit := channeldb.ChannelCommitment{
 		CommitHeight:  0,
 		LocalBalance:  aliceBalance,
 		RemoteBalance: bobBalance,
@@ -271,13 +275,31 @@ func CreateTestChannels(chanType channeldb.ChannelType) (
 		CommitTx:      aliceCommitTx,
 		CommitSig:     testSigBytes,
 	}
-	bobCommit := channeldb.ChannelCommitment{
+	aliceRemoteCommit := channeldb.ChannelCommitment{
+		CommitHeight:  0,
+		LocalBalance:  aliceBalance,
+		RemoteBalance: bobBalance,
+		CommitFee:     commitFee,
+		FeePerKw:      ltcutil.Amount(feePerKw),
+		CommitTx:      bobCommitTx,
+		CommitSig:     testSigBytes,
+	}
+	bobLocalCommit := channeldb.ChannelCommitment{
 		CommitHeight:  0,
 		LocalBalance:  bobBalance,
 		RemoteBalance: aliceBalance,
 		CommitFee:     commitFee,
 		FeePerKw:      ltcutil.Amount(feePerKw),
 		CommitTx:      bobCommitTx,
+		CommitSig:     testSigBytes,
+	}
+	bobRemoteCommit := channeldb.ChannelCommitment{
+		CommitHeight:  0,
+		LocalBalance:  bobBalance,
+		RemoteBalance: aliceBalance,
+		CommitFee:     commitFee,
+		FeePerKw:      ltcutil.Amount(feePerKw),
+		CommitTx:      aliceCommitTx,
 		CommitSig:     testSigBytes,
 	}
 
@@ -297,14 +319,14 @@ func CreateTestChannels(chanType channeldb.ChannelType) (
 		FundingOutpoint:         *prevOut,
 		ShortChannelID:          shortChanID,
 		ChanType:                chanType,
-		IsInitiator:             true,
+		IsInitiator:             isAliceInitiator,
 		Capacity:                channelCapacity,
 		RemoteCurrentRevocation: bobCommitPoint,
 		RevocationProducer:      alicePreimageProducer,
 		RevocationStore:         shachain.NewRevocationStore(),
-		LocalCommitment:         aliceCommit,
-		RemoteCommitment:        aliceCommit,
-		Db:                      dbAlice,
+		LocalCommitment:         aliceLocalCommit,
+		RemoteCommitment:        aliceRemoteCommit,
+		Db:                      dbAlice.ChannelStateDB(),
 		Packager:                channeldb.NewChannelPackager(shortChanID),
 		FundingTxn:              testTx,
 	}
@@ -315,14 +337,14 @@ func CreateTestChannels(chanType channeldb.ChannelType) (
 		FundingOutpoint:         *prevOut,
 		ShortChannelID:          shortChanID,
 		ChanType:                chanType,
-		IsInitiator:             false,
+		IsInitiator:             !isAliceInitiator,
 		Capacity:                channelCapacity,
 		RemoteCurrentRevocation: aliceCommitPoint,
 		RevocationProducer:      bobPreimageProducer,
 		RevocationStore:         shachain.NewRevocationStore(),
-		LocalCommitment:         bobCommit,
-		RemoteCommitment:        bobCommit,
-		Db:                      dbBob,
+		LocalCommitment:         bobLocalCommit,
+		RemoteCommitment:        bobRemoteCommit,
+		Db:                      dbBob.ChannelStateDB(),
 		Packager:                channeldb.NewChannelPackager(shortChanID),
 	}
 
@@ -428,7 +450,7 @@ func pubkeyFromHex(keyHex string) (*btcec.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	return btcec.ParsePubKey(bytes, btcec.S256())
+	return btcec.ParsePubKey(bytes)
 }
 
 // privkeyFromHex parses a Bitcoin private key from a hex encoded string.
@@ -437,7 +459,7 @@ func privkeyFromHex(keyHex string) (*btcec.PrivateKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	key, _ := btcec.PrivKeyFromBytes(btcec.S256(), bytes)
+	key, _ := btcec.PrivKeyFromBytes(bytes)
 	return key, nil
 
 }

@@ -7,13 +7,13 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/go-errors/errors"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // TopologyClient represents an intent to receive notifications from the
@@ -126,8 +126,7 @@ func (r *ChannelRouter) notifyTopologyChange(topologyDiff *TopologyChange) {
 	}
 
 	log.Tracef("Sending topology notification to %v clients %v",
-		numClients,
-		newLogClosure(func() string {
+		numClients, newLogClosure(func() string {
 			return spew.Sdump(topologyDiff)
 		}),
 	)
@@ -238,15 +237,14 @@ type NetworkNodeUpdate struct {
 	// updates.
 	IdentityKey *btcec.PublicKey
 
-	// GlobalFeatures is a set of opaque bytes that describe the set of
-	// features supported by the node.
-	GlobalFeatures []byte
-
 	// Alias is the alias or nick name of the node.
 	Alias string
 
 	// Color is the node's color in hex code format.
 	Color string
+
+	// Features holds the set of features the node supports.
+	Features *lnwire.FeatureVector
 }
 
 // ChannelEdgeUpdate is an update for a new channel within the ChannelGraph.
@@ -318,13 +316,14 @@ func addToTopologyChange(graph *channeldb.ChannelGraph, update *TopologyChange,
 		if err != nil {
 			return err
 		}
+
 		nodeUpdate := &NetworkNodeUpdate{
 			Addresses:   m.Addresses,
 			IdentityKey: pubKey,
 			Alias:       m.Alias,
 			Color:       EncodeHexColor(m.Color),
+			Features:    m.Features.Clone(),
 		}
-		nodeUpdate.IdentityKey.Curve = nil
 
 		update.NodeUpdates = append(update.NodeUpdates, nodeUpdate)
 		return nil
@@ -377,8 +376,6 @@ func addToTopologyChange(graph *channeldb.ChannelGraph, update *TopologyChange,
 			ConnectingNode:  cNode,
 			Disabled:        m.ChannelFlags&lnwire.ChanUpdateDisabled != 0,
 		}
-		edgeUpdate.AdvertisingNode.Curve = nil
-		edgeUpdate.ConnectingNode.Curve = nil
 
 		// TODO(roasbeef): add bit to toggle
 		update.ChannelEdgeUpdates = append(update.ChannelEdgeUpdates,

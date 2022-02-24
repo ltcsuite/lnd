@@ -1,9 +1,9 @@
 package chanfunding
 
 import (
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // CoinSource is an interface that allows a caller to access a source of UTXOs
@@ -102,6 +102,16 @@ type Intent interface {
 	// selection, we may bleed from of that LocalAmt into fees to minimize
 	// change.
 	LocalFundingAmt() ltcutil.Amount
+
+	// Inputs returns all inputs to the final funding transaction that we
+	// know about. Note that there might be more, but we are not (yet)
+	// aware of.
+	Inputs() []wire.OutPoint
+
+	// Outputs returns all outputs of the final funding transaction that we
+	// know about. Note that there might be more, but we are not (yet)
+	// aware of.
+	Outputs() []*wire.TxOut
 
 	// Cancel allows the caller to cancel a funding Intent at any time.
 	// This will return any resources such as coins back to the eligible

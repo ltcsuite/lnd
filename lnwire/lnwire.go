@@ -10,17 +10,24 @@ import (
 
 	"net"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 	"github.com/go-errors/errors"
 	"github.com/ltcsuite/lnd/tor"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
-// MaxSliceLength is the maximum allowed length for any opaque byte slices in
-// the wire protocol.
-const MaxSliceLength = 65535
+const (
+	// MaxSliceLength is the maximum allowed length for any opaque byte
+	// slices in the wire protocol.
+	MaxSliceLength = 65535
+
+	// MaxMsgBody is the largest payload any message is allowed to provide.
+	// This is two less than the MaxSliceLength as each message has a 2
+	// byte type that precedes the message body.
+	MaxMsgBody = 65533
+)
 
 // PkScript is simple type definition which represents a raw serialized public
 // key script.
@@ -68,13 +75,11 @@ func (a addressType) AddrLen() uint16 {
 }
 
 // WriteElement is a one-stop shop to write the big endian representation of
-// any element which is to be serialized for the wire protocol. The passed
-// io.Writer should be backed by an appropriately sized byte slice, or be able
-// to dynamically expand to accommodate additional data.
+// any element which is to be serialized for the wire protocol.
 //
-// TODO(roasbeef): this should eventually draw from a buffer pool for
-// serialization.
-func WriteElement(w io.Writer, element interface{}) error {
+// TODO(yy): rm this method once we finish dereferencing it from other
+// packages.
+func WriteElement(w *bytes.Buffer, element interface{}) error {
 	switch e := element.(type) {
 	case NodeAlias:
 		if _, err := w.Write(e[:]); err != nil {
@@ -418,6 +423,10 @@ func WriteElement(w io.Writer, element interface{}) error {
 		if _, err := w.Write(b[:]); err != nil {
 			return err
 		}
+
+	case ExtraOpaqueData:
+		return e.Encode(w)
+
 	default:
 		return fmt.Errorf("unknown type in WriteElement: %T", e)
 	}
@@ -426,10 +435,13 @@ func WriteElement(w io.Writer, element interface{}) error {
 }
 
 // WriteElements is writes each element in the elements slice to the passed
-// io.Writer using WriteElement.
-func WriteElements(w io.Writer, elements ...interface{}) error {
+// buffer using WriteElement.
+//
+// TODO(yy): rm this method once we finish dereferencing it from other
+// packages.
+func WriteElements(buf *bytes.Buffer, elements ...interface{}) error {
 	for _, element := range elements {
-		err := WriteElement(w, element)
+		err := WriteElement(buf, element)
 		if err != nil {
 			return err
 		}
@@ -530,7 +542,7 @@ func ReadElement(r io.Reader, element interface{}) error {
 			return err
 		}
 
-		pubKey, err := btcec.ParsePubKey(b[:], btcec.S256())
+		pubKey, err := btcec.ParsePubKey(b[:])
 		if err != nil {
 			return err
 		}
@@ -817,13 +829,20 @@ func ReadElement(r io.Reader, element interface{}) error {
 		length := binary.BigEndian.Uint16(addrLen[:])
 
 		var addrBytes [deliveryAddressMaxSize]byte
+
 		if length > deliveryAddressMaxSize {
-			return fmt.Errorf("cannot read %d bytes into addrBytes", length)
+			return fmt.Errorf(
+				"cannot read %d bytes into addrBytes", length,
+			)
 		}
 		if _, err = io.ReadFull(r, addrBytes[:length]); err != nil {
 			return err
 		}
 		*e = addrBytes[:length]
+
+	case *ExtraOpaqueData:
+		return e.Decode(r)
+
 	default:
 		return fmt.Errorf("unknown type in ReadElement: %T", e)
 	}

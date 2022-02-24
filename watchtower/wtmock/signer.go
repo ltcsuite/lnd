@@ -3,11 +3,12 @@ package wtmock
 import (
 	"sync"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/txscript"
-	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/btcec/v2/ecdsa"
+	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // MockSigner is an input.Signer that allows one to add arbitrary private keys
@@ -50,7 +51,7 @@ func (s *MockSigner) SignOutputRaw(tx *wire.MsgTx,
 		return nil, err
 	}
 
-	return btcec.ParseDERSignature(sig[:len(sig)-1], btcec.S256())
+	return ecdsa.ParseDERSignature(sig[:len(sig)-1])
 }
 
 // ComputeInputScript is not implemented.

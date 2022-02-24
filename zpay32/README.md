@@ -17,6 +17,6 @@ to send.
 
 ## Installation and Updating
 
-```bash
-$ go get -u github.com/ltcsuite/lnd/zpay32
+```shell
+⛰  go get -u github.com/ltcsuite/lnd/zpay32
 ```

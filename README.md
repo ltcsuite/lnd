@@ -2,14 +2,14 @@
 
 [![Build Status](https://img.shields.io/travis/lightningnetwork/lnd.svg)](https://travis-ci.org/ltcsuite/lnd)
 [![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ltcsuite/lnd/blob/master/LICENSE)
-[![Irc](https://img.shields.io/badge/chat-on%20freenode-brightgreen.svg)](https://webchat.freenode.net/?channels=lnd)
+[![Irc](https://img.shields.io/badge/chat-on%20libera-brightgreen.svg)](https://web.libera.chat/#lnd)
 [![Godoc](https://godoc.org/github.com/ltcsuite/lnd?status.svg)](https://godoc.org/github.com/ltcsuite/lnd)
 
 The Lightning Network Daemon for Litecoin (`lndltc`) - is a complete implementation of a
 [Lightning Network](https://lightning.network) node. 
 
 It is adapted from the
-[`lnd`](https://github.com/lightningnetwork/lnd) project by Lightning Labs. This fork
+[`lnd`](https://github.com/ltcsuite/lnd) project by Lightning Labs. This fork
 focuses on maintaining complete support and bugfixes related to Litecoin. Users should create issues in this repo if
 they are to find issues specific to Litecoin.
 
@@ -62,8 +62,8 @@ drastically in the near future.
 
 An automatically generated set of documentation for the RPC APIs can be found
 at [api.lightning.community](https://api.lightning.community). A set of developer
-resources including talks, articles, and example applications can be found at:
-[dev.lightning.community](https://dev.lightning.community).
+resources including guides, articles, example applications and community resources can be found at:
+[docs.lightning.engineering](https://docs.lightning.engineering).
 
 Finally, we also have an active
 [Slack](https://lightning.engineering/slack.html) where protocol developers, application developers, testers and users gather to
@@ -79,15 +79,14 @@ instructions](docs/INSTALL.md).
   To run lnd from Docker, please see the main [Docker instructions](docs/DOCKER.md)
 
 ## IRC
-
-- irc.freenode.net
-- channel #litecoin-dev
-- [webchat](https://webchat.freenode.net/?channels=litecoin-dev)
+  * irc.libera.chat
+  * channel #lnd
+  * [webchat](https://web.libera.chat/#lnd)
 
 ## Safety
 
-When operating a mainnet `lndltc` node, please refer to our [operational safety
-guildelines](docs/safety.md). It is important to note that `lndltc` is still
+When operating a mainnet `lnd` node, please refer to our [operational safety
+guidelines](docs/safety.md). It is important to note that `lnd` is still
 **beta** software and that ignoring these operational guidelines can lead to
 loss of funds.
 
@@ -98,9 +97,9 @@ security vulnerabilities helps us secure the health of `lndltc`, privacy of our
 users, and also the health of the Lightning Network as a whole. If you find
 any issues regarding security or privacy, please disclose the information
 responsibly by sending an email to security at lightning dot engineering,
-preferably [encrypted using Lightning Labs designated PGP key
+preferably encrypted using our designated PGP key
 (`91FE464CD75101DA6B6BAB60555C6465E5BCB3AF`) which can be found
-[here](https://gist.githubusercontent.com/Roasbeef/6fb5b52886183239e4aa558f83d085d3/raw/5ef96c426e3cf20a2443dc9d3c7d6877576da9ca/security@lightning.engineering).
+[here](https://gist.githubusercontent.com/Roasbeef/6fb5b52886183239e4aa558f83d085d3/raw/5fa96010af201628bcfa61e9309d9b13d23d220f/security@lightning.engineering).
 
 ## Further reading
 

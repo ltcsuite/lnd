@@ -2,12 +2,11 @@ package lnwallet
 
 import (
 	"github.com/btcsuite/btclog"
+	"github.com/ltcsuite/lnd/build"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/ltcwallet/chain"
 	ltcwallet "github.com/ltcsuite/ltcwallet/wallet"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
-
-	"github.com/ltcsuite/lnd/build"
-	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 )
 
 // walletLog is a logger that is initialized with no output filters.  This

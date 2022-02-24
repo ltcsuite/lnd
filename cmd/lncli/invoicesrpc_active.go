@@ -1,9 +1,9 @@
+//go:build invoicesrpc
 // +build invoicesrpc
 
 package main
 
 import (
-	"context"
 	"encoding/hex"
 	"fmt"
 
@@ -56,6 +56,7 @@ func settleInvoice(ctx *cli.Context) error {
 		err      error
 	)
 
+	ctxc := getContext()
 	client, cleanUp := getInvoicesClient(ctx)
 	defer cleanUp()
 
@@ -76,7 +77,7 @@ func settleInvoice(ctx *cli.Context) error {
 		Preimage: preimage,
 	}
 
-	resp, err := client.SettleInvoice(context.Background(), invoice)
+	resp, err := client.SettleInvoice(ctxc, invoice)
 	if err != nil {
 		return err
 	}
@@ -89,7 +90,7 @@ func settleInvoice(ctx *cli.Context) error {
 var cancelInvoiceCommand = cli.Command{
 	Name:     "cancelinvoice",
 	Category: "Invoices",
-	Usage:    "Cancels a (hold) invoice",
+	Usage:    "Cancels a (hold) invoice.",
 	Description: `
 	Todo.`,
 	ArgsUsage: "paymenthash",
@@ -109,6 +110,7 @@ func cancelInvoice(ctx *cli.Context) error {
 		err         error
 	)
 
+	ctxc := getContext()
 	client, cleanUp := getInvoicesClient(ctx)
 	defer cleanUp()
 
@@ -129,7 +131,7 @@ func cancelInvoice(ctx *cli.Context) error {
 		PaymentHash: paymentHash,
 	}
 
-	resp, err := client.CancelInvoice(context.Background(), invoice)
+	resp, err := client.CancelInvoice(ctxc, invoice)
 	if err != nil {
 		return err
 	}
@@ -199,6 +201,7 @@ func addHoldInvoice(ctx *cli.Context) error {
 		err      error
 	)
 
+	ctxc := getContext()
 	client, cleanUp := getInvoicesClient(ctx)
 	defer cleanUp()
 
@@ -225,10 +228,6 @@ func addHoldInvoice(ctx *cli.Context) error {
 		}
 	}
 
-	if err != nil {
-		return fmt.Errorf("unable to parse preimage: %v", err)
-	}
-
 	descHash, err = hex.DecodeString(ctx.String("description_hash"))
 	if err != nil {
 		return fmt.Errorf("unable to parse description_hash: %v", err)
@@ -245,16 +244,12 @@ func addHoldInvoice(ctx *cli.Context) error {
 		Private:         ctx.Bool("private"),
 	}
 
-	resp, err := client.AddHoldInvoice(context.Background(), invoice)
+	resp, err := client.AddHoldInvoice(ctxc, invoice)
 	if err != nil {
 		return err
 	}
 
-	printJSON(struct {
-		PayReq string `json:"pay_req"`
-	}{
-		PayReq: resp.PaymentRequest,
-	})
+	printRespJSON(resp)
 
 	return nil
 }

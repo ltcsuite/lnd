@@ -13,7 +13,7 @@ import (
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/shachain"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
 )
@@ -101,14 +101,12 @@ func genRandomOpenChannelShell() (*channeldb.OpenChannel, error) {
 		return nil, err
 	}
 
-	_, pub := btcec.PrivKeyFromBytes(btcec.S256(), testPriv[:])
+	_, pub := btcec.PrivKeyFromBytes(testPriv[:])
 
 	var chanPoint wire.OutPoint
 	if _, err := rand.Read(chanPoint.Hash[:]); err != nil {
 		return nil, err
 	}
-
-	pub.Curve = nil
 
 	chanPoint.Index = uint32(rand.Intn(math.MaxUint16))
 
@@ -124,10 +122,7 @@ func genRandomOpenChannelShell() (*channeldb.OpenChannel, error) {
 		isInitiator = true
 	}
 
-	chanType := channeldb.SingleFunderBit
-	if rand.Int63()%2 == 0 {
-		chanType = channeldb.SingleFunderTweaklessBit
-	}
+	chanType := channeldb.ChannelType(rand.Intn(8))
 
 	return &channeldb.OpenChannel{
 		ChainHash:       chainHash,
@@ -137,6 +132,7 @@ func genRandomOpenChannelShell() (*channeldb.OpenChannel, error) {
 		ShortChannelID: lnwire.NewShortChanIDFromInt(
 			uint64(rand.Int63()),
 		),
+		ThawHeight:  rand.Uint32(),
 		IdentityPub: pub,
 		LocalChanCfg: channeldb.ChannelConfig{
 			ChannelConstraints: channeldb.ChannelConstraints{
@@ -211,7 +207,6 @@ func TestSinglePackUnpack(t *testing.T) {
 	}
 
 	singleChanBackup := NewSingle(channel, []net.Addr{addr1, addr2})
-	singleChanBackup.RemoteNodePub.Curve = nil
 
 	keyRing := &mockKeyRing{}
 
@@ -240,6 +235,13 @@ func TestSinglePackUnpack(t *testing.T) {
 		// problem.
 		{
 			version: AnchorsCommitVersion,
+			valid:   true,
+		},
+
+		// The new script enforced channel lease version should
+		// pack/unpack with no problem.
+		{
+			version: ScriptEnforcedLeaseVersion,
 			valid:   true,
 		},
 
@@ -280,7 +282,6 @@ func TestSinglePackUnpack(t *testing.T) {
 				t.Fatalf("#%v unable to unpack single: %v",
 					i, err)
 			}
-			unpackedSingle.RemoteNodePub.Curve = nil
 
 			assertSingleEqual(t, singleChanBackup, unpackedSingle)
 
@@ -293,8 +294,9 @@ func TestSinglePackUnpack(t *testing.T) {
 				t.Fatalf("unable to serialize single: %v", err)
 			}
 
+			// Mutate the version byte to an unknown version.
 			rawBytes := rawSingle.Bytes()
-			rawBytes[0] ^= 5
+			rawBytes[0] = ^uint8(0)
 
 			newReader := bytes.NewReader(rawBytes)
 			err = unpackedSingle.Deserialize(newReader)

@@ -6,14 +6,14 @@ import (
 	"math/rand"
 	"os"
 
-	"github.com/ltcsuite/ltcd/btcec"
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
-	_ "github.com/ltcsuite/ltcwallet/walletdb/bdb"
+	lnwire "github.com/ltcsuite/lnd/channeldb/migration/lnwire21"
 	"github.com/ltcsuite/lnd/keychain"
-	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/shachain"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/wire"
+	_ "github.com/ltcsuite/ltcwallet/walletdb/bdb"
 )
 
 var (
@@ -60,7 +60,7 @@ var (
 		},
 		LockTime: 5,
 	}
-	privKey, pubKey = btcec.PrivKeyFromBytes(btcec.S256(), key[:])
+	privKey, pubKey = btcec.PrivKeyFromBytes(key[:])
 )
 
 // makeTestDB creates a new instance of the ChannelDB for testing purposes. A

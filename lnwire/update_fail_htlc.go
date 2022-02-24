@@ -1,6 +1,7 @@
 package lnwire
 
 import (
+	"bytes"
 	"io"
 )
 
@@ -26,6 +27,11 @@ type UpdateFailHTLC struct {
 	// failed. This blob is only fully decryptable by the initiator of the
 	// HTLC message.
 	Reason OpaqueReason
+
+	// ExtraData is the set of data that was appended to this message to
+	// fill out the full maximum transport message size. These fields can
+	// be used to specify optional data such as custom TLV fields.
+	ExtraData ExtraOpaqueData
 }
 
 // A compile time check to ensure UpdateFailHTLC implements the lnwire.Message
@@ -41,6 +47,7 @@ func (c *UpdateFailHTLC) Decode(r io.Reader, pver uint32) error {
 		&c.ChanID,
 		&c.ID,
 		&c.Reason,
+		&c.ExtraData,
 	)
 }
 
@@ -48,12 +55,20 @@ func (c *UpdateFailHTLC) Decode(r io.Reader, pver uint32) error {
 // the protocol version specified.
 //
 // This is part of the lnwire.Message interface.
-func (c *UpdateFailHTLC) Encode(w io.Writer, pver uint32) error {
-	return WriteElements(w,
-		c.ChanID,
-		c.ID,
-		c.Reason,
-	)
+func (c *UpdateFailHTLC) Encode(w *bytes.Buffer, pver uint32) error {
+	if err := WriteChannelID(w, c.ChanID); err != nil {
+		return err
+	}
+
+	if err := WriteUint64(w, c.ID); err != nil {
+		return err
+	}
+
+	if err := WriteOpaqueReason(w, c.Reason); err != nil {
+		return err
+	}
+
+	return WriteBytes(w, c.ExtraData)
 }
 
 // MsgType returns the integer uniquely identifying this message type on the
@@ -62,28 +77,6 @@ func (c *UpdateFailHTLC) Encode(w io.Writer, pver uint32) error {
 // This is part of the lnwire.Message interface.
 func (c *UpdateFailHTLC) MsgType() MessageType {
 	return MsgUpdateFailHTLC
-}
-
-// MaxPayloadLength returns the maximum allowed payload size for an UpdateFailHTLC
-// complete message observing the specified protocol version.
-//
-// This is part of the lnwire.Message interface.
-func (c *UpdateFailHTLC) MaxPayloadLength(uint32) uint32 {
-	var length uint32
-
-	// Length of the ChanID
-	length += 32
-
-	// Length of the ID
-	length += 8
-
-	// Length of the length opaque reason
-	length += 2
-
-	// Length of the Reason
-	length += 292
-
-	return length
 }
 
 // TargetChanID returns the channel id of the link for which this message is

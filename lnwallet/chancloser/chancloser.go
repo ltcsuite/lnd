@@ -6,11 +6,14 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/htlcswitch"
+	"github.com/ltcsuite/lnd/labels"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 )
 
 var (
@@ -75,11 +78,6 @@ const (
 type ChanCloseCfg struct {
 	// Channel is the channel that should be closed.
 	Channel *lnwallet.LightningChannel
-
-	// UnregisterChannel is a function closure that allows the ChanCloser to
-	// unregister a channel. Once this has been done, no further HTLC's should
-	// be routed through the channel.
-	UnregisterChannel func(lnwire.ChannelID)
 
 	// BroadcastTx broadcasts the passed transaction to the network.
 	BroadcastTx func(*wire.MsgTx, string) error
@@ -209,8 +207,6 @@ func (c *ChanCloser) initChanShutdown() (*lnwire.Shutdown, error) {
 	// closing script.
 	shutdown := lnwire.NewShutdown(c.cid, c.localDeliveryScript)
 
-	// TODO(roasbeef): err if channel has htlc's?
-
 	// Before closing, we'll attempt to send a disable update for the channel.
 	// We do so before closing the channel as otherwise the current edge policy
 	// won't be retrievable from the graph.
@@ -218,10 +214,6 @@ func (c *ChanCloser) initChanShutdown() (*lnwire.Shutdown, error) {
 		chancloserLog.Warnf("Unable to disable channel %v on close: %v",
 			c.chanPoint, err)
 	}
-
-	// Before returning the shutdown message, we'll unregister the channel to
-	// ensure that it isn't seen as usable within the system.
-	c.cfg.UnregisterChannel(c.cid)
 
 	// Before continuing, mark the channel as cooperatively closed with a nil
 	// txn. Even though we haven't negotiated the final txn, this guarantees
@@ -551,7 +543,14 @@ func (c *ChanCloser) ProcessCloseMsg(msg lnwire.Message) ([]lnwire.Message,
 				return spew.Sdump(closeTx)
 			}),
 		)
-		if err := c.cfg.BroadcastTx(closeTx, ""); err != nil {
+
+		// Create a close channel label.
+		chanID := c.cfg.Channel.ShortChanID()
+		closeLabel := labels.MakeLabel(
+			labels.LabelTypeChannelClose, &chanID,
+		)
+
+		if err := c.cfg.BroadcastTx(closeTx, closeLabel); err != nil {
 			return nil, false, err
 		}
 
@@ -708,4 +707,24 @@ func calcCompromiseFee(chanPoint wire.OutPoint, ourIdealFee, lastSentFee,
 		// TODO(roasbeef): fail if their fee isn't in expected range
 		return remoteFee
 	}
+}
+
+// ParseUpfrontShutdownAddress attempts to parse an upfront shutdown address.
+// If the address is empty, it returns nil. If it successfully decoded the
+// address, it returns a script that pays out to the address.
+func ParseUpfrontShutdownAddress(address string,
+	params *chaincfg.Params) (lnwire.DeliveryAddress, error) {
+
+	if len(address) == 0 {
+		return nil, nil
+	}
+
+	addr, err := ltcutil.DecodeAddress(
+		address, params,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("invalid address: %v", err)
+	}
+
+	return txscript.PayToAddrScript(addr)
 }

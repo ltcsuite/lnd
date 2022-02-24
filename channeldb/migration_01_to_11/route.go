@@ -9,11 +9,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ltcsuite/ltcd/btcec"
 	sphinx "github.com/ltcsuite/lightning-onion"
-	"github.com/ltcsuite/lnd/lnwire"
+	lnwire "github.com/ltcsuite/lnd/channeldb/migration/lnwire21"
 	"github.com/ltcsuite/lnd/record"
 	"github.com/ltcsuite/lnd/tlv"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
 // VertexSize is the size of the array to store a vertex.
@@ -247,7 +247,7 @@ func (r *Route) ToSphinxPath() (*sphinx.PaymentPath, error) {
 	// by the sphinx package.
 	for i, hop := range r.Hops {
 		pub, err := btcec.ParsePubKey(
-			hop.PubKeyBytes[:], btcec.S256(),
+			hop.PubKeyBytes[:],
 		)
 		if err != nil {
 			return nil, err

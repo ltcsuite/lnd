@@ -10,13 +10,13 @@ import (
 	"testing"
 	"testing/quick"
 
-	"github.com/ltcsuite/ltcd/btcec"
 	"github.com/ltcsuite/lnd/tor"
 	"github.com/ltcsuite/lnd/watchtower/wtdb"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
 func randPubKey() (*btcec.PublicKey, error) {
-	priv, err := btcec.NewPrivateKey(btcec.S256())
+	priv, err := btcec.NewPrivateKey()
 	if err != nil {
 		return nil, err
 	}

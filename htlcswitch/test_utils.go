@@ -19,12 +19,14 @@ import (
 	"github.com/go-errors/errors"
 	sphinx "github.com/ltcsuite/lightning-onion"
 	"github.com/ltcsuite/lnd/channeldb"
-	"github.com/ltcsuite/lnd/channeldb/kvdb"
 	"github.com/ltcsuite/lnd/contractcourt"
 	"github.com/ltcsuite/lnd/htlcswitch/hop"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/lnpeer"
+	"github.com/ltcsuite/lnd/lntest/channels"
+	"github.com/ltcsuite/lnd/lntest/mock"
 	"github.com/ltcsuite/lnd/lntest/wait"
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwallet"
@@ -32,10 +34,11 @@ import (
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/shachain"
 	"github.com/ltcsuite/lnd/ticker"
-	"github.com/ltcsuite/ltcd/btcec"
+	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/btcec/v2/ecdsa"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/ltcutil"
 )
 
 var (
@@ -43,50 +46,15 @@ var (
 	bobPrivKey   = []byte("bob priv key")
 	carolPrivKey = []byte("carol priv key")
 
-	testSig = &btcec.Signature{
-		R: new(big.Int),
-		S: new(big.Int),
-	}
+	testR, _    = new(big.Int).SetString("63724406601629180062774974542967536251589935445068131219452686511677818569431", 10)
+	testS, _    = new(big.Int).SetString("18801056069249825825291287104931333862866033135609736119018462340006816851118", 10)
+	testRScalar = new(btcec.ModNScalar)
+	testSScalar = new(btcec.ModNScalar)
+	_           = testRScalar.SetByteSlice(testR.Bytes())
+	_           = testSScalar.SetByteSlice(testS.Bytes())
+	testSig     = ecdsa.NewSignature(testRScalar, testSScalar)
+
 	wireSig, _ = lnwire.NewSigFromSignature(testSig)
-
-	_, _ = testSig.R.SetString("6372440660162918006277497454296753625158993"+
-		"5445068131219452686511677818569431", 10)
-	_, _ = testSig.S.SetString("1880105606924982582529128710493133386286603"+
-		"3135609736119018462340006816851118", 10)
-
-	// testTx is used as the default funding txn for single-funder channels.
-	testTx = &wire.MsgTx{
-		Version: 1,
-		TxIn: []*wire.TxIn{
-			{
-				PreviousOutPoint: wire.OutPoint{
-					Hash:  chainhash.Hash{},
-					Index: 0xffffffff,
-				},
-				SignatureScript: []byte{0x04, 0x31, 0xdc, 0x00, 0x1b, 0x01, 0x62},
-				Sequence:        0xffffffff,
-			},
-		},
-		TxOut: []*wire.TxOut{
-			{
-				Value: 5000000000,
-				PkScript: []byte{
-					0x41, // OP_DATA_65
-					0x04, 0xd6, 0x4b, 0xdf, 0xd0, 0x9e, 0xb1, 0xc5,
-					0xfe, 0x29, 0x5a, 0xbd, 0xeb, 0x1d, 0xca, 0x42,
-					0x81, 0xbe, 0x98, 0x8e, 0x2d, 0xa0, 0xb6, 0xc1,
-					0xc6, 0xa5, 0x9d, 0xc2, 0x26, 0xc2, 0x86, 0x24,
-					0xe1, 0x81, 0x75, 0xe8, 0x51, 0xc9, 0x6b, 0x97,
-					0x3d, 0x81, 0xb0, 0x1c, 0xc3, 0x1f, 0x04, 0x78,
-					0x34, 0xbc, 0x06, 0xd6, 0xd6, 0xed, 0xf6, 0x20,
-					0xd1, 0x84, 0x24, 0x1a, 0x6a, 0xed, 0x8b, 0x63,
-					0xa6, // 65-byte signature
-					0xac, // OP_CHECKSIG
-				},
-			},
-		},
-		LockTime: 5,
-	}
 
 	testBatchTimeout = 50 * time.Millisecond
 )
@@ -160,12 +128,13 @@ func createTestChannel(alicePrivKey, bobPrivKey []byte,
 	chanID lnwire.ShortChannelID) (*testLightningChannel,
 	*testLightningChannel, func(), error) {
 
-	aliceKeyPriv, aliceKeyPub := btcec.PrivKeyFromBytes(btcec.S256(), alicePrivKey)
-	bobKeyPriv, bobKeyPub := btcec.PrivKeyFromBytes(btcec.S256(), bobPrivKey)
+	aliceKeyPriv, aliceKeyPub := btcec.PrivKeyFromBytes(alicePrivKey)
+	bobKeyPriv, bobKeyPub := btcec.PrivKeyFromBytes(bobPrivKey)
 
 	channelCapacity := aliceAmount + bobAmount
 	csvTimeoutAlice := uint32(5)
 	csvTimeoutBob := uint32(4)
+	isAliceInitiator := true
 
 	aliceConstraints := &channeldb.ChannelConstraints{
 		DustLimit: ltcutil.Amount(200),
@@ -262,6 +231,7 @@ func createTestChannel(alicePrivKey, bobPrivKey []byte,
 	aliceCommitTx, bobCommitTx, err := lnwallet.CreateCommitmentTxns(
 		aliceAmount, bobAmount, &aliceCfg, &bobCfg, aliceCommitPoint,
 		bobCommitPoint, *fundingTxIn, channeldb.SingleFunderTweaklessBit,
+		isAliceInitiator, 0,
 	)
 	if err != nil {
 		return nil, nil, nil, err
@@ -330,7 +300,7 @@ func createTestChannel(alicePrivKey, bobPrivKey []byte,
 		IdentityPub:             aliceKeyPub,
 		FundingOutpoint:         *prevOut,
 		ChanType:                channeldb.SingleFunderTweaklessBit,
-		IsInitiator:             true,
+		IsInitiator:             isAliceInitiator,
 		Capacity:                channelCapacity,
 		RemoteCurrentRevocation: bobCommitPoint,
 		RevocationProducer:      alicePreimageProducer,
@@ -338,9 +308,9 @@ func createTestChannel(alicePrivKey, bobPrivKey []byte,
 		LocalCommitment:         aliceCommit,
 		RemoteCommitment:        aliceCommit,
 		ShortChannelID:          chanID,
-		Db:                      dbAlice,
+		Db:                      dbAlice.ChannelStateDB(),
 		Packager:                channeldb.NewChannelPackager(chanID),
-		FundingTxn:              testTx,
+		FundingTxn:              channels.TestFundingTx,
 	}
 
 	bobChannelState := &channeldb.OpenChannel{
@@ -349,7 +319,7 @@ func createTestChannel(alicePrivKey, bobPrivKey []byte,
 		IdentityPub:             bobKeyPub,
 		FundingOutpoint:         *prevOut,
 		ChanType:                channeldb.SingleFunderTweaklessBit,
-		IsInitiator:             false,
+		IsInitiator:             !isAliceInitiator,
 		Capacity:                channelCapacity,
 		RemoteCurrentRevocation: aliceCommitPoint,
 		RevocationProducer:      bobPreimageProducer,
@@ -357,7 +327,7 @@ func createTestChannel(alicePrivKey, bobPrivKey []byte,
 		LocalCommitment:         bobCommit,
 		RemoteCommitment:        bobCommit,
 		ShortChannelID:          chanID,
-		Db:                      dbBob,
+		Db:                      dbBob.ChannelStateDB(),
 		Packager:                channeldb.NewChannelPackager(chanID),
 	}
 
@@ -376,8 +346,8 @@ func createTestChannel(alicePrivKey, bobPrivKey []byte,
 		os.RemoveAll(alicePath)
 	}
 
-	aliceSigner := &mockSigner{aliceKeyPriv}
-	bobSigner := &mockSigner{bobKeyPriv}
+	aliceSigner := &mock.SingleSigner{Privkey: aliceKeyPriv}
+	bobSigner := &mock.SingleSigner{Privkey: bobKeyPriv}
 
 	alicePool := lnwallet.NewSigPool(runtime.NumCPU(), aliceSigner)
 	channelAlice, err := lnwallet.NewLightningChannel(
@@ -416,7 +386,8 @@ func createTestChannel(alicePrivKey, bobPrivKey []byte,
 	}
 
 	restoreAlice := func() (*lnwallet.LightningChannel, error) {
-		aliceStoredChannels, err := dbAlice.FetchOpenChannels(aliceKeyPub)
+		aliceStoredChannels, err := dbAlice.ChannelStateDB().
+			FetchOpenChannels(aliceKeyPub)
 		switch err {
 		case nil:
 		case kvdb.ErrDatabaseNotOpen:
@@ -426,7 +397,8 @@ func createTestChannel(alicePrivKey, bobPrivKey []byte,
 					"db: %v", err)
 			}
 
-			aliceStoredChannels, err = dbAlice.FetchOpenChannels(aliceKeyPub)
+			aliceStoredChannels, err = dbAlice.ChannelStateDB().
+				FetchOpenChannels(aliceKeyPub)
 			if err != nil {
 				return nil, errors.Errorf("unable to fetch alice "+
 					"channel: %v", err)
@@ -460,7 +432,8 @@ func createTestChannel(alicePrivKey, bobPrivKey []byte,
 	}
 
 	restoreBob := func() (*lnwallet.LightningChannel, error) {
-		bobStoredChannels, err := dbBob.FetchOpenChannels(bobKeyPub)
+		bobStoredChannels, err := dbBob.ChannelStateDB().
+			FetchOpenChannels(bobKeyPub)
 		switch err {
 		case nil:
 		case kvdb.ErrDatabaseNotOpen:
@@ -470,7 +443,8 @@ func createTestChannel(alicePrivKey, bobPrivKey []byte,
 					"db: %v", err)
 			}
 
-			bobStoredChannels, err = dbBob.FetchOpenChannels(bobKeyPub)
+			bobStoredChannels, err = dbBob.ChannelStateDB().
+				FetchOpenChannels(bobKeyPub)
 			if err != nil {
 				return nil, errors.Errorf("unable to fetch bob "+
 					"channel: %v", err)
@@ -982,9 +956,9 @@ func newThreeHopNetwork(t testing.TB, aliceChannel, firstBobChannel,
 	secondBobChannel, carolChannel *lnwallet.LightningChannel,
 	startingHeight uint32, opts ...serverOption) *threeHopNetwork {
 
-	aliceDb := aliceChannel.State().Db
-	bobDb := firstBobChannel.State().Db
-	carolDb := carolChannel.State().Db
+	aliceDb := aliceChannel.State().Db.GetParentDB()
+	bobDb := firstBobChannel.State().Db.GetParentDB()
+	carolDb := carolChannel.State().Db.GetParentDB()
 
 	hopNetwork := newHopNetwork()
 
@@ -1130,13 +1104,8 @@ func newHopNetwork() *hopNetwork {
 	}
 	obfuscator := NewMockObfuscator()
 
-	feeEstimator := &mockFeeEstimator{
-		byteFeeIn: make(chan chainfee.SatPerKWeight),
-		quit:      make(chan struct{}),
-	}
-
 	return &hopNetwork{
-		feeEstimator: feeEstimator,
+		feeEstimator: newMockFeeEstimator(),
 		globalPolicy: globalPolicy,
 		obfuscator:   obfuscator,
 		defaultDelta: defaultDelta,
@@ -1156,6 +1125,7 @@ func (h *hopNetwork) createChannelLink(server, peer *mockServer,
 	link := NewChannelLink(
 		ChannelLinkConfig{
 			Switch:             server.htlcSwitch,
+			BestHeight:         server.htlcSwitch.BestHeight,
 			FwrdingPolicy:      h.globalPolicy,
 			Peer:               peer,
 			Circuits:           server.htlcSwitch.CircuitModifier(),
@@ -1184,6 +1154,7 @@ func (h *hopNetwork) createChannelLink(server, peer *mockServer,
 			OutgoingCltvRejectDelta: 3,
 			MaxOutgoingCltvExpiry:   DefaultMaxOutgoingCltvExpiry,
 			MaxFeeAllocation:        DefaultMaxLinkFeeAllocation,
+			MaxAnchorsCommitFeeRate: chainfee.SatPerKVByte(10 * 1000).FeePerKWeight(),
 			NotifyActiveLink:        func(wire.OutPoint) {},
 			NotifyActiveChannel:     func(wire.OutPoint) {},
 			NotifyInactiveChannel:   func(wire.OutPoint) {},
@@ -1236,8 +1207,8 @@ func newTwoHopNetwork(t testing.TB,
 	aliceChannel, bobChannel *lnwallet.LightningChannel,
 	startingHeight uint32) *twoHopNetwork {
 
-	aliceDb := aliceChannel.State().Db
-	bobDb := bobChannel.State().Db
+	aliceDb := aliceChannel.State().Db.GetParentDB()
+	bobDb := bobChannel.State().Db.GetParentDB()
 
 	hopNetwork := newHopNetwork()
 
@@ -1411,7 +1382,7 @@ func timeout(t *testing.T) func() {
 	done := make(chan struct{})
 	go func() {
 		select {
-		case <-time.After(10 * time.Second):
+		case <-time.After(20 * time.Second):
 			pprof.Lookup("goroutine").WriteTo(os.Stdout, 1)
 
 			panic("test timeout")

@@ -6,8 +6,10 @@ import (
 	"os"
 	"testing"
 
+	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/clock"
+	"github.com/ltcsuite/lnd/lntest/mock"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
@@ -47,7 +49,7 @@ func TestChainArbitratorRepublishCloses(t *testing.T) {
 
 		// We manually set the db here to make sure all channels are
 		// synced to the same db.
-		channel.Db = db
+		channel.Db = db.ChannelStateDB()
 
 		addr := &net.TCPAddr{
 			IP:   net.ParseIP("127.0.0.1"),
@@ -80,8 +82,12 @@ func TestChainArbitratorRepublishCloses(t *testing.T) {
 	published := make(map[chainhash.Hash]int)
 
 	chainArbCfg := ChainArbitratorConfig{
-		ChainIO:  &mockChainIO{},
-		Notifier: &mockNotifier{},
+		ChainIO: &mock.ChainIO{},
+		Notifier: &mock.ChainNotifier{
+			SpendChan: make(chan *chainntnfs.SpendDetail),
+			EpochChan: make(chan *chainntnfs.BlockEpoch),
+			ConfChan:  make(chan *chainntnfs.TxConfirmation),
+		},
 		PublishTx: func(tx *wire.MsgTx, _ string) error {
 			published[tx.TxHash()]++
 			return nil
@@ -159,7 +165,7 @@ func TestResolveContract(t *testing.T) {
 	}
 	defer cleanup()
 	channel := newChannel.State()
-	channel.Db = db
+	channel.Db = db.ChannelStateDB()
 	addr := &net.TCPAddr{
 		IP:   net.ParseIP("127.0.0.1"),
 		Port: 18556,
@@ -172,8 +178,12 @@ func TestResolveContract(t *testing.T) {
 	// chain arbitrator that should pick up these new channels and launch
 	// resolver for them.
 	chainArbCfg := ChainArbitratorConfig{
-		ChainIO:  &mockChainIO{},
-		Notifier: &mockNotifier{},
+		ChainIO: &mock.ChainIO{},
+		Notifier: &mock.ChainNotifier{
+			SpendChan: make(chan *chainntnfs.SpendDetail),
+			EpochChan: make(chan *chainntnfs.BlockEpoch),
+			ConfChan:  make(chan *chainntnfs.TxConfirmation),
+		},
 		PublishTx: func(tx *wire.MsgTx, _ string) error {
 			return nil
 		},
@@ -195,7 +205,7 @@ func TestResolveContract(t *testing.T) {
 
 	// While the resolver are active, we'll now remove the channel from the
 	// database (mark is as closed).
-	err = db.AbandonChannel(&channel.FundingOutpoint, 4)
+	err = db.ChannelStateDB().AbandonChannel(&channel.FundingOutpoint, 4)
 	if err != nil {
 		t.Fatalf("unable to remove channel: %v", err)
 	}

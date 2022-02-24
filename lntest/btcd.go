@@ -1,11 +1,15 @@
-// +build ltcd
+//go:build !bitcoind && !neutrino
+// +build !bitcoind,!neutrino
 
 package lntest
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/ioutil"
 	"os"
+	"strings"
 
 	"github.com/ltcsuite/ltcd/btcjson"
 	"github.com/ltcsuite/ltcd/chaincfg"
@@ -13,14 +17,14 @@ import (
 	"github.com/ltcsuite/ltcd/rpcclient"
 )
 
-// logDir is the name of the temporary log directory.
-const logDir = "./.backendlogs"
+// logDirPattern is the pattern of the name of the temporary log directory.
+const logDirPattern = "%s/.backendlogs"
 
-// perm is used to signal we want to establish a permanent connection using the
-// ltcd Node API.
+// temp is used to signal we want to establish a temporary connection using the
+// btcd Node API.
 //
 // NOTE: Cannot be const, since the node API expects a reference.
-var perm = "perm"
+var temp = "temp"
 
 // BtcdBackendConfig is an implementation of the BackendConfig interface
 // backed by a ltcd node.
@@ -55,12 +59,12 @@ func (b BtcdBackendConfig) GenArgs() []string {
 
 // ConnectMiner is called to establish a connection to the test miner.
 func (b BtcdBackendConfig) ConnectMiner() error {
-	return b.harness.Node.Node(btcjson.NConnect, b.minerAddr, &perm)
+	return b.harness.Client.Node(btcjson.NConnect, b.minerAddr, &temp)
 }
 
 // DisconnectMiner is called to disconnect the miner.
 func (b BtcdBackendConfig) DisconnectMiner() error {
-	return b.harness.Node.Node(btcjson.NRemove, b.minerAddr, &perm)
+	return b.harness.Client.Node(btcjson.NDisconnect, b.minerAddr, &temp)
 }
 
 // Name returns the name of the backend type.
@@ -72,21 +76,35 @@ func (b BtcdBackendConfig) Name() string {
 // that node. miner should be set to the P2P address of the miner to connect
 // to.
 func NewBackend(miner string, netParams *chaincfg.Params) (
-	*BtcdBackendConfig, func(), error) {
+	*BtcdBackendConfig, func() error, error) {
 
+	baseLogDir := fmt.Sprintf(logDirPattern, GetLogDir())
 	args := []string{
 		"--rejectnonstd",
 		"--txindex",
 		"--trickleinterval=100ms",
 		"--debuglevel=debug",
-		"--logdir=" + logDir,
-		"--connect=" + miner,
+		"--logdir=" + baseLogDir,
 		"--nowinservice",
+		// The miner will get banned and disconnected from the node if
+		// its requested data are not found. We add a nobanning flag to
+		// make sure they stay connected if it happens.
+		"--nobanning",
+		// Don't disconnect if a reply takes too long.
+		"--nostalldetect",
 	}
-	chainBackend, err := rpctest.New(netParams, nil, args)
+	chainBackend, err := rpctest.New(netParams, nil, args, GetBtcdBinary())
 	if err != nil {
 		return nil, nil, fmt.Errorf("unable to create ltcd node: %v", err)
 	}
+
+	// We want to overwrite some of the connection settings to make the
+	// tests more robust. We might need to restart the backend while there
+	// are already blocks present, which will take a bit longer than the
+	// 1 second the default settings amount to. Doubling both values will
+	// give us retries up to 4 seconds.
+	chainBackend.MaxConnRetries = rpctest.DefaultMaxConnectionRetries * 2
+	chainBackend.ConnectionRetryTimeout = rpctest.DefaultConnectionRetryTimeout * 2
 
 	if err := chainBackend.SetUp(false, 0); err != nil {
 		return nil, nil, fmt.Errorf("unable to set up ltcd backend: %v", err)
@@ -98,19 +116,46 @@ func NewBackend(miner string, netParams *chaincfg.Params) (
 		minerAddr: miner,
 	}
 
-	cleanUp := func() {
-		chainBackend.TearDown()
+	cleanUp := func() error {
+		var errStr string
+		if err := chainBackend.TearDown(); err != nil {
+			errStr += err.Error() + "\n"
+		}
 
 		// After shutting down the chain backend, we'll make a copy of
-		// the log file before deleting the temporary log dir.
-		logFile := logDir + "/" + netParams.Name + "/ltcd.log"
-		err := CopyFile("./output_ltcd_chainbackend.log", logFile)
+		// the log files, including any compressed log files from
+		// logrorate, before deleting the temporary log dir.
+		logDir := fmt.Sprintf("%s/%s", baseLogDir, netParams.Name)
+		files, err := ioutil.ReadDir(logDir)
 		if err != nil {
-			fmt.Printf("unable to copy file: %v\n", err)
+			errStr += fmt.Sprintf(
+				"unable to read log directory: %v\n", err,
+			)
 		}
-		if err = os.RemoveAll(logDir); err != nil {
-			fmt.Printf("Cannot remove dir %s: %v\n", logDir, err)
+
+		for _, file := range files {
+			logFile := fmt.Sprintf("%s/%s", logDir, file.Name())
+			newFilename := strings.Replace(
+				file.Name(), "btcd.log", "output_btcd_chainbackend.log", 1,
+			)
+			logDestination := fmt.Sprintf(
+				"%s/%s", GetLogDir(), newFilename,
+			)
+			err := CopyFile(logDestination, logFile)
+			if err != nil {
+				errStr += fmt.Sprintf("unable to copy file: %v\n", err)
+			}
 		}
+
+		if err = os.RemoveAll(baseLogDir); err != nil {
+			errStr += fmt.Sprintf(
+				"cannot remove dir %s: %v\n", baseLogDir, err,
+			)
+		}
+		if errStr != "" {
+			return errors.New(errStr)
+		}
+		return nil
 	}
 
 	return bd, cleanUp, nil

@@ -51,7 +51,6 @@ require (
 	github.com/ltcsuite/ltcwallet/walletdb v1.3.5
 	github.com/ltcsuite/ltcwallet/wtxmgr v1.5.0
 	github.com/ltcsuite/neutrino v0.13.2
-	// github.com/ltcsuite/lnd/ticker v1.1.0
 	github.com/mattn/go-runewidth v0.0.9 // indirect
 	github.com/miekg/dns v1.1.43
 	github.com/ory/go-acc v0.2.6

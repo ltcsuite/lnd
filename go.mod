@@ -40,7 +40,7 @@ require (
 	github.com/ltcsuite/lnd/healthcheck v1.2.0
 	github.com/ltcsuite/lnd/kvdb v1.3.0
 	github.com/ltcsuite/lnd/queue v1.1.0
-	github.com/ltcsuite/lnd/ticker v1.0.1
+	github.com/ltcsuite/lnd/ticker v1.1.0
 	github.com/ltcsuite/ltcd v0.22.0-beta
 	github.com/ltcsuite/ltcd/btcec/v2 v2.1.0
 	github.com/ltcsuite/ltcd/ltcutil v1.1.0

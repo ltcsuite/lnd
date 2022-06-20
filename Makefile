@@ -11,7 +11,7 @@ GOFUZZ_PKG := github.com/dvyukov/go-fuzz/go-fuzz
 GOFUZZ_DEP_PKG := github.com/dvyukov/go-fuzz/go-fuzz-dep
 
 GO_BIN := ${GOPATH}/bin
-BTCD_BIN := $(GO_BIN)/btcd
+BTCD_BIN := $(GO_BIN)/ltcd
 GOMOBILE_BIN := GO111MODULE=off $(GO_BIN)/gomobile
 LINT_BIN := $(GO_BIN)/golangci-lint
 GOACC_BIN := $(GO_BIN)/go-acc
@@ -91,7 +91,7 @@ $(GOACC_BIN):
 	go install $(GOACC_PKG)
 
 btcd:
-	@$(call print, "Installing btcd.")
+	@$(call print, "Installing ltcd.")
 	go install $(BTCD_PKG)
 
 goimports:
@@ -120,7 +120,7 @@ build:
 	$(GOBUILD) -tags="$(DEV_TAGS)" -o lncli-debug $(DEV_LDFLAGS) $(PKG)/cmd/lncli
 
 build-itest:
-	@$(call print, "Building itest btcd and lnd.")
+	@$(call print, "Building itest ltcd and lnd.")
 	CGO_ENABLED=0 $(GOBUILD) -tags="rpctest" -o lntest/itest/btcd-itest$(EXEC_SUFFIX) $(ITEST_LDFLAGS) $(BTCD_PKG)
 	CGO_ENABLED=0 $(GOBUILD) -tags="$(ITEST_TAGS)" -o lntest/itest/lnd-itest$(EXEC_SUFFIX) $(ITEST_LDFLAGS) $(PKG)/cmd/lnd
 
@@ -128,7 +128,7 @@ build-itest:
 	CGO_ENABLED=0 $(GOTEST) -v ./lntest/itest -tags="$(DEV_TAGS) $(RPC_TAGS) rpctest $(backend)" -c -o lntest/itest/itest.test$(EXEC_SUFFIX)
 
 build-itest-race:
-	@$(call print, "Building itest btcd and lnd with race detector.")
+	@$(call print, "Building itest ltcd and lnd with race detector.")
 	CGO_ENABLED=0 $(GOBUILD) -tags="rpctest" -o lntest/itest/btcd-itest$(EXEC_SUFFIX) $(ITEST_LDFLAGS) $(BTCD_PKG)
 	CGO_ENABLED=1 $(GOBUILD) -race -tags="$(ITEST_TAGS)" -o lntest/itest/lnd-itest$(EXEC_SUFFIX) $(ITEST_LDFLAGS) $(PKG)/cmd/lnd
 

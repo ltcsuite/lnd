@@ -16,7 +16,7 @@ env:
   # go needs absolute directories, using the $HOME variable doesn't work here.
   GOCACHE: /home/runner/work/go/pkg/build
   GOPATH: /home/runner/work/go
-  BITCOIN_VERSION: "22.0"
+  BITCOIN_VERSION: "0.21.2"
 
   # If you change this value, please change it in the following files as well:
   # /.travis.yml
@@ -51,7 +51,7 @@ jobs:
       - name: setup go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v2
         with:
-          go-version: '${{ env.GO_VERSION }}'
+          go-version: "${{ env.GO_VERSION }}"
 
       - name: run check
         run: make rpc-check
@@ -91,7 +91,7 @@ jobs:
       - name: setup go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v2
         with:
-          go-version: '${{ env.GO_VERSION }}'
+          go-version: "${{ env.GO_VERSION }}"
 
       - name: fetch and rebase on master
         run: |
@@ -119,7 +119,7 @@ jobs:
       - name: setup go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v2
         with:
-          go-version: '${{ env.GO_VERSION }}'
+          go-version: "${{ env.GO_VERSION }}"
 
       - name: fetch and rebase on master
         run: |
@@ -159,7 +159,7 @@ jobs:
       - name: setup go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v2
         with:
-          go-version: '${{ env.GO_VERSION }}'
+          go-version: "${{ env.GO_VERSION }}"
 
       - name: lint
         run: GOGC=50 make lint
@@ -188,7 +188,7 @@ jobs:
       - name: setup go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v2
         with:
-          go-version: '${{ env.GO_VERSION }}'
+          go-version: "${{ env.GO_VERSION }}"
 
       - name: build release for all architectures
         run: make release
@@ -217,7 +217,7 @@ jobs:
       - name: setup go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v2
         with:
-          go-version: '${{ env.GO_VERSION }}'
+          go-version: "${{ env.GO_VERSION }}"
 
       - name: check all command line flags exist in sample-lnd.conf file
         run: make sample-conf-check
@@ -255,7 +255,7 @@ jobs:
       - name: setup go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v2
         with:
-          go-version: '${{ env.GO_VERSION }}'
+          go-version: "${{ env.GO_VERSION }}"
 
       - name: install bitcoind
         run: ./scripts/install_bitcoind.sh
@@ -311,7 +311,7 @@ jobs:
       - name: setup go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v2
         with:
-          go-version: '${{ env.GO_VERSION }}'
+          go-version: "${{ env.GO_VERSION }}"
 
       - name: install bitcoind
         run: ./scripts/install_bitcoind.sh
@@ -358,7 +358,7 @@ jobs:
       - name: setup go ${{ env.GO_VERSION }}
         uses: actions/setup-go@v2
         with:
-          go-version: '${{ env.GO_VERSION }}'
+          go-version: "${{ env.GO_VERSION }}"
 
       - name: run itest
         run: make itest-parallel windows=1 tranches=2 parallel=2

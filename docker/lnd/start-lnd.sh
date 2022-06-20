@@ -44,11 +44,8 @@ RPCPASS=$(set_default "$RPCPASS" "devpass")
 DEBUG=$(set_default "$DEBUG" "debug")
 NETWORK=$(set_default "$NETWORK" "simnet")
 CHAIN=$(set_default "$CHAIN" "litecoin")
-BACKEND="btcd"
+BACKEND="ltcd"
 HOSTNAME=$(hostname)
-if [[ "$CHAIN" == "litecoin" ]]; then
-    BACKEND="ltcd"
-fi
 
 # CAUTION: DO NOT use the --noseedback for production/mainnet setups, ever!
 # Also, setting --rpclisten to $HOSTNAME will cause it to listen on an IP

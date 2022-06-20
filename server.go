@@ -1922,7 +1922,7 @@ func (s *server) Start() error {
 				return
 			}
 
-			result := make([][2]string, len(tuples))
+			result := make([][3]string, len(tuples))
 			for idx, tuple := range tuples {
 				tuple = strings.TrimSpace(tuple)
 				if len(tuple) == 0 {

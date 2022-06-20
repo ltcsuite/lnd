@@ -2,9 +2,9 @@
 
 set -ev
 
-BITCOIND_VERSION=${BITCOIN_VERSION:-22.0}
+BITCOIND_VERSION=${BITCOIN_VERSION:-0.21.2}
 
-docker pull lightninglabs/bitcoin-core:$BITCOIND_VERSION
-CONTAINER_ID=$(docker create lightninglabs/bitcoin-core:$BITCOIND_VERSION)
-sudo docker cp $CONTAINER_ID:/opt/bitcoin-$BITCOIND_VERSION/bin/bitcoind /usr/local/bin/bitcoind
+docker pull litecoin-project/litecoin-core:$BITCOIND_VERSION
+CONTAINER_ID=$(docker create litecoin-project/litecoin-core:$BITCOIND_VERSION)
+sudo docker cp $CONTAINER_ID:/opt/litecoin-$BITCOIND_VERSION/bin/litecoind /usr/local/bin/litecoind
 docker rm $CONTAINER_ID

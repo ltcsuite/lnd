@@ -286,7 +286,7 @@ type DNSSeedBootstrapper struct {
 	// in the tuple is a special A record that we'll query in order to
 	// receive the IP address of the current authoritative DNS server for
 	// the network seed.
-	dnsSeeds [][2]string
+	dnsSeeds [][3]string
 	net      tor.Net
 
 	// timeout is the maximum amount of time a dial will wait for a connect to
@@ -306,7 +306,7 @@ var _ NetworkPeerBootstrapper = (*ChannelGraphBootstrapper)(nil)
 // receiving the UDP response. The second host should return a single A record
 // with the IP address of the authoritative name server.
 func NewDNSSeedBootstrapper(
-	seeds [][2]string, net tor.Net,
+	seeds [][3]string, net tor.Net,
 	timeout time.Duration) NetworkPeerBootstrapper {
 	return &DNSSeedBootstrapper{dnsSeeds: seeds, net: net, timeout: timeout}
 }

@@ -820,10 +820,11 @@ var (
 	//
 	// TODO(roasbeef): extend and collapse these and chainparams.go into
 	// struct like chaincfg.Params
-	ChainDNSSeeds = map[chainhash.Hash][][2]string{
+	ChainDNSSeeds = map[chainhash.Hash][][3]string{
 		LitecoinMainnetGenesis: {
 			{
 				"ltc.lightning.loshan.co.uk",
+				"ltc.getplasma.org",
 				"soa.lightning.loshan.co.uk",
 			},
 		},
@@ -831,6 +832,7 @@ var (
 		LitecoinTestnetGenesis: {
 			{
 				"tltc.lightning.loshan.co.uk",
+				"tltc.getplasma.org",
 				"soa.lightning.loshan.co.uk",
 			},
 		},

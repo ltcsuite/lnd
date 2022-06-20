@@ -1,12 +1,10 @@
 ## Lightning Network Daemon for Litecoin
 
-[![Build Status](https://img.shields.io/travis/lightningnetwork/lnd.svg)](https://travis-ci.org/ltcsuite/lnd)
 [![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ltcsuite/lnd/blob/master/LICENSE)
-[![Irc](https://img.shields.io/badge/chat-on%20libera-brightgreen.svg)](https://web.libera.chat/#lnd)
 [![Godoc](https://godoc.org/github.com/ltcsuite/lnd?status.svg)](https://godoc.org/github.com/ltcsuite/lnd)
 
 The Lightning Network Daemon for Litecoin (`lndltc`) - is a complete implementation of a
-[Lightning Network](https://lightning.network) node. 
+[Lightning Network](https://lightning.network) node.
 
 It is adapted from the
 [`lnd`](https://github.com/ltcsuite/lnd) project by Lightning Labs. This fork
@@ -76,12 +74,8 @@ In order to build from source, please see [the installation
 instructions](docs/INSTALL.md).
 
 ## Docker
-  To run lnd from Docker, please see the main [Docker instructions](docs/DOCKER.md)
 
-## IRC
-  * irc.libera.chat
-  * channel #lnd
-  * [webchat](https://web.libera.chat/#lnd)
+To run lnd from Docker, please see the main [Docker instructions](docs/DOCKER.md)
 
 ## Safety
 
@@ -96,10 +90,10 @@ The developers of `lnd` and `lndltc` take security _very_ seriously. The disclos
 security vulnerabilities helps us secure the health of `lndltc`, privacy of our
 users, and also the health of the Lightning Network as a whole. If you find
 any issues regarding security or privacy, please disclose the information
-responsibly by sending an email to security at lightning dot engineering,
+responsibly by sending an email to loshan1212 at gmail dot com,
 preferably encrypted using our designated PGP key
-(`91FE464CD75101DA6B6BAB60555C6465E5BCB3AF`) which can be found
-[here](https://gist.githubusercontent.com/Roasbeef/6fb5b52886183239e4aa558f83d085d3/raw/5fa96010af201628bcfa61e9309d9b13d23d220f/security@lightning.engineering).
+(`C0921846FED0BF4CF28BE1D73B2A6315CD51A673`) which can be found
+[here](https://raw.githubusercontent.com/ltcsuite/lnd/master/scripts/keys/losh11.asc).
 
 ## Further reading
 

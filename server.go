@@ -1141,17 +1141,10 @@ func newServer(cfg *Config, listenAddrs []net.Addr,
 		SubscribeBreachComplete:       s.breachArbiter.SubscribeBreachComplete,
 	}, dbs.ChanStateDB)
 
-	// Select the configuration and furnding parameters for Bitcoin or
-	// Litecoin, depending on the primary registered chain.
-	primaryChain := cfg.registeredChains.PrimaryChain()
-	chainCfg := cfg.Bitcoin
-	minRemoteDelay := funding.MinBtcRemoteDelay
-	maxRemoteDelay := funding.MaxBtcRemoteDelay
-	if primaryChain == chainreg.LitecoinChain {
-		chainCfg = cfg.Litecoin
-		minRemoteDelay = funding.MinLtcRemoteDelay
-		maxRemoteDelay = funding.MaxLtcRemoteDelay
-	}
+	// Select the configuration and funding parameters for Litecoin
+	chainCfg := cfg.Litecoin
+	minRemoteDelay := funding.MinLtcRemoteDelay
+	maxRemoteDelay := funding.MaxLtcRemoteDelay
 
 	var chanIDSeed [32]byte
 	if _, err := rand.Read(chanIDSeed[:]); err != nil {
@@ -1205,8 +1198,6 @@ func newServer(cfg *Config, listenAddrs []net.Addr,
 			// in the case this gets re-orged out, and
 			// we will require more confirmations before
 			// we consider it open.
-			// TODO(halseth): Use Litecoin params in case
-			// of LTC channels.
 
 			// In case the user has explicitly specified
 			// a default value for the number of
@@ -1246,7 +1237,6 @@ func newServer(cfg *Config, listenAddrs []net.Addr,
 			// close) linearly from minRemoteDelay blocks
 			// for small channels, to maxRemoteDelay blocks
 			// for channels of size MaxFundingAmount.
-			// TODO(halseth): Litecoin parameter for LTC.
 
 			// In case the user has explicitly specified
 			// a default value for the remote delay, we

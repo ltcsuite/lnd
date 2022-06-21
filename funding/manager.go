@@ -83,10 +83,10 @@ const (
 	// in the real world.
 	MaxBtcFundingAmount = ltcutil.Amount(1<<24) - 1
 
-	// MaxBtcFundingAmountWumbo is a soft-limit on the maximum size of wumbo
-	// channels. This limit is 10 BTC and is the only thing standing between
-	// you and limitless channel size (apart from 21 million cap)
-	MaxBtcFundingAmountWumbo = ltcutil.Amount(1000000000)
+	// MaxLtcFundingAmountWumbo is a soft-limit on the maximum size of wumbo
+	// channels. This limit is 600 LTC and is the only thing standing between
+	// you and limitless channel size (apart from 84 million cap)
+	MaxLtcFundingAmountWumbo = ltcutil.Amount(1000000000) * chainreg.BtcToLtcConversionRate
 
 	// MaxLtcFundingAmount is a soft-limit of the maximum channel size
 	// currently accepted on the Litecoin chain within the Lightning

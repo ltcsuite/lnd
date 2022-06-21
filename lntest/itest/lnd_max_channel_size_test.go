@@ -36,7 +36,7 @@ func testMaxChannelSize(net *lntest.NetworkHarness, t *harnessTest) {
 	// soft limit of 10 BTC.
 	net.EnsureConnected(t.t, wumboNode, wumboNode2)
 
-	chanAmt := funding.MaxBtcFundingAmountWumbo + 1
+	chanAmt := funding.MaxLtcFundingAmountWumbo + 1
 	_, err := net.OpenChannel(
 		wumboNode, wumboNode2, lntest.OpenChannelParams{
 			Amt: chanAmt,
@@ -81,7 +81,7 @@ func testMaxChannelSize(net *lntest.NetworkHarness, t *harnessTest) {
 			"--protocol.wumbo-channels",
 			fmt.Sprintf(
 				"--maxchansize=%v",
-				int64(funding.MaxBtcFundingAmountWumbo+1),
+				int64(funding.MaxLtcFundingAmountWumbo+1),
 			),
 		},
 	)

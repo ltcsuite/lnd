@@ -3519,7 +3519,7 @@ func TestWumboChannelConfig(t *testing.T) {
 	tearDownFundingManagers(t, alice, bob)
 	alice, bob = setupFundingManagers(t, func(cfg *Config) {
 		cfg.NoWumboChans = false
-		cfg.MaxChanSize = MaxBtcFundingAmountWumbo
+		cfg.MaxChanSize = MaxLtcFundingAmountWumbo
 	})
 
 	// Reset the Peer to the newly created one.

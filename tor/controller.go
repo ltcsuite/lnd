@@ -120,6 +120,10 @@ type Controller struct {
 	// controller connections on.
 	controlAddr string
 
+	// controlAddrType is the type of address the Tor server is listening
+	// locally for controller connections on.
+	controlAddrType string
+
 	// password, if non-empty, signals that the controller should attempt to
 	// authenticate itself with the backing Tor daemon through the
 	// HASHEDPASSWORD authentication method with this value.
@@ -141,9 +145,16 @@ type Controller struct {
 // a Tor server.
 func NewController(controlAddr string, targetIPAddress string,
 	password string) *Controller {
-
+	cleanedControlAddr := controlAddr
+	controlAddrType := "tcp"
+	if strings.HasPrefix(controlAddr, "unix://") {
+		controlAddrType = "unix"
+                cleanedControlAddr = strings.Replace(controlAddr, "unix://", "", -1)
+	}
+        log.Infof("Tor controller controlAddr: %s", controlAddr)
 	return &Controller{
-		controlAddr:     controlAddr,
+		controlAddr:     cleanedControlAddr,
+		controlAddrType: controlAddrType,
 		targetIPAddress: targetIPAddress,
 		password:        password,
 	}
@@ -159,7 +170,7 @@ func (c *Controller) Start() error {
 
 	log.Info("Starting tor controller")
 
-	conn, err := textproto.Dial("tcp", c.controlAddr)
+	conn, err := textproto.Dial(c.controlAddrType, c.controlAddr)
 	if err != nil {
 		return fmt.Errorf("unable to connect to Tor server: %v", err)
 	}
@@ -222,7 +233,7 @@ func (c *Controller) Reconnect() error {
 	}
 
 	// Make a new connection and authenticate.
-	conn, err := textproto.Dial("tcp", c.controlAddr)
+	conn, err := textproto.Dial(c.controlAddrType, c.controlAddr)
 	if err != nil {
 		return fmt.Errorf("unable to connect to Tor server: %w", err)
 	}

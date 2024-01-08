@@ -41,6 +41,9 @@ const (
 	// script.
 	UnknownAddressType AddressType = iota
 
+	// PubKeyHash represents a p2pkh address.
+	PubKeyHash
+
 	// WitnessPubKey represents a p2wkh address.
 	WitnessPubKey
 

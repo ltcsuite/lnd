@@ -1148,21 +1148,21 @@ func (b *BtcWallet) ListUnspentWitness(minConfs, maxConfs int32,
 		}
 
 		addressType := lnwallet.UnknownAddressType
-		if txscript.IsPayToWitnessPubKeyHash(pkScript) {
+		switch {
+		case txscript.IsPayToPubKeyHash(pkScript):
+			addressType = lnwallet.PubKeyHash
+		case txscript.IsPayToWitnessPubKeyHash(pkScript):
 			addressType = lnwallet.WitnessPubKey
-		} else if txscript.IsPayToScriptHash(pkScript) {
+		case txscript.IsPayToScriptHash(pkScript):
 			// TODO(roasbeef): This assumes all p2sh outputs returned by the
 			// wallet are nested p2pkh. We can't check the redeem script because
 			// the ltcwallet service does not include it.
 			addressType = lnwallet.NestedWitnessPubKey
-		} else if txscript.IsPayToTaproot(pkScript) {
+		case txscript.IsPayToTaproot(pkScript):
 			addressType = lnwallet.TaprootPubkey
 		}
 
-		if addressType == lnwallet.WitnessPubKey ||
-			addressType == lnwallet.NestedWitnessPubKey ||
-			addressType == lnwallet.TaprootPubkey {
-
+		if addressType != lnwallet.UnknownAddressType {
 			txid, err := chainhash.NewHashFromStr(output.TxID)
 			if err != nil {
 				return nil, err

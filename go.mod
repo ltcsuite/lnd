@@ -9,6 +9,7 @@ require (
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1
 	github.com/go-errors/errors v1.0.1
 	github.com/golang-migrate/migrate/v4 v4.16.1
+	github.com/golang/protobuf v1.5.3
 	github.com/gorilla/websocket v1.4.2
 	github.com/grpc-ecosystem/go-grpc-middleware v1.3.0
 	github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0
@@ -23,7 +24,7 @@ require (
 	github.com/jrick/logrotate v1.0.0
 	github.com/kkdai/bstream v1.0.0
 	github.com/lib/pq v1.10.3
-	github.com/ltcsuite/lightning-onion v1.2.1-0.20230823005744-06182b1d7d2f
+	github.com/ltcsuite/lightning-onion v1.0.3
 	github.com/ltcsuite/lnd/cert v1.2.2
 	github.com/ltcsuite/lnd/clock v1.1.1
 	github.com/ltcsuite/lnd/healthcheck v1.2.3
@@ -95,7 +96,6 @@ require (
 	github.com/fergusstrange/embedded-postgres v1.10.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang-jwt/jwt/v4 v4.4.2 // indirect
-	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/google/btree v1.0.1 // indirect
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
@@ -174,7 +174,7 @@ require (
 	go.uber.org/multierr v1.6.0 // indirect
 	go.uber.org/zap v1.17.0 // indirect
 	golang.org/x/mod v0.10.0 // indirect
-	golang.org/x/sys v0.8.0 // indirect
+	golang.org/x/sys v0.13.0 // indirect
 	golang.org/x/text v0.9.0 // indirect
 	golang.org/x/tools v0.9.1 // indirect
 	google.golang.org/genproto v0.0.0-20230410155749-daa745c078e1 // indirect
@@ -212,8 +212,6 @@ go 1.19
 
 retract v0.0.2
 
-replace github.com/ltcsuite/lightning-onion => ../lightning-onion
-
 replace github.com/ltcsuite/lnd/cert => ./cert
 
 replace github.com/ltcsuite/lnd/clock => ./clock
@@ -230,15 +228,27 @@ replace github.com/ltcsuite/lnd/tlv => ./tlv
 
 replace github.com/ltcsuite/lnd/tor => ./tor
 
+replace github.com/ltcsuite/ltcd => ../ltcd
+
+replace github.com/ltcsuite/ltcd/btcec/v2 => ../ltcd/btcec
+
+replace github.com/ltcsuite/ltcd/chaincfg/chainhash => ../ltcd/chaincfg/chainhash
+
+replace github.com/ltcsuite/ltcd/ltcutil => ../ltcd/ltcutil
+
 replace github.com/ltcsuite/ltcd/ltcutil/psbt => ../ltcd/ltcutil/psbt
 
 replace github.com/ltcsuite/ltcwallet => ../ltcwallet
 
 replace github.com/ltcsuite/ltcwallet/wallet/txauthor => ../ltcwallet/wallet/txauthor
 
+replace github.com/ltcsuite/ltcwallet/wallet/txrules => ../ltcwallet/wallet/txrules
+
 replace github.com/ltcsuite/ltcwallet/wallet/txsizes => ../ltcwallet/wallet/txsizes
 
 replace github.com/ltcsuite/ltcwallet/walletdb => ../ltcwallet/walletdb
+
+replace github.com/ltcsuite/ltcwallet/wtxmgr => ../ltcwallet/wtxmgr
 
 replace github.com/ltcsuite/neutrino => ../neutrino
 

@@ -95,6 +95,7 @@ func (OutputScriptType) EnumDescriptor() ([]byte, []int) {
 // - `p2wkh`: Pay to witness key hash (`WITNESS_PUBKEY_HASH` = 0)
 // - `np2wkh`: Pay to nested witness key hash (`NESTED_PUBKEY_HASH` = 1)
 // - `p2tr`: Pay to taproot pubkey (`TAPROOT_PUBKEY` = 4)
+// - `mweb`: MWEB (`MWEB` = 6)
 type AddressType int32
 
 const (
@@ -104,6 +105,8 @@ const (
 	AddressType_UNUSED_NESTED_PUBKEY_HASH  AddressType = 3
 	AddressType_TAPROOT_PUBKEY             AddressType = 4
 	AddressType_UNUSED_TAPROOT_PUBKEY      AddressType = 5
+	AddressType_MWEB                       AddressType = 6
+	AddressType_UNUSED_MWEB                AddressType = 7
 )
 
 // Enum value maps for AddressType.
@@ -115,6 +118,8 @@ var (
 		3: "UNUSED_NESTED_PUBKEY_HASH",
 		4: "TAPROOT_PUBKEY",
 		5: "UNUSED_TAPROOT_PUBKEY",
+		6: "MWEB",
+		7: "UNUSED_MWEB",
 	}
 	AddressType_value = map[string]int32{
 		"WITNESS_PUBKEY_HASH":        0,
@@ -123,6 +128,8 @@ var (
 		"UNUSED_NESTED_PUBKEY_HASH":  3,
 		"TAPROOT_PUBKEY":             4,
 		"UNUSED_TAPROOT_PUBKEY":      5,
+		"MWEB":                       6,
+		"UNUSED_MWEB":                7,
 	}
 )
 

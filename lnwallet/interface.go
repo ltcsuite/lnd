@@ -53,6 +53,9 @@ const (
 
 	// TaprootPubkey represents a p2tr key path spending address.
 	TaprootPubkey
+
+	// Mweb represents an MWEB address.
+	Mweb
 )
 
 var (

@@ -1519,6 +1519,14 @@ func (r *rpcServer) NewAddress(ctx context.Context,
 			return nil, err
 		}
 
+	case lnrpc.AddressType_MWEB:
+		addr, err = r.server.cc.Wallet.NewAddress(
+			lnwallet.Mweb, false, account,
+		)
+		if err != nil {
+			return nil, err
+		}
+
 	case lnrpc.AddressType_UNUSED_WITNESS_PUBKEY_HASH:
 		addr, err = r.server.cc.Wallet.LastUnusedAddress(
 			lnwallet.WitnessPubKey, account,
@@ -1538,6 +1546,14 @@ func (r *rpcServer) NewAddress(ctx context.Context,
 	case lnrpc.AddressType_UNUSED_TAPROOT_PUBKEY:
 		addr, err = r.server.cc.Wallet.LastUnusedAddress(
 			lnwallet.TaprootPubkey, account,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+	case lnrpc.AddressType_UNUSED_MWEB:
+		addr, err = r.server.cc.Wallet.LastUnusedAddress(
+			lnwallet.Mweb, account,
 		)
 		if err != nil {
 			return nil, err

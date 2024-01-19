@@ -504,6 +504,8 @@ func (b *BtcWallet) keyScopeForAccountAddr(accountName string,
 		addrKeyScope = waddrmgr.KeyScopeBIP0049Plus
 	case lnwallet.TaprootPubkey:
 		addrKeyScope = waddrmgr.KeyScopeBIP0086
+	case lnwallet.Mweb:
+		addrKeyScope = waddrmgr.KeyScopeMweb
 	default:
 		return waddrmgr.KeyScope{}, 0,
 			fmt.Errorf("unknown address type")

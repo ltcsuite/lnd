@@ -873,9 +873,11 @@
         "UNUSED_NESTED_PUBKEY_HASH",
         "TAPROOT_PUBKEY",
         "UNUSED_TAPROOT_PUBKEY"
+        "MWEB",
+        "UNUSED_MWEB"
       ],
       "default": "WITNESS_PUBKEY_HASH",
-      "description": "- `p2wkh`: Pay to witness key hash (`WITNESS_PUBKEY_HASH` = 0)\n- `np2wkh`: Pay to nested witness key hash (`NESTED_PUBKEY_HASH` = 1)\n- `p2tr`: Pay to taproot pubkey (`TAPROOT_PUBKEY` = 4)",
+      "description": "- `p2wkh`: Pay to witness key hash (`WITNESS_PUBKEY_HASH` = 0)\n- `np2wkh`: Pay to nested witness key hash (`NESTED_PUBKEY_HASH` = 1)\n- `p2tr`: Pay to taproot pubkey (`TAPROOT_PUBKEY` = 4)\n- `mweb`: MWEB (`MWEB` = 6)",
       "title": "`AddressType` has to be one of:"
     },
     "lnrpcOutPoint": {

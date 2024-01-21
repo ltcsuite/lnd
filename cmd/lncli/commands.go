@@ -143,7 +143,8 @@ var newAddressCommand = cli.Command{
 	Generate a wallet new address. Address-types has to be one of:
 	    - p2wkh:  Pay to witness key hash
 	    - np2wkh: Pay to nested witness key hash
-	    - p2tr:   Pay to taproot pubkey`,
+	    - p2tr:   Pay to taproot pubkey
+	    - mweb:   MWEB`,
 	Action: actionDecorator(newAddress),
 }
 
@@ -178,9 +179,14 @@ func newAddress(ctx *cli.Context) error {
 		if unused {
 			addrType = lnrpc.AddressType_UNUSED_TAPROOT_PUBKEY
 		}
+	case "mweb":
+		addrType = lnrpc.AddressType_MWEB
+		if unused {
+			addrType = lnrpc.AddressType_UNUSED_MWEB
+		}
 	default:
 		return fmt.Errorf("invalid address type %v, support address type "+
-			"are: p2wkh, np2wkh, and p2tr", stringAddrType)
+			"are: p2wkh, np2wkh, p2tr, and mweb", stringAddrType)
 	}
 
 	client, cleanUp := getClient(ctx)

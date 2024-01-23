@@ -1162,6 +1162,8 @@ func (b *BtcWallet) ListUnspentWitness(minConfs, maxConfs int32,
 			addressType = lnwallet.NestedWitnessPubKey
 		case txscript.IsPayToTaproot(pkScript):
 			addressType = lnwallet.TaprootPubkey
+		case txscript.IsMweb(pkScript):
+			addressType = lnwallet.Mweb
 		}
 
 		if addressType != lnwallet.UnknownAddressType {

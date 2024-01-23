@@ -98,6 +98,9 @@ func MarshalUtxos(utxos []*lnwallet.Utxo, activeNetParams *chaincfg.Params) (
 		case lnwallet.TaprootPubkey:
 			addrType = AddressType_TAPROOT_PUBKEY
 
+		case lnwallet.Mweb:
+			addrType = AddressType_MWEB
+
 		case lnwallet.UnknownAddressType:
 			continue
 

@@ -1359,6 +1359,10 @@ func minedTransactionsToDetails(
 		}
 		txDetail.Value = balanceDelta
 
+		if tx.Broadcast != nil {
+			txDetail.RawTx = tx.Broadcast
+		}
+
 		details = append(details, txDetail)
 	}
 
@@ -1427,6 +1431,10 @@ func unminedTransactionsToDetail(
 		return nil, err
 	}
 	txDetail.Value = balanceDelta
+
+	if summary.Broadcast != nil {
+		txDetail.RawTx = summary.Broadcast
+	}
 
 	return txDetail, nil
 }

@@ -33,14 +33,22 @@ func TestLitecoindLndInteraction(t *testing.T) {
 			return nil
 		},
 		Cmds: map[string]func(*testscript.TestScript, bool, []string){
+			"litecoin-cli": litecoinCli,
 			"openRpcConn":  openRpcConn,
 			"createWallet": createWallet,
+			"newAddress":   newAddress,
 			"getResult":    getResult,
 			"syncToBlock":  syncToBlock,
 			"waitForUtxos": waitForUtxos,
 			"checkUtxo":    checkUtxo,
 		},
 	})
+}
+
+func litecoinCli(ts *testscript.TestScript, neg bool, args []string) {
+	ts.Check(ts.Exec("litecoin-cli", append([]string{
+		"-datadir=" + ts.Getenv("WORK") + "/litecoin",
+		"-chain=regtest"}, args...)...))
 }
 
 var rpcConn *grpc.ClientConn
@@ -108,6 +116,18 @@ func createWallet(ts *testscript.TestScript, neg bool, args []string) {
 		CipherSeedMnemonic: resp.CipherSeedMnemonic,
 	})
 	ts.Check(err)
+}
+
+func newAddress(ts *testscript.TestScript, neg bool, args []string) {
+	addressType := lnrpc.AddressType_UNUSED_WITNESS_PUBKEY_HASH
+	if args[0] == "mweb" {
+		addressType = lnrpc.AddressType_UNUSED_MWEB
+	}
+	client := lnrpc.NewLightningClient(rpcConn)
+	resp, err := client.NewAddress(context.Background(),
+		&lnrpc.NewAddressRequest{Type: addressType})
+	ts.Check(err)
+	ts.Stdout().Write([]byte(resp.Address))
 }
 
 func getResult(ts *testscript.TestScript, neg bool, args []string) {

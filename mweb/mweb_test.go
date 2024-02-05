@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ltcsuite/lnd"
 	"github.com/ltcsuite/lnd/lnrpc"
 	"github.com/ltcsuite/lnd/lnrpc/walletrpc"
 	"github.com/ltcsuite/lnd/macaroons"
+	"github.com/ltcsuite/lnd/signal"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/rogpeppe/go-internal/testscript"
 	"google.golang.org/grpc"
@@ -21,15 +23,37 @@ import (
 )
 
 const (
-	lndRpcPort        = 11009
+	lndRpcPort        = "11009"
+	p2pPort           = "19555"
 	lndWalletPassword = "password"
 )
+
+func TestMain(m *testing.M) {
+	os.Exit(testscript.RunMain(m, map[string]func() int{
+		"lnd": func() int {
+			os.Args = append(os.Args,
+				"--litecoin.active", "--litecoin.node=neutrino",
+				"--litecoin.regtest", "--lnddir=$WORK/lnd",
+				"--rpclisten=localhost:"+lndRpcPort,
+				"--neutrino.addpeer=localhost:"+p2pPort)
+			interceptor, _ := signal.Intercept()
+			config, _ := lnd.LoadConfig(interceptor)
+			err := lnd.Main(config, lnd.ListenerCfg{},
+				config.ImplementationConfig(interceptor), interceptor)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+			return 0
+		},
+	}))
+}
 
 func TestLitecoindLndInteraction(t *testing.T) {
 	testscript.Run(t, testscript.Params{
 		Dir: "testdata",
 		Setup: func(e *testscript.Env) error {
-			e.Setenv("LND_RPC_PORT", strconv.Itoa(lndRpcPort))
+			e.Setenv("P2P_PORT", p2pPort)
 			return nil
 		},
 		Cmds: map[string]func(*testscript.TestScript, bool, []string){
@@ -75,8 +99,7 @@ func openRpcConn(ts *testscript.TestScript, neg bool, args []string) {
 			}
 			opts = append(opts, grpc.WithPerRPCCredentials(macCred))
 		}
-		rpcConn, err = grpc.DialContext(ctx,
-			fmt.Sprintf("127.0.0.1:%d", lndRpcPort), opts...)
+		rpcConn, err = grpc.DialContext(ctx, "localhost:"+lndRpcPort, opts...)
 		ts.Check(err)
 		break
 	}

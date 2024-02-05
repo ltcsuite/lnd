@@ -1,0 +1,34 @@
+env P2P_PORT=19555
+
+# Start litecoind
+exec mkdir $WORK/litecoin
+exec litecoind -datadir=$WORK/litecoin -regtest -port=$P2P_PORT &
+exec litecoin-cli -datadir=$WORK/litecoin -chain=regtest -rpcwait -rpcwaittimeout=5 createwallet test
+
+# Start lnd
+exec lnd --litecoin.active --litecoin.node=neutrino --litecoin.regtest --lnddir=$WORK/lnd --rpclisten=127.0.0.1:$LND_RPC_PORT --neutrino.addpeer=127.0.0.1:$P2P_PORT &
+openRpcConn $WORK/lnd 0
+createWallet
+openRpcConn $WORK/lnd 1
+
+# Generate pre-MWEB blocks
+exec litecoin-cli -datadir=$WORK/litecoin -chain=regtest -generate 431
+syncToBlock 431
+
+# Send pegin transaction
+exec litecoin-cli -datadir=$WORK/litecoin -chain=regtest getnewaddress '' mweb
+getResult LITECOIND_MWEB_ADDR
+exec litecoin-cli -datadir=$WORK/litecoin -chain=regtest sendtoaddress $LITECOIND_MWEB_ADDR 1
+exec litecoin-cli -datadir=$WORK/litecoin -chain=regtest -generate 1
+syncToBlock 432
+
+# Send to lnd
+exec lncli --lnddir=$WORK/lnd --rpcserver=127.0.0.1:$LND_RPC_PORT --network regtest newaddress mweb
+getResult LND_MWEB_ADDR address
+exec litecoin-cli -datadir=$WORK/litecoin -chain=regtest sendtoaddress $LND_MWEB_ADDR 100
+exec litecoin-cli -datadir=$WORK/litecoin -chain=regtest -generate 1
+syncToBlock 433
+
+# Verify that lnd received coins
+waitForUtxos 1
+checkUtxo 0 $LND_MWEB_ADDR 100

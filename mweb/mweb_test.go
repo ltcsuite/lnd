@@ -165,6 +165,9 @@ func getResult(ts *testscript.TestScript, neg bool, args []string) {
 		ts.Check(json.Unmarshal([]byte(result), &data))
 		for ; len(args) > 0; args = args[1:] {
 			if i, err := strconv.Atoi(args[0]); err == nil {
+				if i < 0 {
+					i += len(data.([]any))
+				}
 				data = data.([]any)[i]
 			} else {
 				data = data.(map[string]any)[args[0]]
@@ -186,9 +189,7 @@ func syncToBlock(ts *testscript.TestScript, neg bool, args []string) {
 		client := lnrpc.NewLightningClient(rpcConn)
 		resp, err := client.GetInfo(ctx, &lnrpc.GetInfoRequest{})
 		ts.Check(err)
-		block, err := strconv.Atoi(args[0])
-		ts.Check(err)
-		if resp.BlockHeight == uint32(block) && resp.SyncedToChain {
+		if resp.BlockHash == args[0] && resp.SyncedToChain {
 			break
 		}
 	}
@@ -203,7 +204,7 @@ func waitForUtxos(ts *testscript.TestScript, neg bool, args []string) {
 		}
 		client := walletrpc.NewWalletKitClient(rpcConn)
 		resp, err := client.ListUnspent(ctx,
-			&walletrpc.ListUnspentRequest{MaxConfs: 1})
+			&walletrpc.ListUnspentRequest{MaxConfs: 100})
 		ts.Check(err)
 		count, err := strconv.Atoi(args[0])
 		ts.Check(err)
@@ -216,7 +217,7 @@ func waitForUtxos(ts *testscript.TestScript, neg bool, args []string) {
 func checkUtxo(ts *testscript.TestScript, neg bool, args []string) {
 	client := walletrpc.NewWalletKitClient(rpcConn)
 	resp, err := client.ListUnspent(context.Background(),
-		&walletrpc.ListUnspentRequest{MaxConfs: 1})
+		&walletrpc.ListUnspentRequest{MaxConfs: 100})
 	ts.Check(err)
 	index, err := strconv.Atoi(args[0])
 	ts.Check(err)
@@ -224,38 +225,37 @@ func checkUtxo(ts *testscript.TestScript, neg bool, args []string) {
 	slices.SortFunc(resp.Utxos, func(a, b *lnrpc.Utxo) int {
 		return cmp.Compare(a.AmountSat, b.AmountSat)
 	})
-	if resp.Utxos[index].Address != args[1] {
+	utxo := resp.Utxos[index]
+	if utxo.Address != args[1] {
 		ts.Fatalf("utxo address mismatch")
 	}
 	value, err := strconv.ParseFloat(args[2], 64)
 	ts.Check(err)
-	if resp.Utxos[index].AmountSat != int64(value*ltcutil.SatoshiPerBitcoin) {
-		ts.Fatalf("utxo value mismatch")
+	if utxo.AmountSat != int64(value*ltcutil.SatoshiPerBitcoin) {
+		ts.Fatalf("utxo value mismatch, expected %v", utxo.AmountSat)
 	}
 }
 
 func checkTxnHistory(ts *testscript.TestScript, neg bool, args []string) {
-	startHeight, err := strconv.Atoi(args[0])
+	index, err := strconv.Atoi(args[0])
 	ts.Check(err)
-	index, err := strconv.Atoi(args[1])
+	value, err := strconv.ParseFloat(args[2], 64)
 	ts.Check(err)
-	value, err := strconv.ParseFloat(args[3], 64)
+	fee, err := strconv.ParseFloat(args[3], 64)
 	ts.Check(err)
-	fee, err := strconv.ParseFloat(args[4], 64)
-	ts.Check(err)
-	addresses := strings.Split(args[5], ",")
+	addresses := strings.Split(args[4], ",")
 	slices.Sort(addresses)
 
 	client := lnrpc.NewLightningClient(rpcConn)
 	resp, err := client.GetTransactions(context.Background(),
-		&lnrpc.GetTransactionsRequest{StartHeight: int32(startHeight)})
+		&lnrpc.GetTransactionsRequest{})
 	ts.Check(err)
 	tx := resp.Transactions[index]
-	if args[2] != "" && tx.TxHash != args[2] {
+	if args[1] != "" && tx.TxHash != args[1] {
 		ts.Fatalf("txn hash mismatch")
 	}
 	if tx.Amount != int64(value*ltcutil.SatoshiPerBitcoin) {
-		ts.Fatalf("txn value mismatch")
+		ts.Fatalf("txn value mismatch, expected %v", tx.Amount)
 	}
 	if tx.TotalFees != int64(fee*ltcutil.SatoshiPerBitcoin) {
 		ts.Fatalf("txn fee mismatch")

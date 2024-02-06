@@ -11,26 +11,29 @@ openRpcConn $WORK/lnd 1
 
 # Generate pre-MWEB blocks
 litecoin-cli -generate 431
-syncToBlock 431
+getResult BLOCK_HASH blocks -1
+syncToBlock $BLOCK_HASH
 
 # Send pegin transaction
 litecoin-cli getnewaddress '' mweb
 getResult LITECOIND_MWEB_ADDR
 litecoin-cli sendtoaddress $LITECOIND_MWEB_ADDR 1
 litecoin-cli -generate 1
-syncToBlock 432
+getResult BLOCK_HASH blocks 0
+syncToBlock $BLOCK_HASH
 
 # Send to lnd
 newAddress mweb
 getResult LND_MWEB_ADDR_1
 litecoin-cli sendtoaddress $LND_MWEB_ADDR_1 100
 litecoin-cli -generate 1
-syncToBlock 433
+getResult BLOCK_HASH blocks 0
+syncToBlock $BLOCK_HASH
 
 # Verify that lnd received coins
 waitForUtxos 1
 checkUtxo 0 $LND_MWEB_ADDR_1 100
-checkTxnHistory 433 0 '' 100 0 $LND_MWEB_ADDR_1
+checkTxnHistory 0 '' 100 0 $LND_MWEB_ADDR_1
 
 # Send mweb within lnd wallet
 newAddress mweb
@@ -38,8 +41,21 @@ getResult LND_MWEB_ADDR_2
 sendCoins $LND_MWEB_ADDR_2 50
 getResult TXID
 litecoin-cli -generate 1
-syncToBlock 434
+getResult BLOCK_HASH blocks 0
+syncToBlock $BLOCK_HASH
 waitForUtxos 2
-checkUtxo 0 $LND_MWEB_ADDR_1 49.99996100
+checkUtxo 0 $LND_MWEB_ADDR_1 49.999961
 checkUtxo 1 $LND_MWEB_ADDR_2 50
-checkTxnHistory 434 0 $TXID -0.00003900 0.00003900 $LND_MWEB_ADDR_1,$LND_MWEB_ADDR_2
+checkTxnHistory 0 $TXID -0.000039 0.000039 $LND_MWEB_ADDR_1,$LND_MWEB_ADDR_2
+
+# Send pegout within lnd wallet
+newAddress p2wkh
+getResult LND_P2WKH_ADDR_1
+sendCoins $LND_P2WKH_ADDR_1 50
+getResult TXID
+litecoin-cli -generate 1
+getResult BLOCK_HASH blocks 0
+syncToBlock $BLOCK_HASH
+waitForUtxos 1
+checkUtxo 0 $LND_MWEB_ADDR_2 49.999877
+checkTxnHistory 0 $TXID -50.000084 0.000084 $LND_P2WKH_ADDR_1,$LND_MWEB_ADDR_2

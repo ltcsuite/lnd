@@ -65,6 +65,7 @@ func TestLitecoindLndInteraction(t *testing.T) {
 			"createWallet":    createWallet,
 			"newAddress":      newAddress,
 			"getResult":       getResult,
+			"checkResult":     checkResult,
 			"syncToBlock":     syncToBlock,
 			"waitForUtxos":    waitForUtxos,
 			"checkUtxo":       checkUtxo,
@@ -164,26 +165,43 @@ func newAddress(ts *testscript.TestScript, neg bool, args []string) {
 	ts.Stdout().Write([]byte(resp.Address))
 }
 
-func getResult(ts *testscript.TestScript, neg bool, args []string) {
-	envVar, args := args[0], args[1:]
-	result := strings.TrimSpace(ts.ReadFile("stdout"))
-	if len(args) > 0 {
+func extractResult(ts *testscript.TestScript,
+	result string, path []string) string {
+
+	result = strings.TrimSpace(result)
+	if len(path) > 0 {
 		var data any
 		ts.Check(json.Unmarshal([]byte(result), &data))
-		for ; len(args) > 0; args = args[1:] {
-			if i, err := strconv.Atoi(args[0]); err == nil {
+		for ; len(path) > 0; path = path[1:] {
+			if i, err := strconv.Atoi(path[0]); err == nil {
 				if i < 0 {
 					i += len(data.([]any))
 				}
 				data = data.([]any)[i]
 			} else {
-				data = data.(map[string]any)[args[0]]
+				data = data.(map[string]any)[path[0]]
 			}
 		}
-		result = data.(string)
+		result = fmt.Sprint(data)
 	}
+	return result
+}
+
+func getResult(ts *testscript.TestScript, neg bool, args []string) {
+	envVar, path := args[0], args[1:]
+	result := extractResult(ts, ts.ReadFile("stdout"), path)
 	ts.Setenv(envVar, result)
 	ts.Stdout().Write([]byte(result))
+}
+
+func checkResult(ts *testscript.TestScript, neg bool, args []string) {
+	expected, envVar, path := args[0], args[1], args[2:]
+	result := extractResult(ts, ts.Getenv(envVar), path)
+	if !neg && result != expected {
+		ts.Fatalf("expected %s, got %s", expected, result)
+	} else if neg && result == expected {
+		ts.Fatalf("expected ! %s", expected)
+	}
 }
 
 func syncToBlock(ts *testscript.TestScript, neg bool, args []string) {

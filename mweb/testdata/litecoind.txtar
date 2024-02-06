@@ -14,8 +14,8 @@ generate 431
 
 # Send pegin transaction
 litecoin-cli getnewaddress '' mweb
-getResult LITECOIND_MWEB_ADDR
-litecoin-cli sendtoaddress $LITECOIND_MWEB_ADDR 1
+getResult LITECOIND_MWEB_ADDR_1
+litecoin-cli sendtoaddress $LITECOIND_MWEB_ADDR_1 1
 generate 1
 
 # Send to lnd
@@ -68,3 +68,20 @@ waitForUtxos 2
 checkUtxo 0 $LND_MWEB_ADDR_3 49.99953
 checkUtxo 1 $LND_MWEB_ADDR_3 50
 checkTxnHistory 0 $TXID -0.000347 0.000347 $LND_MWEB_ADDR_3,$LND_MWEB_ADDR_3
+
+# Send mweb to litecoind
+newAddress mweb
+getResult LND_MWEB_ADDR_4
+litecoin-cli getnewaddress '' mweb
+getResult LITECOIND_MWEB_ADDR_2
+sendCoins $LITECOIND_MWEB_ADDR_2 50
+getResult TXID
+checkTxnHistory 0 $TXID -50.000039 0.000039 $LITECOIND_MWEB_ADDR_2,$LND_MWEB_ADDR_4
+waitForUtxos 1
+checkUtxo 0 $LND_MWEB_ADDR_4 49.999491
+generate 1
+litecoin-cli listunspent 1 1
+getResult RESULT
+checkResult $TXID RESULT 0 txid
+checkResult 50 RESULT 0 amount
+checkResult $LITECOIND_MWEB_ADDR_2 RESULT 0 address

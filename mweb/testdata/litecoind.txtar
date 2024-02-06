@@ -22,11 +22,23 @@ syncToBlock 432
 
 # Send to lnd
 newAddress mweb
-getResult LND_MWEB_ADDR
-litecoin-cli sendtoaddress $LND_MWEB_ADDR 100
+getResult LND_MWEB_ADDR_1
+litecoin-cli sendtoaddress $LND_MWEB_ADDR_1 100
 litecoin-cli -generate 1
 syncToBlock 433
 
 # Verify that lnd received coins
 waitForUtxos 1
-checkUtxo 0 $LND_MWEB_ADDR 100
+checkUtxo 0 $LND_MWEB_ADDR_1 100
+checkTxnHistory 433 0 100 0 $LND_MWEB_ADDR_1
+
+# Send mweb within lnd wallet
+newAddress mweb
+getResult LND_MWEB_ADDR_2
+sendCoins $LND_MWEB_ADDR_2 50
+litecoin-cli -generate 1
+syncToBlock 434
+waitForUtxos 2
+checkUtxo 0 $LND_MWEB_ADDR_1 49.99996100
+checkUtxo 1 $LND_MWEB_ADDR_2 50
+checkTxnHistory 434 0 -0.00003900 0.00003900 $LND_MWEB_ADDR_1,$LND_MWEB_ADDR_2

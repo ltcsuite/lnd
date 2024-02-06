@@ -1,10 +1,12 @@
 package mweb_test
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -57,14 +59,16 @@ func TestLitecoindLndInteraction(t *testing.T) {
 			return nil
 		},
 		Cmds: map[string]func(*testscript.TestScript, bool, []string){
-			"litecoin-cli": litecoinCli,
-			"openRpcConn":  openRpcConn,
-			"createWallet": createWallet,
-			"newAddress":   newAddress,
-			"getResult":    getResult,
-			"syncToBlock":  syncToBlock,
-			"waitForUtxos": waitForUtxos,
-			"checkUtxo":    checkUtxo,
+			"litecoin-cli":    litecoinCli,
+			"openRpcConn":     openRpcConn,
+			"createWallet":    createWallet,
+			"newAddress":      newAddress,
+			"getResult":       getResult,
+			"syncToBlock":     syncToBlock,
+			"waitForUtxos":    waitForUtxos,
+			"checkUtxo":       checkUtxo,
+			"checkTxnHistory": checkTxnHistory,
+			"sendCoins":       sendCoins,
 		},
 	})
 }
@@ -216,12 +220,55 @@ func checkUtxo(ts *testscript.TestScript, neg bool, args []string) {
 	ts.Check(err)
 	index, err := strconv.Atoi(args[0])
 	ts.Check(err)
+
+	slices.SortFunc(resp.Utxos, func(a, b *lnrpc.Utxo) int {
+		return cmp.Compare(a.AmountSat, b.AmountSat)
+	})
 	if resp.Utxos[index].Address != args[1] {
 		ts.Fatalf("utxo address mismatch")
 	}
-	value, err := strconv.Atoi(args[2])
+	value, err := strconv.ParseFloat(args[2], 64)
 	ts.Check(err)
-	if resp.Utxos[index].AmountSat != int64(value)*ltcutil.SatoshiPerBitcoin {
+	if resp.Utxos[index].AmountSat != int64(value*ltcutil.SatoshiPerBitcoin) {
 		ts.Fatalf("utxo value mismatch")
 	}
+}
+
+func checkTxnHistory(ts *testscript.TestScript, neg bool, args []string) {
+	startHeight, err := strconv.Atoi(args[0])
+	ts.Check(err)
+	index, err := strconv.Atoi(args[1])
+	ts.Check(err)
+	value, err := strconv.ParseFloat(args[2], 64)
+	ts.Check(err)
+	fee, err := strconv.ParseFloat(args[3], 64)
+	ts.Check(err)
+	addresses := strings.Split(args[4], ",")
+	slices.Sort(addresses)
+
+	client := lnrpc.NewLightningClient(rpcConn)
+	resp, err := client.GetTransactions(context.Background(),
+		&lnrpc.GetTransactionsRequest{StartHeight: int32(startHeight)})
+	ts.Check(err)
+	if resp.Transactions[index].Amount != int64(value*ltcutil.SatoshiPerBitcoin) {
+		ts.Fatalf("txn value mismatch")
+	}
+	if resp.Transactions[index].TotalFees != int64(fee*ltcutil.SatoshiPerBitcoin) {
+		ts.Fatalf("txn fee mismatch")
+	}
+	slices.Sort(resp.Transactions[index].DestAddresses)
+	if !slices.Equal(resp.Transactions[index].DestAddresses, addresses) {
+		ts.Fatalf("txn addresses mismatch")
+	}
+}
+
+func sendCoins(ts *testscript.TestScript, neg bool, args []string) {
+	value, err := strconv.Atoi(args[1])
+	ts.Check(err)
+	client := lnrpc.NewLightningClient(rpcConn)
+	resp, err := client.SendCoins(context.Background(),
+		&lnrpc.SendCoinsRequest{Addr: args[0],
+			Amount: int64(value) * ltcutil.SatoshiPerBitcoin})
+	ts.Check(err)
+	ts.Stdout().Write([]byte(resp.Txid))
 }

@@ -61,6 +61,7 @@ func TestLitecoindLndInteraction(t *testing.T) {
 		Cmds: map[string]func(*testscript.TestScript, bool, []string){
 			"litecoin-cli":    litecoinCli,
 			"openRpcConn":     openRpcConn,
+			"generate":        generate,
 			"createWallet":    createWallet,
 			"newAddress":      newAddress,
 			"getResult":       getResult,
@@ -119,6 +120,12 @@ func loadMacaroon(lndPath string) (macCred macaroons.MacaroonCredential, err err
 		return
 	}
 	return macaroons.NewMacaroonCredential(mac)
+}
+
+func generate(ts *testscript.TestScript, neg bool, args []string) {
+	litecoinCli(ts, neg, []string{"-generate", args[0]})
+	getResult(ts, neg, []string{"BLOCK_HASH", "blocks", "-1"})
+	syncToBlock(ts, neg, []string{ts.Getenv("BLOCK_HASH")})
 }
 
 func createWallet(ts *testscript.TestScript, neg bool, args []string) {

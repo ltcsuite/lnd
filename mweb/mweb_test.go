@@ -239,25 +239,29 @@ func checkTxnHistory(ts *testscript.TestScript, neg bool, args []string) {
 	ts.Check(err)
 	index, err := strconv.Atoi(args[1])
 	ts.Check(err)
-	value, err := strconv.ParseFloat(args[2], 64)
+	value, err := strconv.ParseFloat(args[3], 64)
 	ts.Check(err)
-	fee, err := strconv.ParseFloat(args[3], 64)
+	fee, err := strconv.ParseFloat(args[4], 64)
 	ts.Check(err)
-	addresses := strings.Split(args[4], ",")
+	addresses := strings.Split(args[5], ",")
 	slices.Sort(addresses)
 
 	client := lnrpc.NewLightningClient(rpcConn)
 	resp, err := client.GetTransactions(context.Background(),
 		&lnrpc.GetTransactionsRequest{StartHeight: int32(startHeight)})
 	ts.Check(err)
-	if resp.Transactions[index].Amount != int64(value*ltcutil.SatoshiPerBitcoin) {
+	tx := resp.Transactions[index]
+	if args[2] != "" && tx.TxHash != args[2] {
+		ts.Fatalf("txn hash mismatch")
+	}
+	if tx.Amount != int64(value*ltcutil.SatoshiPerBitcoin) {
 		ts.Fatalf("txn value mismatch")
 	}
-	if resp.Transactions[index].TotalFees != int64(fee*ltcutil.SatoshiPerBitcoin) {
+	if tx.TotalFees != int64(fee*ltcutil.SatoshiPerBitcoin) {
 		ts.Fatalf("txn fee mismatch")
 	}
-	slices.Sort(resp.Transactions[index].DestAddresses)
-	if !slices.Equal(resp.Transactions[index].DestAddresses, addresses) {
+	slices.Sort(tx.DestAddresses)
+	if !slices.Equal(tx.DestAddresses, addresses) {
 		ts.Fatalf("txn addresses mismatch")
 	}
 }

@@ -104,3 +104,29 @@ litecoin-cli listunspent 0 6
 getResult RESULT
 checkResult 25 RESULT 0 amount
 checkResult $LITECOIND_P2WKH_ADDR_1 RESULT 0 address
+
+# Complex pegin-pegout transaction
+newAddress mweb
+getResult LND_MWEB_ADDR_6
+newAddress p2wkh
+getResult LND_P2WKH_ADDR_2
+litecoin-cli sendtoaddress $LND_P2WKH_ADDR_2 25
+generate 6
+waitForUtxos 2
+checkUtxo 0 $LND_MWEB_ADDR_5 24.999407
+checkUtxo 1 $LND_P2WKH_ADDR_2 25
+litecoin-cli getnewaddress
+getResult LITECOIND_P2WKH_ADDR_2
+sendCoins $LITECOIND_P2WKH_ADDR_2 25
+getResult TXID
+generate 1
+waitForUtxos 1
+checkUtxo 0 $LND_MWEB_ADDR_6 24.999041
+checkTxnHistory 0 $TXID -25.000366 0.000366 $LITECOIND_P2WKH_ADDR_2,$LND_MWEB_ADDR_6
+litecoin-cli listunspent 0 1
+stdout ^\[\n]\n$
+generate 5
+litecoin-cli listunspent 0 6
+getResult RESULT
+checkResult 25 RESULT 0 amount
+checkResult $LITECOIND_P2WKH_ADDR_2 RESULT 0 address

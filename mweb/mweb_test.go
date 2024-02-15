@@ -3,6 +3,7 @@ package mweb_test
 import (
 	"cmp"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -20,6 +21,7 @@ import (
 	"github.com/ltcsuite/lnd/macaroons"
 	"github.com/ltcsuite/lnd/signal"
 	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/wire"
 	"github.com/rogpeppe/go-internal/testscript"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -388,6 +390,16 @@ func getTransactionFee(ts *testscript.TestScript, txid string) float64 {
 	return float64(resp.TotalFees) / ltcutil.SatoshiPerBitcoin
 }
 
+func isMwebTransaction(ts *testscript.TestScript, txid string) bool {
+	client := walletrpc.NewWalletKitClient(rpcConn)
+	resp, err := client.GetTransaction(context.Background(),
+		&walletrpc.GetTransactionRequest{Txid: txid})
+	ts.Check(err)
+	var tx wire.MsgTx
+	ts.Check(tx.Deserialize(hex.NewDecoder(strings.NewReader(resp.RawTxHex))))
+	return tx.Mweb != nil
+}
+
 type litecoindUnspents []struct {
 	Txid    string  `json:"txid"`
 	Amount  float64 `json:"amount"`
@@ -417,6 +429,8 @@ func stressTest(ts *testscript.TestScript, neg bool, args []string) {
 			LitecoindToLndCanonicalAddr
 			LndToLitecoindMwebAddr
 			LndToLitecoindCanonicalAddr
+			LndToLndMwebAddr
+			LndToLndCanonicalAddr
 			NumberOfCases
 		)
 		selectedCase := rand.Intn(NumberOfCases)
@@ -479,6 +493,40 @@ func stressTest(ts *testscript.TestScript, neg bool, args []string) {
 			if unspents[0].Address != addr {
 				ts.Fatalf("address mismatch")
 			}
+
+		case LndToLndMwebAddr, LndToLndCanonicalAddr:
+			amt := math.Round(lndBal*rand.Float64()*0.99*
+				ltcutil.SatoshiPerBitcoin) / ltcutil.SatoshiPerBitcoin
+			if amt < 0.001 {
+				continue
+			}
+			var addr string
+			var confs int
+			switch selectedCase {
+			case LndToLndMwebAddr:
+				addr = newAddress(ts, "mweb")
+				confs = 1
+			case LndToLndCanonicalAddr:
+				addr = newAddress(ts, "p2wkh")
+				confs = 6
+			}
+			ts.Logf("Sending %v to %s (lnd -> lnd)", amt, addr)
+			txid := sendCoins(ts, addr, amt)
+			usedBal := lndBal - walletBalance(ts)
+			fee := getTransactionFee(ts, txid)
+			txnValue := -fee
+			if selectedCase == LndToLndCanonicalAddr && isMwebTransaction(ts, txid) {
+				txnValue -= amt
+			}
+			txnAddrs := checkTxnHistory(ts, 0, txid, txnValue, fee, []string{addr, "?"})
+			generate(ts, confs)
+			waitForUtxos(ts, 2, confs)
+			x := 0
+			if amt > usedBal-amt-fee {
+				x = 1
+			}
+			checkUtxo(ts, 0^x, addr, amt)
+			checkUtxo(ts, 1^x, txnAddrs[0], usedBal-amt-fee)
 		}
 	}
 }

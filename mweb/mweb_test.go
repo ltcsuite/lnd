@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"math/rand"
 	"os"
 	"slices"
 	"strconv"
@@ -59,23 +61,29 @@ func TestLitecoindLndInteraction(t *testing.T) {
 			return nil
 		},
 		Cmds: map[string]func(*testscript.TestScript, bool, []string){
-			"litecoin-cli":    litecoinCli,
+			"litecoin-cli":    _litecoinCli,
 			"openRpcConn":     openRpcConn,
-			"generate":        generate,
+			"generate":        _generate,
 			"createWallet":    createWallet,
-			"newAddress":      newAddress,
+			"newAddress":      _newAddress,
 			"getResult":       getResult,
 			"checkResult":     checkResult,
 			"syncToBlock":     syncToBlock,
-			"waitForUtxos":    waitForUtxos,
-			"checkUtxo":       checkUtxo,
-			"checkTxnHistory": checkTxnHistory,
-			"sendCoins":       sendCoins,
+			"waitForUtxos":    _waitForUtxos,
+			"checkUtxo":       _checkUtxo,
+			"checkTxnHistory": _checkTxnHistory,
+			"sendCoins":       _sendCoins,
+			"walletBalance":   _walletBalance,
+			"stressTest":      stressTest,
 		},
 	})
 }
 
-func litecoinCli(ts *testscript.TestScript, neg bool, args []string) {
+func litecoinCli(ts *testscript.TestScript, args ...string) {
+	_litecoinCli(ts, false, args)
+}
+
+func _litecoinCli(ts *testscript.TestScript, neg bool, args []string) {
 	ts.Check(ts.Exec("litecoin-cli", append([]string{
 		"-datadir=" + ts.Getenv("WORK") + "/litecoin",
 		"-chain=regtest"}, args...)...))
@@ -123,8 +131,12 @@ func loadMacaroon(lndPath string) (macCred macaroons.MacaroonCredential, err err
 	return macaroons.NewMacaroonCredential(mac)
 }
 
-func generate(ts *testscript.TestScript, neg bool, args []string) {
-	litecoinCli(ts, neg, []string{"-generate", args[0]})
+func generate(ts *testscript.TestScript, count int) {
+	_generate(ts, false, []string{strconv.Itoa(count)})
+}
+
+func _generate(ts *testscript.TestScript, neg bool, args []string) {
+	_litecoinCli(ts, neg, []string{"-generate", args[0]})
 	getResult(ts, neg, []string{"BLOCK_HASH", "blocks", "-1"})
 	syncToBlock(ts, neg, []string{ts.Getenv("BLOCK_HASH")})
 }
@@ -153,16 +165,20 @@ func createWallet(ts *testscript.TestScript, neg bool, args []string) {
 	ts.Check(err)
 }
 
-func newAddress(ts *testscript.TestScript, neg bool, args []string) {
+func newAddress(ts *testscript.TestScript, kind string) string {
 	addressType := lnrpc.AddressType_UNUSED_WITNESS_PUBKEY_HASH
-	if args[0] == "mweb" {
+	if kind == "mweb" {
 		addressType = lnrpc.AddressType_UNUSED_MWEB
 	}
 	client := lnrpc.NewLightningClient(rpcConn)
 	resp, err := client.NewAddress(context.Background(),
 		&lnrpc.NewAddressRequest{Type: addressType})
 	ts.Check(err)
-	ts.Stdout().Write([]byte(resp.Address))
+	return resp.Address
+}
+
+func _newAddress(ts *testscript.TestScript, neg bool, args []string) {
+	ts.Stdout().Write([]byte(newAddress(ts, args[0])))
 }
 
 func extractResult(ts *testscript.TestScript,
@@ -220,7 +236,7 @@ func syncToBlock(ts *testscript.TestScript, neg bool, args []string) {
 	}
 }
 
-func waitForUtxos(ts *testscript.TestScript, neg bool, args []string) {
+func waitForUtxos(ts *testscript.TestScript, count, maxConfs int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	for ; ; time.Sleep(time.Second) {
@@ -229,9 +245,7 @@ func waitForUtxos(ts *testscript.TestScript, neg bool, args []string) {
 		}
 		client := walletrpc.NewWalletKitClient(rpcConn)
 		resp, err := client.ListUnspent(ctx,
-			&walletrpc.ListUnspentRequest{MaxConfs: 100})
-		ts.Check(err)
-		count, err := strconv.Atoi(args[0])
+			&walletrpc.ListUnspentRequest{MaxConfs: int32(maxConfs)})
 		ts.Check(err)
 		if len(resp.Utxos) == count {
 			break
@@ -239,7 +253,22 @@ func waitForUtxos(ts *testscript.TestScript, neg bool, args []string) {
 	}
 }
 
-func checkUtxo(ts *testscript.TestScript, neg bool, args []string) {
+func _waitForUtxos(ts *testscript.TestScript, neg bool, args []string) {
+	count, err := strconv.Atoi(args[0])
+	ts.Check(err)
+	maxConfs := 1
+	if len(args) == 2 {
+		maxConfs, err = strconv.Atoi(args[1])
+		ts.Check(err)
+	}
+	waitForUtxos(ts, count, maxConfs)
+}
+
+func checkUtxo(ts *testscript.TestScript, index int, addr string, value float64) {
+	_checkUtxo(ts, false, []string{strconv.Itoa(index), addr, fmt.Sprint(value)})
+}
+
+func _checkUtxo(ts *testscript.TestScript, neg bool, args []string) {
 	client := walletrpc.NewWalletKitClient(rpcConn)
 	resp, err := client.ListUnspent(context.Background(),
 		&walletrpc.ListUnspentRequest{MaxConfs: 100})
@@ -248,7 +277,10 @@ func checkUtxo(ts *testscript.TestScript, neg bool, args []string) {
 	ts.Check(err)
 
 	slices.SortFunc(resp.Utxos, func(a, b *lnrpc.Utxo) int {
-		return cmp.Compare(a.AmountSat, b.AmountSat)
+		if a.Confirmations == b.Confirmations {
+			return cmp.Compare(a.AmountSat, b.AmountSat)
+		}
+		return cmp.Compare(a.Confirmations, b.Confirmations)
 	})
 	utxo := resp.Utxos[index]
 	if utxo.Address != args[1] {
@@ -256,48 +288,185 @@ func checkUtxo(ts *testscript.TestScript, neg bool, args []string) {
 	}
 	value, err := strconv.ParseFloat(args[2], 64)
 	ts.Check(err)
-	if utxo.AmountSat != int64(value*ltcutil.SatoshiPerBitcoin) {
+	if utxo.AmountSat != int64(math.Round(value*ltcutil.SatoshiPerBitcoin)) {
 		ts.Fatalf("utxo value mismatch, expected %v", utxo.AmountSat)
 	}
 }
 
-func checkTxnHistory(ts *testscript.TestScript, neg bool, args []string) {
-	index, err := strconv.Atoi(args[0])
-	ts.Check(err)
-	value, err := strconv.ParseFloat(args[2], 64)
-	ts.Check(err)
-	fee, err := strconv.ParseFloat(args[3], 64)
-	ts.Check(err)
-	addresses := strings.Split(args[4], ",")
-	slices.Sort(addresses)
+func checkTxnHistory(ts *testscript.TestScript, index int,
+	txid string, value, fee float64, addrs []string) []string {
+
+	expectedAddrs := make(map[string]int)
+	unknown := 0
+	for _, addr := range addrs {
+		if addr == "?" {
+			unknown++
+		} else {
+			expectedAddrs[addr]++
+		}
+	}
 
 	client := lnrpc.NewLightningClient(rpcConn)
 	resp, err := client.GetTransactions(context.Background(),
 		&lnrpc.GetTransactionsRequest{})
 	ts.Check(err)
 	tx := resp.Transactions[index]
-	if args[1] != "" && tx.TxHash != args[1] {
+	if txid != "" && tx.TxHash != txid {
 		ts.Fatalf("txn hash mismatch")
 	}
-	if tx.Amount != int64(value*ltcutil.SatoshiPerBitcoin) {
+	if tx.Amount != int64(math.Round(value*ltcutil.SatoshiPerBitcoin)) {
 		ts.Fatalf("txn value mismatch, expected %v", tx.Amount)
 	}
-	if tx.TotalFees != int64(fee*ltcutil.SatoshiPerBitcoin) {
+	if tx.TotalFees != int64(math.Round(fee*ltcutil.SatoshiPerBitcoin)) {
 		ts.Fatalf("txn fee mismatch")
 	}
-	slices.Sort(tx.DestAddresses)
-	if !slices.Equal(tx.DestAddresses, addresses) {
-		ts.Fatalf("txn addresses mismatch")
+
+	var unknownAddrs []string
+	for _, addr := range tx.DestAddresses {
+		if expectedAddrs[addr] > 0 {
+			if expectedAddrs[addr]--; expectedAddrs[addr] == 0 {
+				delete(expectedAddrs, addr)
+			}
+		} else {
+			unknownAddrs = append(unknownAddrs, addr)
+		}
 	}
+
+	if len(expectedAddrs) > 0 {
+		ts.Fatalf("failed to match destination addresses")
+	}
+	if len(unknownAddrs) > unknown {
+		ts.Fatalf("unknown address count greater than expected")
+	}
+	return unknownAddrs
 }
 
-func sendCoins(ts *testscript.TestScript, neg bool, args []string) {
-	value, err := strconv.Atoi(args[1])
+func _checkTxnHistory(ts *testscript.TestScript, neg bool, args []string) {
+	index, err := strconv.Atoi(args[0])
 	ts.Check(err)
+	value, err := strconv.ParseFloat(args[2], 64)
+	ts.Check(err)
+	fee, err := strconv.ParseFloat(args[3], 64)
+	ts.Check(err)
+	checkTxnHistory(ts, index, args[1], value, fee, strings.Split(args[4], ","))
+}
+
+func sendCoins(ts *testscript.TestScript, addr string, value float64) string {
 	client := lnrpc.NewLightningClient(rpcConn)
 	resp, err := client.SendCoins(context.Background(),
-		&lnrpc.SendCoinsRequest{Addr: args[0],
-			Amount: int64(value) * ltcutil.SatoshiPerBitcoin})
+		&lnrpc.SendCoinsRequest{Addr: addr,
+			Amount: int64(math.Round(value * ltcutil.SatoshiPerBitcoin))})
 	ts.Check(err)
-	ts.Stdout().Write([]byte(resp.Txid))
+	return resp.Txid
+}
+
+func _sendCoins(ts *testscript.TestScript, neg bool, args []string) {
+	value, err := strconv.ParseFloat(args[1], 64)
+	ts.Check(err)
+	ts.Stdout().Write([]byte(sendCoins(ts, args[0], value)))
+}
+
+func walletBalance(ts *testscript.TestScript) float64 {
+	client := lnrpc.NewLightningClient(rpcConn)
+	resp, err := client.WalletBalance(context.Background(),
+		&lnrpc.WalletBalanceRequest{})
+	ts.Check(err)
+	return float64(resp.ConfirmedBalance) / ltcutil.SatoshiPerBitcoin
+}
+
+func _walletBalance(ts *testscript.TestScript, neg bool, args []string) {
+	ts.Stdout().Write([]byte(fmt.Sprint(walletBalance(ts))))
+}
+
+func getTransactionFee(ts *testscript.TestScript, txid string) float64 {
+	client := walletrpc.NewWalletKitClient(rpcConn)
+	resp, err := client.GetTransaction(context.Background(),
+		&walletrpc.GetTransactionRequest{Txid: txid})
+	ts.Check(err)
+	return float64(resp.TotalFees) / ltcutil.SatoshiPerBitcoin
+}
+
+type litecoindUnspents []struct {
+	Txid    string  `json:"txid"`
+	Amount  float64 `json:"amount"`
+	Address string  `json:"address"`
+}
+
+func litecoinCliListUnspent(ts *testscript.TestScript, maxConfs int) litecoindUnspents {
+	litecoinCli(ts, "listunspent", "0", strconv.Itoa(maxConfs))
+	dec := json.NewDecoder(strings.NewReader(ts.ReadFile("stdout")))
+	var v litecoindUnspents
+	ts.Check(dec.Decode(&v))
+	return v
+}
+
+func stressTest(ts *testscript.TestScript, neg bool, args []string) {
+	cycles, err := strconv.Atoi(args[0])
+	ts.Check(err)
+	for i := 0; i < cycles; i++ {
+		litecoinCli(ts, "getbalance")
+		litecoindBal, err := strconv.ParseFloat(
+			strings.TrimSpace(ts.ReadFile("stdout")), 64)
+		ts.Check(err)
+		lndBal := walletBalance(ts)
+
+		switch rand.Intn(4) {
+		case 0: // litecoind to lnd mweb addr
+			amt := math.Round(litecoindBal*rand.Float64()*0.99*
+				ltcutil.SatoshiPerBitcoin) / ltcutil.SatoshiPerBitcoin
+			if amt < 0.001 {
+				continue
+			}
+			addr := newAddress(ts, "mweb")
+			ts.Logf("Sending %v to %s (litecoind -> lnd)", amt, addr)
+			litecoinCli(ts, "sendtoaddress", addr, fmt.Sprint(amt))
+			generate(ts, 1)
+			waitForUtxos(ts, 1, 1)
+			checkUtxo(ts, 0, addr, amt)
+			checkTxnHistory(ts, 0, "", amt, 0, []string{addr})
+
+		case 1: // litecoind to lnd canonical addr
+			amt := math.Round(litecoindBal*rand.Float64()*0.99*
+				ltcutil.SatoshiPerBitcoin) / ltcutil.SatoshiPerBitcoin
+			if amt < 0.001 {
+				continue
+			}
+			addr := newAddress(ts, "p2wkh")
+			ts.Logf("Sending %v to %s (litecoind -> lnd)", amt, addr)
+			litecoinCli(ts, "sendtoaddress", addr, fmt.Sprint(amt))
+			generate(ts, 6)
+			waitForUtxos(ts, 1, 6)
+			checkUtxo(ts, 0, addr, amt)
+			checkTxnHistory(ts, 0, "", amt, 0, []string{addr, "?"})
+
+		case 2: // lnd to litecoind mweb addr
+			amt := math.Round(lndBal*rand.Float64()*0.99*
+				ltcutil.SatoshiPerBitcoin) / ltcutil.SatoshiPerBitcoin
+			if amt < 0.001 {
+				continue
+			}
+			litecoinCli(ts, "getnewaddress", "", "mweb")
+			addr := strings.TrimSpace(ts.ReadFile("stdout"))
+			ts.Logf("Sending %v to %s (lnd -> litecoind)", amt, addr)
+			txid := sendCoins(ts, addr, amt)
+			usedBal := lndBal - walletBalance(ts)
+			generate(ts, 1)
+			fee := getTransactionFee(ts, txid)
+			txnAddrs := checkTxnHistory(ts, 0, txid, -amt-fee, fee, []string{addr, "?"})
+			waitForUtxos(ts, 1, 1)
+			checkUtxo(ts, 0, txnAddrs[0], usedBal-amt-fee)
+			unspents := litecoinCliListUnspent(ts, 1)
+			if unspents[0].Txid != txid {
+				ts.Fatalf("txid mismatch")
+			}
+			if unspents[0].Amount != amt {
+				ts.Fatalf("amount mismatch")
+			}
+			if unspents[0].Address != addr {
+				ts.Fatalf("address mismatch")
+			}
+
+		case 3:
+		}
+	}
 }

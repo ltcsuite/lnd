@@ -132,7 +132,9 @@ func loadMacaroon(lndPath string) (macCred macaroons.MacaroonCredential, err err
 }
 
 func generate(ts *testscript.TestScript, count int) {
-	_generate(ts, false, []string{strconv.Itoa(count)})
+	if count > 0 {
+		_generate(ts, false, []string{strconv.Itoa(count)})
+	}
 }
 
 func _generate(ts *testscript.TestScript, neg bool, args []string) {
@@ -410,53 +412,65 @@ func stressTest(ts *testscript.TestScript, neg bool, args []string) {
 		ts.Check(err)
 		lndBal := walletBalance(ts)
 
-		switch rand.Intn(4) {
-		case 0: // litecoind to lnd mweb addr
+		const (
+			LitecoindToLndMwebAddr = iota
+			LitecoindToLndCanonicalAddr
+			LndToLitecoindMwebAddr
+			LndToLitecoindCanonicalAddr
+			NumberOfCases
+		)
+		selectedCase := rand.Intn(NumberOfCases)
+		switch selectedCase {
+		case LitecoindToLndMwebAddr, LitecoindToLndCanonicalAddr:
 			amt := math.Round(litecoindBal*rand.Float64()*0.99*
 				ltcutil.SatoshiPerBitcoin) / ltcutil.SatoshiPerBitcoin
 			if amt < 0.001 {
 				continue
 			}
-			addr := newAddress(ts, "mweb")
-			ts.Logf("Sending %v to %s (litecoind -> lnd)", amt, addr)
-			litecoinCli(ts, "sendtoaddress", addr, fmt.Sprint(amt))
-			generate(ts, 1)
-			waitForUtxos(ts, 1, 1)
-			checkUtxo(ts, 0, addr, amt)
-			checkTxnHistory(ts, 0, "", amt, 0, []string{addr})
-
-		case 1: // litecoind to lnd canonical addr
-			amt := math.Round(litecoindBal*rand.Float64()*0.99*
-				ltcutil.SatoshiPerBitcoin) / ltcutil.SatoshiPerBitcoin
-			if amt < 0.001 {
-				continue
+			var addr string
+			var confs int
+			switch selectedCase {
+			case LitecoindToLndMwebAddr:
+				addr = newAddress(ts, "mweb")
+				confs = 1
+			case LitecoindToLndCanonicalAddr:
+				addr = newAddress(ts, "p2wkh")
+				confs = 6
 			}
-			addr := newAddress(ts, "p2wkh")
 			ts.Logf("Sending %v to %s (litecoind -> lnd)", amt, addr)
 			litecoinCli(ts, "sendtoaddress", addr, fmt.Sprint(amt))
-			generate(ts, 6)
-			waitForUtxos(ts, 1, 6)
+			generate(ts, confs)
+			waitForUtxos(ts, 1, confs)
 			checkUtxo(ts, 0, addr, amt)
 			checkTxnHistory(ts, 0, "", amt, 0, []string{addr, "?"})
 
-		case 2: // lnd to litecoind mweb addr
+		case LndToLitecoindMwebAddr, LndToLitecoindCanonicalAddr:
 			amt := math.Round(lndBal*rand.Float64()*0.99*
 				ltcutil.SatoshiPerBitcoin) / ltcutil.SatoshiPerBitcoin
 			if amt < 0.001 {
 				continue
 			}
-			litecoinCli(ts, "getnewaddress", "", "mweb")
+			var confs int
+			switch selectedCase {
+			case LndToLitecoindMwebAddr:
+				litecoinCli(ts, "getnewaddress", "", "mweb")
+				confs = 1
+			case LndToLitecoindCanonicalAddr:
+				litecoinCli(ts, "getnewaddress")
+				confs = 6
+			}
 			addr := strings.TrimSpace(ts.ReadFile("stdout"))
 			ts.Logf("Sending %v to %s (lnd -> litecoind)", amt, addr)
 			txid := sendCoins(ts, addr, amt)
 			usedBal := lndBal - walletBalance(ts)
-			generate(ts, 1)
 			fee := getTransactionFee(ts, txid)
+			generate(ts, 1)
 			txnAddrs := checkTxnHistory(ts, 0, txid, -amt-fee, fee, []string{addr, "?"})
 			waitForUtxos(ts, 1, 1)
 			checkUtxo(ts, 0, txnAddrs[0], usedBal-amt-fee)
-			unspents := litecoinCliListUnspent(ts, 1)
-			if unspents[0].Txid != txid {
+			generate(ts, confs-1)
+			unspents := litecoinCliListUnspent(ts, confs)
+			if unspents[0].Txid != txid && selectedCase != LndToLitecoindCanonicalAddr {
 				ts.Fatalf("txid mismatch")
 			}
 			if unspents[0].Amount != amt {
@@ -465,8 +479,6 @@ func stressTest(ts *testscript.TestScript, neg bool, args []string) {
 			if unspents[0].Address != addr {
 				ts.Fatalf("address mismatch")
 			}
-
-		case 3:
 		}
 	}
 }

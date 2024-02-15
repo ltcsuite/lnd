@@ -191,4 +191,5 @@ checkResult $TXID RESULT 0 txid
 checkResult 320 RESULT 0 amount
 checkResult $LITECOIND_MWEB_ADDR_3 RESULT 0 address
 
-stressTest 30
+# Stress test
+stressTest 100

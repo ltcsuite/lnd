@@ -669,6 +669,7 @@ enum OutputScriptType {
     SCRIPT_TYPE_NON_STANDARD = 7;
     SCRIPT_TYPE_WITNESS_UNKNOWN = 8;
     SCRIPT_TYPE_WITNESS_V1_TAPROOT = 9;
+    SCRIPT_TYPE_MWEB = 10;
 }
 
 message OutputDetail {

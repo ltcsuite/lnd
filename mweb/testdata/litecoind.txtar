@@ -120,8 +120,8 @@ sendCoins $LITECOIND_P2WKH_ADDR_2 25
 getResult TXID
 generate 1
 waitForUtxos 1
-checkUtxo 0 $LND_MWEB_ADDR_6 24.999041
-checkTxnHistory 0 $TXID -25.000366 0.000366 $LITECOIND_P2WKH_ADDR_2,$LND_MWEB_ADDR_6
+checkUtxo 0 $LND_MWEB_ADDR_6 24.999017
+checkTxnHistory 0 $TXID -25.00039 0.00039 $LITECOIND_P2WKH_ADDR_2,$LND_MWEB_ADDR_6
 litecoin-cli listunspent 0 1
 stdout ^\[\n]\n$
 generate 5
@@ -183,7 +183,7 @@ sendCoins $LITECOIND_MWEB_ADDR_3 320
 getResult TXID
 generate 1
 waitForUtxos 1
-checkUtxo 0 $LND_MWEB_ADDR_7 4.997464
+checkUtxo 0 $LND_MWEB_ADDR_7 4.99744
 checkTxnHistory 0 $TXID -320.001577 0.001577 $LITECOIND_MWEB_ADDR_3,$LND_MWEB_ADDR_7
 litecoin-cli listunspent 0 1
 getResult RESULT

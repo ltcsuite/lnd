@@ -86,9 +86,13 @@ func litecoinCli(ts *testscript.TestScript, args ...string) {
 }
 
 func _litecoinCli(ts *testscript.TestScript, neg bool, args []string) {
-	ts.Check(ts.Exec("litecoin-cli", append([]string{
+	args = append([]string{"litecoin-cli",
 		"-datadir=" + ts.Getenv("WORK") + "/litecoin",
-		"-chain=regtest"}, args...)...))
+		"-chain=regtest"}, args...)
+	if slices.Contains(args, "-rpcwait") {
+		args = append([]string{"timeout", "5"}, args...)
+	}
+	ts.Check(ts.Exec(args[0], args[1:]...))
 }
 
 var rpcConn *grpc.ClientConn

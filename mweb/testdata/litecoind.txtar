@@ -1,7 +1,7 @@
 # Start litecoind
 exec mkdir $WORK/litecoin
 exec litecoind -datadir=$WORK/litecoin -regtest -port=$P2P_PORT &
-litecoin-cli -rpcwait -rpcwaittimeout=5 createwallet test
+litecoin-cli -rpcwait createwallet test
 
 # Start lnd
 exec lnd &

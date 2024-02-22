@@ -65,14 +65,6 @@ func WriteOutpoint(w io.Writer, o *wire.OutPoint) error {
 }
 
 const (
-	// MinBtcRemoteDelay is the minimum CSV delay we will require the remote
-	// to use for its commitment transaction.
-	MinBtcRemoteDelay uint16 = 144
-
-	// MaxBtcRemoteDelay is the maximum CSV delay we will require the remote
-	// to use for its commitment transaction.
-	MaxBtcRemoteDelay uint16 = 2016
-
 	// MinLtcRemoteDelay is the minimum Litecoin CSV delay we will require
 	// the remote to use for its commitment transaction.
 	MinLtcRemoteDelay uint16 = 576
@@ -4219,7 +4211,7 @@ func (f *Manager) newChanAnnouncement(localPubKey,
 		localFundingKey.KeyLocator, chanAnnMsg, true,
 	)
 	if err != nil {
-		return nil, errors.Errorf("unable to generate bitcoin "+
+		return nil, errors.Errorf("unable to generate litecoin "+
 			"signature for node public key: %v", err)
 	}
 

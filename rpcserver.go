@@ -705,7 +705,7 @@ func (r *rpcServer) addDeps(s *server, macService *macaroons.Service,
 		ActiveNetParams:        r.cfg.ActiveNetParams.Params,
 		Tower:                  s.controlTower,
 		MaxTotalTimelock:       r.cfg.MaxOutgoingCltvExpiry,
-		DefaultFinalCltvDelta:  uint16(r.cfg.Bitcoin.TimeLockDelta),
+		DefaultFinalCltvDelta:  uint16(r.cfg.Litecoin.TimeLockDelta),
 		SubscribeHtlcEvents:    s.htlcNotifier.SubscribeHtlcEvents,
 		InterceptableForwarder: s.interceptableSwitch,
 		SetChannelEnabled: func(outpoint wire.OutPoint) error {
@@ -5145,7 +5145,7 @@ func (r *rpcServer) extractPaymentIntent(rpcPayReq *rpcPaymentRequest) (rpcPayme
 		// use when creating an invoice. We do not assume the default of
 		// 9 blocks that is defined in BOLT-11, because this is never
 		// enough for other lnd nodes.
-		payIntent.cltvDelta = uint16(r.cfg.Bitcoin.TimeLockDelta)
+		payIntent.cltvDelta = uint16(r.cfg.Litecoin.TimeLockDelta)
 	}
 
 	// Do bounds checking with the block padding so the router isn't left
@@ -5568,10 +5568,7 @@ func (r *rpcServer) sendPaymentSync(ctx context.Context,
 func (r *rpcServer) AddInvoice(ctx context.Context,
 	invoice *lnrpc.Invoice) (*lnrpc.AddInvoiceResponse, error) {
 
-	defaultDelta := r.cfg.Bitcoin.TimeLockDelta
-	if r.cfg.registeredChains.PrimaryChain() == chainreg.LitecoinChain {
-		defaultDelta = r.cfg.Litecoin.TimeLockDelta
-	}
+	defaultDelta := r.cfg.Litecoin.TimeLockDelta
 
 	addInvoiceCfg := &invoicesrpc.AddInvoiceConfig{
 		AddInvoice:        r.server.invoices.AddInvoice,

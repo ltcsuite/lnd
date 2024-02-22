@@ -121,9 +121,6 @@ var (
 	// defined in BOLT-0002, and serves as an initial precautionary limit
 	// while implementations are battle tested in the real world.
 	//
-	// At the moment, this value depends on which chain is active. It is set
-	// to the value under the Bitcoin chain as default.
-	//
 	// TODO(roasbeef): add command line param to modify.
 	MaxFundingAmount = funding.MaxLtcFundingAmount
 )
@@ -959,7 +956,7 @@ func newServer(cfg *Config, listenAddrs []net.Addr,
 
 	s.controlTower = routing.NewControlTower(paymentControl)
 
-	strictPruning := (cfg.Bitcoin.Node == "neutrino" ||
+	strictPruning := (cfg.Litecoin.Node == "neutrino" ||
 		cfg.Routing.StrictZombiePruning)
 	s.chanRouter, err = routing.New(routing.Config{
 		Graph:               chanGraph,
@@ -1687,7 +1684,7 @@ func (s *server) signAliasUpdate(u *lnwire.ChannelUpdate) (*ecdsa.Signature,
 // will not run it.
 func (s *server) createLivenessMonitor(cfg *Config, cc *chainreg.ChainControl) {
 	chainBackendAttempts := cfg.HealthChecks.ChainCheck.Attempts
-	if cfg.Bitcoin.Node == "nochainbackend" {
+	if cfg.Litecoin.Node == "nochainbackend" {
 		srvrLog.Info("Disabling chain backend checks for " +
 			"nochainbackend mode")
 
@@ -2172,8 +2169,8 @@ func (s *server) Start() error {
 		}
 
 		// Let users overwrite the DNS seed nodes. We only allow them
-		// for bitcoin mainnet/testnet and litecoin mainnet, all other
-		// combinations will just be ignored.
+		// for litecoin mainnet/tesnet, all other combinations will
+		// just be ignored.
 		if s.cfg.Litecoin.Active && s.cfg.Litecoin.MainNet {
 			setSeedList(
 				s.cfg.Litecoin.DNSSeeds,
@@ -4692,9 +4689,9 @@ func newSweepPkScriptGen(
 // bootstrapping to actively seek our peers using the set of active network
 // bootstrappers.
 func shouldPeerBootstrap(cfg *Config) bool {
-	isSimnet := (cfg.Bitcoin.SimNet || cfg.Litecoin.SimNet)
-	isSignet := (cfg.Bitcoin.SigNet || cfg.Litecoin.SigNet)
-	isRegtest := (cfg.Bitcoin.RegTest || cfg.Litecoin.RegTest)
+	isSimnet := cfg.Litecoin.SimNet
+	isSignet := cfg.Litecoin.SigNet
+	isRegtest := cfg.Litecoin.RegTest
 	isDevNetwork := isSimnet || isSignet || isRegtest
 
 	// TODO(yy): remove the check on simnet/regtest such that the itest is

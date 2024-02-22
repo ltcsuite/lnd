@@ -26,7 +26,7 @@ type NetAddress struct {
 	// general so that multiple implementations can be used.
 	Address net.Addr
 
-	// ChainNet is the Bitcoin network this node is associated with.
+	// ChainNet is the Litecoin network this node is associated with.
 	// TODO(roasbeef): make a slice in the future for multi-chain
 	ChainNet wire.BitcoinNet
 }

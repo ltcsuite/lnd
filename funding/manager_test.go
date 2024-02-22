@@ -3417,7 +3417,7 @@ func TestFundingManagerInvalidChanReserve(t *testing.T) {
 		},
 		{
 			name:        "Above dust but below 1% of the capacity",
-			chanReserve: 4000,
+			chanReserve: 5500,
 		},
 		{
 			name:        "Channel reserve below dust",

@@ -247,13 +247,9 @@ var (
 	defaultTLSKeyPath     = filepath.Join(DefaultLndDir, defaultTLSKeyFilename)
 	defaultLetsEncryptDir = filepath.Join(DefaultLndDir, defaultLetsEncryptDirname)
 
-	defaultBtcdDir         = ltcutil.AppDataDir("btcd", false)
-	defaultBtcdRPCCertFile = filepath.Join(defaultBtcdDir, "rpc.cert")
-
 	defaultLtcdDir         = ltcutil.AppDataDir("ltcd", false)
 	defaultLtcdRPCCertFile = filepath.Join(defaultLtcdDir, "rpc.cert")
 
-	defaultBitcoindDir  = ltcutil.AppDataDir("bitcoin", false)
 	defaultLitecoindDir = ltcutil.AppDataDir("litecoin", false)
 
 	defaultTorSOCKS   = net.JoinHostPort("localhost", strconv.Itoa(defaultTorSOCKSPort))
@@ -345,14 +341,10 @@ type Config struct {
 
 	FeeURL string `long:"feeurl" description:"Optional URL for external fee estimation. If no URL is specified, the method for fee estimation will depend on the chosen backend and network. Must be set for neutrino on mainnet."`
 
-	Bitcoin      *lncfg.Chain    `group:"Bitcoin" namespace:"bitcoin"`
-	BtcdMode     *lncfg.Btcd     `group:"btcd" namespace:"btcd"`
-	BitcoindMode *lncfg.Bitcoind `group:"bitcoind" namespace:"bitcoind"`
-	NeutrinoMode *lncfg.Neutrino `group:"neutrino" namespace:"neutrino"`
-
 	Litecoin      *lncfg.Chain    `group:"Litecoin" namespace:"litecoin"`
 	LtcdMode      *lncfg.Btcd     `group:"ltcd" namespace:"ltcd"`
 	LitecoindMode *lncfg.Bitcoind `group:"litecoind" namespace:"litecoind"`
+	NeutrinoMode  *lncfg.Neutrino `group:"neutrino" namespace:"neutrino"`
 
 	BlockCacheSize uint64 `long:"blockcachesize" description:"The maximum capacity of the block cache"`
 
@@ -370,7 +362,7 @@ type Config struct {
 	WalletUnlockPasswordFile string `long:"wallet-unlock-password-file" description:"The full path to a file (or pipe/device) that contains the password for unlocking the wallet; if set, no unlocking through RPC is possible and lnd will exit if no wallet exists or the password is incorrect; if wallet-unlock-allow-create is also set then lnd will ignore this flag if no wallet exists and allow a wallet to be created through RPC."`
 	WalletUnlockAllowCreate  bool   `long:"wallet-unlock-allow-create" description:"Don't fail with an error if wallet-unlock-password-file is set but no wallet exists yet."`
 
-	ResetWalletTransactions bool `long:"reset-wallet-transactions" description:"Removes all transaction history from the on-chain wallet on startup, forcing a full chain rescan starting at the wallet's birthday. Implements the same functionality as btcwallet's dropwtxmgr command. Should be set to false after successful execution to avoid rescanning on every restart of lnd."`
+	ResetWalletTransactions bool `long:"reset-wallet-transactions" description:"Removes all transaction history from the on-chain wallet on startup, forcing a full chain rescan starting at the wallet's birthday. Implements the same functionality as ltcwallet's dropwtxmgr command. Should be set to false after successful execution to avoid rescanning on every restart of lnd."`
 
 	CoinSelectionStrategy string `long:"coin-selection-strategy" description:"The strategy to use for selecting coins for wallet transactions." choice:"largest" choice:"random"`
 
@@ -546,27 +538,6 @@ func DefaultConfig() Config {
 		AcceptorTimeout:   defaultAcceptorTimeout,
 		WSPingInterval:    lnrpc.DefaultPingInterval,
 		WSPongWait:        lnrpc.DefaultPongWait,
-		Bitcoin: &lncfg.Chain{
-			MinHTLCIn:     chainreg.DefaultBitcoinMinHTLCInMSat,
-			MinHTLCOut:    chainreg.DefaultBitcoinMinHTLCOutMSat,
-			BaseFee:       chainreg.DefaultBitcoinBaseFeeMSat,
-			FeeRate:       chainreg.DefaultBitcoinFeeRate,
-			TimeLockDelta: chainreg.DefaultBitcoinTimeLockDelta,
-			MaxLocalDelay: defaultMaxLocalCSVDelay,
-			Node:          "btcd",
-		},
-		BtcdMode: &lncfg.Btcd{
-			Dir:     defaultBtcdDir,
-			RPCHost: defaultRPCHost,
-			RPCCert: defaultBtcdRPCCertFile,
-		},
-		BitcoindMode: &lncfg.Bitcoind{
-			Dir:                defaultBitcoindDir,
-			RPCHost:            defaultRPCHost,
-			EstimateMode:       defaultBitcoindEstimateMode,
-			PrunedNodeMaxPeers: defaultPrunedNodeMaxPeers,
-			ZMQReadDeadline:    defaultZMQReadDeadline,
-		},
 		Litecoin: &lncfg.Chain{
 			MinHTLCIn:     chainreg.DefaultLitecoinMinHTLCInMSat,
 			MinHTLCOut:    chainreg.DefaultLitecoinMinHTLCOutMSat,
@@ -946,13 +917,7 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 	cfg.ReadMacPath = CleanAndExpandPath(cfg.ReadMacPath)
 	cfg.InvoiceMacPath = CleanAndExpandPath(cfg.InvoiceMacPath)
 	cfg.LogDir = CleanAndExpandPath(cfg.LogDir)
-	cfg.BtcdMode.Dir = CleanAndExpandPath(cfg.BtcdMode.Dir)
 	cfg.LtcdMode.Dir = CleanAndExpandPath(cfg.LtcdMode.Dir)
-	cfg.BitcoindMode.Dir = CleanAndExpandPath(cfg.BitcoindMode.Dir)
-	cfg.BitcoindMode.ConfigPath = CleanAndExpandPath(
-		cfg.BitcoindMode.ConfigPath,
-	)
-	cfg.BitcoindMode.RPCCookie = CleanAndExpandPath(cfg.BitcoindMode.RPCCookie)
 	cfg.LitecoindMode.Dir = CleanAndExpandPath(cfg.LitecoindMode.Dir)
 	cfg.LitecoindMode.ConfigPath = CleanAndExpandPath(
 		cfg.LitecoindMode.ConfigPath,
@@ -1162,21 +1127,12 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 
 	// Determine the active chain configuration and its parameters.
 	switch {
-	// At this moment, multiple active chains are not supported.
-	case cfg.Litecoin.Active && cfg.Bitcoin.Active:
-		str := "Currently both Bitcoin and Litecoin cannot be " +
-			"active together"
-		return nil, mkErr(str)
 
 	// Either Bitcoin must be active, or Litecoin must be active.
 	// Otherwise, we don't know which chain we're on.
-	case !cfg.Bitcoin.Active && !cfg.Litecoin.Active:
-		return nil, mkErr("either bitcoin.active or " +
-			"litecoin.active must be set to 1 (true)")
-
-	case cfg.Bitcoin.Active:
-		return nil, mkErr("bitcoin not supported in this " +
-			"version of LNDltc")
+	case !cfg.Litecoin.Active:
+		return nil, mkErr("litecoin.active must be set " +
+			"to 1 (true)")
 
 	case cfg.Litecoin.Active:
 		// Multiple networks can't be selected simultaneously.  Count
@@ -1227,11 +1183,7 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 				err)
 		}
 
-		// The litecoin chain is the current active chain. However
-		// throughout the codebase we required chaincfg.Params. So as a
-		// temporary hack, we'll mutate the default net params for
-		// bitcoin with the litecoin specific information.
-		chainreg.ApplyLitecoinParams(&cfg.ActiveNetParams, &ltcParams)
+		cfg.ActiveNetParams = ltcParams
 
 		switch cfg.Litecoin.Node {
 		case "ltcd":
@@ -1716,7 +1668,7 @@ func (c *Config) ImplementationConfig(
 
 	// If we're using a remote signer, we still need the base wallet as a
 	// watch-only source of chain and address data. But we don't need any
-	// private key material in that btcwallet base wallet.
+	// private key material in that ltcwallet base wallet.
 	if c.RemoteSigner.Enable {
 		rpcImpl := NewRPCSignerWalletImpl(
 			c, ltndLog, interceptor,
@@ -1786,17 +1738,9 @@ func parseRPCParams(cConfig *lncfg.Chain, nodeConfig interface{},
 			return nil
 		}
 
-		// Get the daemon name for displaying proper errors.
-		switch net {
-		case chainreg.BitcoinChain:
-			daemonName = "btcd"
-			confDir = conf.Dir
-			confFileBase = "btcd"
-		case chainreg.LitecoinChain:
-			daemonName = "ltcd"
-			confDir = conf.Dir
-			confFileBase = "ltcd"
-		}
+		daemonName = "ltcd"
+		confDir = conf.Dir
+		confFileBase = "ltcd"
 
 		// If only ONE of RPCUser or RPCPass is set, we assume the
 		// user did that unintentionally.
@@ -1826,14 +1770,10 @@ func parseRPCParams(cConfig *lncfg.Chain, nodeConfig interface{},
 			}
 		}
 
-		// Get the daemon name for displaying proper errors.
-		switch net {
-		case chainreg.LitecoinChain:
-			daemonName = "litecoind"
-			confDir = conf.Dir
-			confFile = conf.ConfigPath
-			confFileBase = "litecoin"
-		}
+		daemonName = "litecoind"
+		confDir = conf.Dir
+		confFile = conf.ConfigPath
+		confFileBase = "litecoin"
 
 		// Check that cookie and credentials don't contradict each
 		// other.
@@ -2045,7 +1985,7 @@ func extractBitcoindRPCParams(networkName, bitcoindDataDir, bitcoindConfigPath,
 	switch networkName {
 	case "mainnet":
 		chainDir = ""
-	case "regtest", "testnet3", "signet":
+	case "regtest", "testnet4", "signet":
 		chainDir = networkName
 	default:
 		return "", "", "", "", fmt.Errorf("unexpected networkname %v", networkName)

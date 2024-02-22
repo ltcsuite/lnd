@@ -13,7 +13,7 @@ import (
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/ltcd/btcec/v2"
-	bitcoinCfg "github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/stretchr/testify/require"
 )
@@ -87,7 +87,7 @@ func initTestExtracter() {
 func newOnionProcessor(t *testing.T) *hop.OnionProcessor {
 	sphinxRouter := sphinx.NewRouter(
 		&keychain.PrivKeyECDH{PrivKey: sphinxPrivKey},
-		&bitcoinCfg.SimNetParams, sphinx.NewMemoryReplayLog(),
+		&chaincfg.SimNetParams, sphinx.NewMemoryReplayLog(),
 	)
 
 	if err := sphinxRouter.Start(); err != nil {

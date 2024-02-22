@@ -18,40 +18,36 @@ func TestShouldPeerBootstrap(t *testing.T) {
 		// Simnet active, no bootstrap.
 		{
 			cfg: &Config{
-				Bitcoin: &lncfg.Chain{
+				Litecoin: &lncfg.Chain{
 					SimNet: true,
 				},
-				Litecoin: &lncfg.Chain{},
 			},
 		},
 
 		// Regtest active, no bootstrap.
 		{
 			cfg: &Config{
-				Bitcoin: &lncfg.Chain{
+				Litecoin: &lncfg.Chain{
 					RegTest: true,
 				},
-				Litecoin: &lncfg.Chain{},
 			},
 		},
 
 		// Signet active, no bootstrap.
 		{
 			cfg: &Config{
-				Bitcoin: &lncfg.Chain{
+				Litecoin: &lncfg.Chain{
 					SigNet: true,
 				},
-				Litecoin: &lncfg.Chain{},
 			},
 		},
 
 		// Mainnet active, but bootstrap disabled, no bootstrap.
 		{
 			cfg: &Config{
-				Bitcoin: &lncfg.Chain{
+				Litecoin: &lncfg.Chain{
 					MainNet: true,
 				},
-				Litecoin:       &lncfg.Chain{},
 				NoNetBootstrap: true,
 			},
 		},
@@ -59,10 +55,9 @@ func TestShouldPeerBootstrap(t *testing.T) {
 		// Mainnet active, should bootstrap.
 		{
 			cfg: &Config{
-				Bitcoin: &lncfg.Chain{
+				Litecoin: &lncfg.Chain{
 					MainNet: true,
 				},
-				Litecoin: &lncfg.Chain{},
 			},
 			shouldBoostrap: true,
 		},
@@ -70,10 +65,9 @@ func TestShouldPeerBootstrap(t *testing.T) {
 		// Testnet active, should bootstrap.
 		{
 			cfg: &Config{
-				Bitcoin: &lncfg.Chain{
+				Litecoin: &lncfg.Chain{
 					TestNet4: true,
 				},
-				Litecoin: &lncfg.Chain{},
 			},
 			shouldBoostrap: true,
 		},

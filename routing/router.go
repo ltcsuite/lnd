@@ -1558,7 +1558,7 @@ func (r *ChannelRouter) processUpdate(msg interface{},
 			// channel as a zombie due to an RPC failure, we'll
 			// attempt to string match for the relevant errors.
 			//
-			// * btcd:
+			// * ltcd:
 			//    * https://github.com/ltcsuite/ltcd/blob/master/rpcserver.go#L1316
 			//    * https://github.com/ltcsuite/ltcd/blob/master/rpcserver.go#L1086
 			// * bitcoind:

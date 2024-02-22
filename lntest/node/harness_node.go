@@ -107,7 +107,7 @@ func NewHarnessNode(t *testing.T, cfg *BaseNodeConfig) (*HarnessNode, error) {
 	cfg.TLSKeyPath = filepath.Join(cfg.BaseDir, "tls.key")
 
 	networkDir := filepath.Join(
-		cfg.DataDir, "chain", "bitcoin", cfg.NetParams.Name,
+		cfg.DataDir, "chain", "litecoin", cfg.NetParams.Name,
 	)
 	cfg.AdminMacPath = filepath.Join(networkDir, "admin.macaroon")
 	cfg.ReadMacPath = filepath.Join(networkDir, "readonly.macaroon")

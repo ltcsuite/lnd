@@ -5,18 +5,13 @@ package chainreg
 type ChainCode uint32
 
 const (
-	// BitcoinChain is Bitcoin's chain.
-	BitcoinChain ChainCode = iota
-
 	// LitecoinChain is Litecoin's chain.
-	LitecoinChain
+	LitecoinChain ChainCode = 1
 )
 
 // String returns a string representation of the target ChainCode.
 func (c ChainCode) String() string {
 	switch c {
-	case BitcoinChain:
-		return "bitcoin"
 	case LitecoinChain:
 		return "litecoin"
 	default:

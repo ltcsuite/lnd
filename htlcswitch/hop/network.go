@@ -6,20 +6,14 @@ package hop
 type Network uint8
 
 const (
-	// BitcoinNetwork denotes that an HTLC is to be forwarded along the
-	// Bitcoin link with the specified short channel ID.
-	BitcoinNetwork Network = iota
-
 	// LitecoinNetwork denotes that an HTLC is to be forwarded along the
 	// Litecoin link with the specified short channel ID.
-	LitecoinNetwork
+	LitecoinNetwork Network = 1
 )
 
 // String returns the string representation of the target Network.
 func (c Network) String() string {
 	switch c {
-	case BitcoinNetwork:
-		return "Bitcoin"
 	case LitecoinNetwork:
 		return "Litecoin"
 	default:

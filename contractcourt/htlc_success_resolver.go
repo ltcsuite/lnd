@@ -8,12 +8,15 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb/models"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/labels"
+	"github.com/ltcsuite/lnd/lnutils"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/sweep"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
 )
 
@@ -67,6 +70,8 @@ type htlcSuccessResolver struct {
 	reportLock sync.Mutex
 
 	contractResolverKit
+
+	htlcLeaseResolver
 }
 
 // newSuccessResolver instanties a new htlc success resolver.
@@ -168,9 +173,9 @@ func (h *htlcSuccessResolver) broadcastSuccessTx() (*wire.OutPoint, error) {
 	// If we have non-nil SignDetails, this means that have a 2nd level
 	// HTLC transaction that is signed using sighash SINGLE|ANYONECANPAY
 	// (the case for anchor type channels). In this case we can re-sign it
-	// and attach fees at will. We let the sweeper handle this job.
-	// We use the checkpointed outputIncubating field to determine if we
-	// already swept the HTLC output into the second level transaction.
+	// and attach fees at will. We let the sweeper handle this job.  We use
+	// the checkpointed outputIncubating field to determine if we already
+	// swept the HTLC output into the second level transaction.
 	if h.htlcResolution.SignDetails != nil {
 		return h.broadcastReSignedSuccessTx()
 	}
@@ -230,16 +235,31 @@ func (h *htlcSuccessResolver) broadcastReSignedSuccessTx() (
 
 	// We will have to let the sweeper re-sign the success tx and wait for
 	// it to confirm, if we haven't already.
+	isTaproot := txscript.IsPayToTaproot(
+		h.htlcResolution.SweepSignDesc.Output.PkScript,
+	)
 	if !h.outputIncubating {
 		log.Infof("%T(%x): offering second-layer transition tx to "+
 			"sweeper: %v", h, h.htlc.RHash[:],
 			spew.Sdump(h.htlcResolution.SignedSuccessTx))
 
-		secondLevelInput := input.MakeHtlcSecondLevelSuccessAnchorInput(
-			h.htlcResolution.SignedSuccessTx,
-			h.htlcResolution.SignDetails, h.htlcResolution.Preimage,
-			h.broadcastHeight,
-		)
+		var secondLevelInput input.HtlcSecondLevelAnchorInput
+		if isTaproot {
+			//nolint:lll
+			secondLevelInput = input.MakeHtlcSecondLevelSuccessTaprootInput(
+				h.htlcResolution.SignedSuccessTx,
+				h.htlcResolution.SignDetails, h.htlcResolution.Preimage,
+				h.broadcastHeight,
+			)
+		} else {
+			//nolint:lll
+			secondLevelInput = input.MakeHtlcSecondLevelSuccessAnchorInput(
+				h.htlcResolution.SignedSuccessTx,
+				h.htlcResolution.SignDetails, h.htlcResolution.Preimage,
+				h.broadcastHeight,
+			)
+		}
+
 		_, err := h.Sweeper.SweepInput(
 			&secondLevelInput,
 			sweep.Params{
@@ -292,9 +312,12 @@ func (h *htlcSuccessResolver) broadcastReSignedSuccessTx() (
 		}
 	}
 
-	// The HTLC success tx has a CSV lock that we must wait for.
-	waitHeight := uint32(commitSpend.SpendingHeight) +
-		h.htlcResolution.CsvDelay - 1
+	// The HTLC success tx has a CSV lock that we must wait for, and if
+	// this is a lease enforced channel and we're the imitator, we may need
+	// to wait for longer.
+	waitHeight := h.deriveWaitHeight(
+		h.htlcResolution.CsvDelay, commitSpend,
+	)
 
 	// Now that the sweeper has broadcasted the second-level transaction,
 	// it has confirmed, and we have checkpointed our state, we'll sweep
@@ -305,8 +328,14 @@ func (h *htlcSuccessResolver) broadcastReSignedSuccessTx() (
 	h.currentReport.MaturityHeight = waitHeight
 	h.reportLock.Unlock()
 
-	log.Infof("%T(%x): waiting for CSV lock to expire at height %v",
-		h, h.htlc.RHash[:], waitHeight)
+	if h.hasCLTV() {
+		log.Infof("%T(%x): waiting for CSV and CLTV lock to "+
+			"expire at height %v", h, h.htlc.RHash[:],
+			waitHeight)
+	} else {
+		log.Infof("%T(%x): waiting for CSV lock to expire at "+
+			"height %v", h, h.htlc.RHash[:], waitHeight)
+	}
 
 	err := waitForHeight(waitHeight, h.Notifier, h.quit)
 	if err != nil {
@@ -327,11 +356,22 @@ func (h *htlcSuccessResolver) broadcastReSignedSuccessTx() (
 	log.Infof("%T(%x): CSV lock expired, offering second-layer "+
 		"output to sweeper: %v", h, h.htlc.RHash[:], op)
 
-	inp := input.NewCsvInput(
-		op, input.HtlcAcceptedSuccessSecondLevel,
-		&h.htlcResolution.SweepSignDesc, h.broadcastHeight,
-		h.htlcResolution.CsvDelay,
+	// Let the sweeper sweep the second-level output now that the
+	// CSV/CLTV locks have expired.
+	var witType input.StandardWitnessType
+	if isTaproot {
+		witType = input.TaprootHtlcAcceptedSuccessSecondLevel
+	} else {
+		witType = input.HtlcAcceptedSuccessSecondLevel
+	}
+	inp := h.makeSweepInput(
+		op, witType,
+		input.LeaseHtlcAcceptedSuccessSecondLevel,
+		&h.htlcResolution.SweepSignDesc,
+		h.htlcResolution.CsvDelay, h.broadcastHeight,
+		h.htlc.RHash,
 	)
+	// TODO(roasbeef): need to update above for leased types
 	_, err = h.Sweeper.SweepInput(
 		inp,
 		sweep.Params{
@@ -361,17 +401,32 @@ func (h *htlcSuccessResolver) resolveRemoteCommitOutput() (
 		log.Infof("%T(%x): crafting sweep tx for incoming+remote "+
 			"htlc confirmed", h, h.htlc.RHash[:])
 
+		isTaproot := txscript.IsPayToTaproot(
+			h.htlcResolution.SweepSignDesc.Output.PkScript,
+		)
+
 		// Before we can craft out sweeping transaction, we need to
 		// create an input which contains all the items required to add
 		// this input to a sweeping transaction, and generate a
 		// witness.
-		inp := input.MakeHtlcSucceedInput(
-			&h.htlcResolution.ClaimOutpoint,
-			&h.htlcResolution.SweepSignDesc,
-			h.htlcResolution.Preimage[:],
-			h.broadcastHeight,
-			h.htlcResolution.CsvDelay,
-		)
+		var inp input.Input
+		if isTaproot {
+			inp = lnutils.Ptr(input.MakeTaprootHtlcSucceedInput(
+				&h.htlcResolution.ClaimOutpoint,
+				&h.htlcResolution.SweepSignDesc,
+				h.htlcResolution.Preimage[:],
+				h.broadcastHeight,
+				h.htlcResolution.CsvDelay,
+			))
+		} else {
+			inp = lnutils.Ptr(input.MakeHtlcSucceedInput(
+				&h.htlcResolution.ClaimOutpoint,
+				&h.htlcResolution.SweepSignDesc,
+				h.htlcResolution.Preimage[:],
+				h.broadcastHeight,
+				h.htlcResolution.CsvDelay,
+			))
+		}
 
 		// With the input created, we can now generate the full sweep
 		// transaction, that we'll use to move these coins back into
@@ -384,7 +439,7 @@ func (h *htlcSuccessResolver) resolveRemoteCommitOutput() (
 		// TODO: Use time-based sweeper and result chan.
 		var err error
 		h.sweepTx, err = h.Sweeper.CreateSweepTx(
-			[]input.Input{&inp},
+			[]input.Input{inp},
 			sweep.FeePreference{
 				ConfTarget: sweepConfTarget,
 			}, 0,
@@ -401,20 +456,8 @@ func (h *htlcSuccessResolver) resolveRemoteCommitOutput() (
 		// with the published one.
 	}
 
-	// Regardless of whether an existing transaction was found or newly
-	// constructed, we'll broadcast the sweep transaction to the network.
-	label := labels.MakeLabel(
-		labels.LabelTypeChannelClose, &h.ShortChanID,
-	)
-	err := h.PublishTx(h.sweepTx, label)
-	if err != nil {
-		log.Infof("%T(%x): unable to publish tx: %v",
-			h, h.htlc.RHash[:], err)
-		return nil, err
-	}
-
-	// With the sweep transaction broadcast, we'll wait for its
-	// confirmation.
+	// Register the confirmation notification before broadcasting the sweep
+	// transaction.
 	sweepTXID := h.sweepTx.TxHash()
 	sweepScript := h.sweepTx.TxOut[0].PkScript
 	confNtfn, err := h.Notifier.RegisterConfirmationsNtfn(
@@ -424,8 +467,22 @@ func (h *htlcSuccessResolver) resolveRemoteCommitOutput() (
 		return nil, err
 	}
 
-	log.Infof("%T(%x): waiting for sweep tx (txid=%v) to be "+
-		"confirmed", h, h.htlc.RHash[:], sweepTXID)
+	// Regardless of whether an existing transaction was found or newly
+	// constructed, we'll broadcast the sweep transaction to the network.
+	label := labels.MakeLabel(
+		labels.LabelTypeChannelClose, &h.ShortChanID,
+	)
+	err = h.PublishTx(h.sweepTx, label)
+	if err != nil {
+		log.Infof("%T(%x): unable to publish tx: %v",
+			h, h.htlc.RHash[:], err)
+		confNtfn.Cancel()
+
+		return nil, err
+	}
+
+	log.Infof("%T(%x): waiting for sweep tx (txid=%v) to be confirmed", h,
+		h.htlc.RHash[:], sweepTXID)
 
 	select {
 	case _, ok := <-confNtfn.Confirmed:
@@ -453,6 +510,26 @@ func (h *htlcSuccessResolver) resolveRemoteCommitOutput() (
 // otherwise it will just write for the single htlc claim.
 func (h *htlcSuccessResolver) checkpointClaim(spendTx *chainhash.Hash,
 	outcome channeldb.ResolverOutcome) error {
+
+	// Mark the htlc as final settled.
+	err := h.ChainArbitratorConfig.PutFinalHtlcOutcome(
+		h.ChannelArbitratorConfig.ShortChanID, h.htlc.HtlcIndex, true,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Send notification.
+	h.ChainArbitratorConfig.HtlcNotifier.NotifyFinalHtlcEvent(
+		models.CircuitKey{
+			ChanID: h.ShortChanID,
+			HtlcID: h.htlc.HtlcIndex,
+		},
+		channeldb.FinalHtlcInfo{
+			Settled:  true,
+			Offchain: false,
+		},
+	)
 
 	// Create a resolver report for claiming of the htlc itself.
 	amt := ltcutil.Amount(h.htlcResolution.SweepSignDesc.Output.Value)
@@ -515,8 +592,8 @@ func (h *htlcSuccessResolver) report() *ContractReport {
 
 	h.reportLock.Lock()
 	defer h.reportLock.Unlock()
-	copy := h.currentReport
-	return &copy
+	cpy := h.currentReport
+	return &cpy
 }
 
 func (h *htlcSuccessResolver) initReport() {
@@ -624,13 +701,6 @@ func newSuccessResolverFromReader(r io.Reader, resCfg ResolverConfig) (
 // NOTE: Part of the htlcContractResolver interface.
 func (h *htlcSuccessResolver) Supplement(htlc channeldb.HTLC) {
 	h.htlc = htlc
-}
-
-// SupplementState allows the user of a ContractResolver to supplement it with
-// state required for the proper resolution of a contract.
-//
-// NOTE: Part of the ContractResolver interface.
-func (h *htlcSuccessResolver) SupplementState(_ *channeldb.OpenChannel) {
 }
 
 // HtlcPoint returns the htlc's outpoint on the commitment tx.

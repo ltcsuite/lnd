@@ -20,7 +20,6 @@ import (
 	"github.com/ltcsuite/lnd/routing/route"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
-
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -70,6 +69,10 @@ var (
 			Action: "write",
 		}},
 		"/routerrpc.Router/TrackPaymentV2": {{
+			Entity: "offchain",
+			Action: "read",
+		}},
+		"/routerrpc.Router/TrackPayments": {{
 			Entity: "offchain",
 			Action: "read",
 		}},
@@ -315,27 +318,46 @@ func (s *Server) SendPaymentV2(req *SendPaymentRequest,
 		return err
 	}
 
-	err = s.cfg.Router.SendPaymentAsync(payment)
+	// Get the payment hash.
+	payHash := payment.Identifier()
+
+	// Init the payment in db.
+	paySession, shardTracker, err := s.cfg.Router.PreparePayment(payment)
 	if err != nil {
-		// Transform user errors to grpc code.
-		if err == channeldb.ErrPaymentInFlight ||
-			err == channeldb.ErrAlreadyPaid {
-
-			log.Debugf("SendPayment async result for payment %x: %v",
-				payment.Identifier(), err)
-
-			return status.Error(
-				codes.AlreadyExists, err.Error(),
-			)
-		}
-
-		log.Errorf("SendPayment async error for payment %x: %v",
-			payment.Identifier(), err)
-
 		return err
 	}
 
-	return s.trackPayment(payment.Identifier(), stream, req.NoInflightUpdates)
+	// Subscribe to the payment before sending it to make sure we won't
+	// miss events.
+	sub, err := s.subscribePayment(payHash)
+	if err != nil {
+		return err
+	}
+
+	// Send the payment.
+	err = s.cfg.Router.SendPaymentAsync(payment, paySession, shardTracker)
+	if err == nil {
+		// If the payment was sent successfully, we can start tracking
+		// the events.
+		return s.trackPayment(
+			sub, payHash, stream, req.NoInflightUpdates,
+		)
+	}
+
+	// Otherwise, transform user errors to grpc code.
+	if errors.Is(err, channeldb.ErrPaymentInFlight) ||
+		errors.Is(err, channeldb.ErrAlreadyPaid) {
+
+		log.Debugf("SendPayment async result for payment %x: %v",
+			payment.Identifier(), err)
+
+		return status.Error(codes.AlreadyExists, err.Error())
+	}
+
+	log.Errorf("SendPayment async error for payment %x: %v",
+		payment.Identifier(), err)
+
+	return err
 }
 
 // EstimateRouteFee allows callers to obtain a lower bound w.r.t how much it
@@ -363,8 +385,8 @@ func (s *Server) EstimateRouteFee(ctx context.Context,
 	// restriction for the default CLTV limit, otherwise we can find a route
 	// that exceeds it and is useless to us.
 	mc := s.cfg.RouterBackend.MissionControl
-	route, err := s.cfg.Router.FindRoute(
-		s.cfg.RouterBackend.SelfNode, destNode, amtMsat,
+	route, _, err := s.cfg.Router.FindRoute(
+		s.cfg.RouterBackend.SelfNode, destNode, amtMsat, 0,
 		&routing.RestrictParams{
 			FeeLimit:          feeLimit,
 			CltvLimit:         s.cfg.RouterBackend.MaxTotalTimelock,
@@ -400,13 +422,19 @@ func (s *Server) SendToRouteV2(ctx context.Context,
 		return nil, err
 	}
 
+	var attempt *channeldb.HTLCAttempt
+
 	// Pass route to the router. This call returns the full htlc attempt
 	// information as it is stored in the database. It is possible that both
 	// the attempt return value and err are non-nil. This can happen when
 	// the attempt was already initiated before the error happened. In that
 	// case, we give precedence to the attempt information as stored in the
 	// db.
-	attempt, err := s.cfg.Router.SendToRoute(hash, route)
+	if req.SkipTempErr {
+		attempt, err = s.cfg.Router.SendToRouteSkipTempErr(hash, route)
+	} else {
+		attempt, err = s.cfg.Router.SendToRoute(hash, route)
+	}
 	if attempt != nil {
 		rpcAttempt, err := s.cfg.RouterBackend.MarshalHTLCAttempt(
 			*attempt,
@@ -445,39 +473,142 @@ func (s *Server) GetMissionControlConfig(ctx context.Context,
 	req *GetMissionControlConfigRequest) (*GetMissionControlConfigResponse,
 	error) {
 
+	// Query the current mission control config.
 	cfg := s.cfg.RouterBackend.MissionControl.GetConfig()
-	return &GetMissionControlConfigResponse{
+	resp := &GetMissionControlConfigResponse{
 		Config: &MissionControlConfig{
-			HalfLifeSeconds:             uint64(cfg.PenaltyHalfLife.Seconds()),
-			HopProbability:              float32(cfg.AprioriHopProbability),
-			Weight:                      float32(cfg.AprioriWeight),
-			MaximumPaymentResults:       uint32(cfg.MaxMcHistory),
-			MinimumFailureRelaxInterval: uint64(cfg.MinFailureRelaxInterval.Seconds()),
+			MaximumPaymentResults: uint32(cfg.MaxMcHistory),
+			MinimumFailureRelaxInterval: uint64(
+				cfg.MinFailureRelaxInterval.Seconds(),
+			),
 		},
-	}, nil
+	}
+
+	// We only populate fields based on the current estimator.
+	switch v := cfg.Estimator.Config().(type) {
+	case routing.AprioriConfig:
+		resp.Config.Model = MissionControlConfig_APRIORI
+		aCfg := AprioriParameters{
+			HalfLifeSeconds:  uint64(v.PenaltyHalfLife.Seconds()),
+			HopProbability:   v.AprioriHopProbability,
+			Weight:           v.AprioriWeight,
+			CapacityFraction: v.CapacityFraction,
+		}
+
+		// Populate deprecated fields.
+		resp.Config.HalfLifeSeconds = uint64(
+			v.PenaltyHalfLife.Seconds(),
+		)
+		resp.Config.HopProbability = float32(v.AprioriHopProbability)
+		resp.Config.Weight = float32(v.AprioriWeight)
+
+		resp.Config.EstimatorConfig = &MissionControlConfig_Apriori{
+			Apriori: &aCfg,
+		}
+
+	case routing.BimodalConfig:
+		resp.Config.Model = MissionControlConfig_BIMODAL
+		bCfg := BimodalParameters{
+			NodeWeight: v.BimodalNodeWeight,
+			ScaleMsat:  uint64(v.BimodalScaleMsat),
+			DecayTime:  uint64(v.BimodalDecayTime.Seconds()),
+		}
+
+		resp.Config.EstimatorConfig = &MissionControlConfig_Bimodal{
+			Bimodal: &bCfg,
+		}
+
+	default:
+		return nil, fmt.Errorf("unknown estimator config type %T", v)
+	}
+
+	return resp, nil
 }
 
-// SetMissionControlConfig returns our current mission control config.
+// SetMissionControlConfig sets parameters in the mission control config.
 func (s *Server) SetMissionControlConfig(ctx context.Context,
 	req *SetMissionControlConfigRequest) (*SetMissionControlConfigResponse,
 	error) {
 
-	cfg := &routing.MissionControlConfig{
-		ProbabilityEstimatorCfg: routing.ProbabilityEstimatorCfg{
-			PenaltyHalfLife: time.Duration(
-				req.Config.HalfLifeSeconds,
-			) * time.Second,
-			AprioriHopProbability: float64(req.Config.HopProbability),
-			AprioriWeight:         float64(req.Config.Weight),
-		},
+	mcCfg := &routing.MissionControlConfig{
 		MaxMcHistory: int(req.Config.MaximumPaymentResults),
 		MinFailureRelaxInterval: time.Duration(
 			req.Config.MinimumFailureRelaxInterval,
 		) * time.Second,
 	}
 
+	switch req.Config.Model {
+	case MissionControlConfig_APRIORI:
+		var aprioriConfig routing.AprioriConfig
+
+		// Determine the apriori config with backward compatibility
+		// should the api use deprecated fields.
+		switch v := req.Config.EstimatorConfig.(type) {
+		case *MissionControlConfig_Bimodal:
+			return nil, fmt.Errorf("bimodal config " +
+				"provided, but apriori model requested")
+
+		case *MissionControlConfig_Apriori:
+			aprioriConfig = routing.AprioriConfig{
+				PenaltyHalfLife: time.Duration(
+					v.Apriori.HalfLifeSeconds,
+				) * time.Second,
+				AprioriHopProbability: v.Apriori.HopProbability,
+				AprioriWeight:         v.Apriori.Weight,
+				CapacityFraction: v.Apriori.
+					CapacityFraction,
+			}
+
+		default:
+			aprioriConfig = routing.AprioriConfig{
+				PenaltyHalfLife: time.Duration(
+					int64(req.Config.HalfLifeSeconds),
+				) * time.Second,
+				AprioriHopProbability: float64(
+					req.Config.HopProbability,
+				),
+				AprioriWeight: float64(req.Config.Weight),
+				CapacityFraction: float64(
+					routing.DefaultCapacityFraction),
+			}
+		}
+
+		estimator, err := routing.NewAprioriEstimator(aprioriConfig)
+		if err != nil {
+			return nil, err
+		}
+		mcCfg.Estimator = estimator
+
+	case MissionControlConfig_BIMODAL:
+		cfg, ok := req.Config.
+			EstimatorConfig.(*MissionControlConfig_Bimodal)
+		if !ok {
+			return nil, fmt.Errorf("bimodal estimator requested " +
+				"but corresponding config not set")
+		}
+		bCfg := cfg.Bimodal
+
+		bimodalConfig := routing.BimodalConfig{
+			BimodalDecayTime: time.Duration(
+				bCfg.DecayTime,
+			) * time.Second,
+			BimodalScaleMsat:  lnwire.MilliSatoshi(bCfg.ScaleMsat),
+			BimodalNodeWeight: bCfg.NodeWeight,
+		}
+
+		estimator, err := routing.NewBimodalEstimator(bimodalConfig)
+		if err != nil {
+			return nil, err
+		}
+		mcCfg.Estimator = estimator
+
+	default:
+		return nil, fmt.Errorf("unknown estimator type %v",
+			req.Config.Model)
+	}
+
 	return &SetMissionControlConfigResponse{},
-		s.cfg.RouterBackend.MissionControl.SetConfig(cfg)
+		s.cfg.RouterBackend.MissionControl.SetConfig(mcCfg)
 }
 
 // QueryMissionControl exposes the internal mission control state to callers. It
@@ -666,7 +797,7 @@ func getMsatPairValue(msatValue lnwire.MilliSatoshi,
 		return msatValue, nil
 	}
 
-	// If we have no msatValue, we can just return our sate value even if
+	// If we have no msatValue, we can just return our state value even if
 	// it is zero, because it's impossible that we have mismatched values.
 	if msatValue == 0 {
 		return lnwire.MilliSatoshi(satValue * 1000), nil
@@ -683,71 +814,101 @@ func getMsatPairValue(msatValue lnwire.MilliSatoshi,
 		satValue)
 }
 
-// QueryProbability returns the current success probability estimate for a
-// given node pair and amount.
-func (s *Server) QueryProbability(ctx context.Context,
-	req *QueryProbabilityRequest) (*QueryProbabilityResponse, error) {
-
-	fromNode, err := route.NewVertexFromBytes(req.FromNode)
-	if err != nil {
-		return nil, err
-	}
-
-	toNode, err := route.NewVertexFromBytes(req.ToNode)
-	if err != nil {
-		return nil, err
-	}
-
-	amt := lnwire.MilliSatoshi(req.AmtMsat)
-
-	mc := s.cfg.RouterBackend.MissionControl
-	prob := mc.GetProbability(fromNode, toNode, amt)
-	history := mc.GetPairHistorySnapshot(fromNode, toNode)
-
-	return &QueryProbabilityResponse{
-		Probability: prob,
-		History:     toRPCPairData(&history),
-	}, nil
-}
-
 // TrackPaymentV2 returns a stream of payment state updates. The stream is
 // closed when the payment completes.
 func (s *Server) TrackPaymentV2(request *TrackPaymentRequest,
 	stream Router_TrackPaymentV2Server) error {
 
-	paymentHash, err := lntypes.MakeHash(request.PaymentHash)
+	payHash, err := lntypes.MakeHash(request.PaymentHash)
 	if err != nil {
 		return err
 	}
 
-	log.Debugf("TrackPayment called for payment %v", paymentHash)
+	log.Debugf("TrackPayment called for payment %v", payHash)
 
-	return s.trackPayment(paymentHash, stream, request.NoInflightUpdates)
+	// Make the subscription.
+	sub, err := s.subscribePayment(payHash)
+	if err != nil {
+		return err
+	}
+
+	return s.trackPayment(sub, payHash, stream, request.NoInflightUpdates)
+}
+
+// subscribePayment subscribes to the payment updates for the given payment
+// hash.
+func (s *Server) subscribePayment(identifier lntypes.Hash) (
+	routing.ControlTowerSubscriber, error) {
+
+	// Make the subscription.
+	router := s.cfg.RouterBackend
+	sub, err := router.Tower.SubscribePayment(identifier)
+
+	switch {
+	case err == channeldb.ErrPaymentNotInitiated:
+		return nil, status.Error(codes.NotFound, err.Error())
+	case err != nil:
+		return nil, err
+	}
+
+	return sub, nil
 }
 
 // trackPayment writes payment status updates to the provided stream.
-func (s *Server) trackPayment(identifier lntypes.Hash,
-	stream Router_TrackPaymentV2Server, noInflightUpdates bool) error {
+func (s *Server) trackPayment(subscription routing.ControlTowerSubscriber,
+	identifier lntypes.Hash, stream Router_TrackPaymentV2Server,
+	noInflightUpdates bool) error {
+
+	// Stream updates to the client.
+	err := s.trackPaymentStream(
+		stream.Context(), subscription, noInflightUpdates, stream.Send,
+	)
+
+	if errors.Is(err, context.Canceled) {
+		log.Debugf("Payment stream %v canceled", identifier)
+	}
+
+	return err
+}
+
+// TrackPayments returns a stream of payment state updates.
+func (s *Server) TrackPayments(request *TrackPaymentsRequest,
+	stream Router_TrackPaymentsServer) error {
+
+	log.Debug("TrackPayments called")
 
 	router := s.cfg.RouterBackend
 
-	// Subscribe to the outcome of this payment.
-	subscription, err := router.Tower.SubscribePayment(
-		identifier,
-	)
-	switch {
-	case err == channeldb.ErrPaymentNotInitiated:
-		return status.Error(codes.NotFound, err.Error())
-	case err != nil:
+	// Subscribe to payments.
+	subscription, err := router.Tower.SubscribeAllPayments()
+	if err != nil {
 		return err
 	}
+
+	// Stream updates to the client.
+	err = s.trackPaymentStream(
+		stream.Context(), subscription, request.NoInflightUpdates,
+		stream.Send,
+	)
+
+	if errors.Is(err, context.Canceled) {
+		log.Debugf("TrackPayments payment stream canceled.")
+	}
+
+	return err
+}
+
+// trackPaymentStream streams payment updates to the client.
+func (s *Server) trackPaymentStream(context context.Context,
+	subscription routing.ControlTowerSubscriber, noInflightUpdates bool,
+	send func(*lnrpc.Payment) error) error {
+
 	defer subscription.Close()
 
-	// Stream updates back to the client. The first update is always the
-	// current state of the payment.
+	// Stream updates back to the client.
 	for {
 		select {
-		case item, ok := <-subscription.Updates:
+		case item, ok := <-subscription.Updates():
 			if !ok {
 				// No more payment updates.
 				return nil
@@ -761,13 +922,15 @@ func (s *Server) trackPayment(identifier lntypes.Hash,
 				continue
 			}
 
-			rpcPayment, err := router.MarshallPayment(result)
+			rpcPayment, err := s.cfg.RouterBackend.MarshallPayment(
+				result,
+			)
 			if err != nil {
 				return err
 			}
 
 			// Send event to the client.
-			err = stream.Send(rpcPayment)
+			err = send(rpcPayment)
 			if err != nil {
 				return err
 			}
@@ -775,9 +938,8 @@ func (s *Server) trackPayment(identifier lntypes.Hash,
 		case <-s.quit:
 			return errServerShuttingDown
 
-		case <-stream.Context().Done():
-			log.Debugf("Payment status stream %v canceled", identifier)
-			return stream.Context().Err()
+		case <-context.Done():
+			return context.Err()
 		}
 	}
 }
@@ -847,6 +1009,16 @@ func (s *Server) SubscribeHtlcEvents(req *SubscribeHtlcEventsRequest,
 	}
 	defer htlcClient.Cancel()
 
+	// Send out an initial subscribed event so that the caller knows the
+	// point from which new events will be transmitted.
+	if err := stream.Send(&HtlcEvent{
+		Event: &HtlcEvent_SubscribedEvent{
+			SubscribedEvent: &SubscribedEvent{},
+		},
+	}); err != nil {
+		return err
+	}
+
 	for {
 		select {
 		case event := <-htlcClient.Updates():
@@ -879,7 +1051,7 @@ func (s *Server) SubscribeHtlcEvents(req *SubscribeHtlcEventsRequest,
 // requests to the caller.
 // Upon connection it does the following:
 // 1. Check if there is already a live stream, if yes it rejects the request.
-// 2. Regsitered a ForwardInterceptor
+// 2. Registered a ForwardInterceptor
 // 3. Delivers to the caller every √√ and detect his answer.
 // It uses a local implementation of holdForwardsStore to keep all the hold
 // forwards and find them when manual resolution is later needed.
@@ -891,7 +1063,9 @@ func (s *Server) HtlcInterceptor(stream Router_HtlcInterceptorServer) error {
 	defer atomic.CompareAndSwapInt32(&s.forwardInterceptorActive, 1, 0)
 
 	// run the forward interceptor.
-	return newForwardInterceptor(s, stream).run()
+	return newForwardInterceptor(
+		s.cfg.RouterBackend.InterceptableForwarder, stream,
+	).run()
 }
 
 func extractOutPoint(req *UpdateChanStatusRequest) (*wire.OutPoint, error) {

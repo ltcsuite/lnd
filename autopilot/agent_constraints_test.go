@@ -1,10 +1,9 @@
 package autopilot
 
 import (
+	prand "math/rand"
 	"testing"
 	"time"
-
-	prand "math/rand"
 
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/ltcd/ltcutil"

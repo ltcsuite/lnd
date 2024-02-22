@@ -38,6 +38,11 @@ const (
 	// an arbitrary non-empty message that has no deeper meaning but should
 	// be sent back by the client in the pong message.
 	PingContent = "are you there?"
+
+	// MaxWsMsgSize is the largest websockets message we'll attempt to
+	// decode in the gRPC <-> WS proxy. gRPC has a similar setting used
+	// elsewhere.
+	MaxWsMsgSize = 4 * 1024 * 1024
 )
 
 var (
@@ -253,7 +258,7 @@ func (p *WebsocketProxy) upgradeToWebSocketProxy(w http.ResponseWriter,
 				payload = newPayload
 			}
 
-			_, err = requestForwarder.Write(payload)
+			_, err := requestForwarder.Write(payload)
 			if err != nil {
 				p.logger.Errorf("WS: error writing message "+
 					"to upstream http server: %v", err)
@@ -338,7 +343,7 @@ func (p *WebsocketProxy) upgradeToWebSocketProxy(w http.ResponseWriter,
 			continue
 		}
 
-		err = conn.WriteMessage(
+		err := conn.WriteMessage(
 			websocket.TextMessage, responseForwarder.Bytes(),
 		)
 		if err != nil {
@@ -413,9 +418,18 @@ func (r *requestForwardingReader) CloseWriter() {
 // what's written to it and presents it through a bufio.Scanner interface.
 func newResponseForwardingWriter() *responseForwardingWriter {
 	r, w := io.Pipe()
+
+	scanner := bufio.NewScanner(r)
+
+	// We pass in a custom buffer for the bufio scanner to use. We'll keep
+	// with a normal 64KB buffer, but allow a larger max message size,
+	// which may cause buffer expansion when needed.
+	buf := make([]byte, 0, bufio.MaxScanTokenSize)
+	scanner.Buffer(buf, MaxWsMsgSize)
+
 	return &responseForwardingWriter{
 		Writer:  w,
-		Scanner: bufio.NewScanner(r),
+		Scanner: scanner,
 		pipeR:   r,
 		pipeW:   w,
 		header:  http.Header{},

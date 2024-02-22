@@ -3,13 +3,12 @@ package lnwallet_test
 import (
 	"testing"
 
+	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/ltcd/blockchain"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
-
-	"github.com/ltcsuite/lnd/input"
 )
 
 // TestTxWeightEstimator tests that transaction weight estimates are calculated

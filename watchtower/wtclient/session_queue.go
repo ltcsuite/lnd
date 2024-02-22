@@ -16,17 +16,21 @@ import (
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 )
 
-// reserveStatus is an enum that signals how full a particular session is.
-type reserveStatus uint8
+// sessionQueueStatus is an enum that signals how full a particular session is.
+type sessionQueueStatus uint8
 
 const (
-	// reserveAvailable indicates that the session has space for at least
-	// one more backup.
-	reserveAvailable reserveStatus = iota
+	// sessionQueueAvailable indicates that the session has space for at
+	// least one more backup.
+	sessionQueueAvailable sessionQueueStatus = iota
 
-	// reserveExhausted indicates that all slots in the session have been
-	// allocated.
-	reserveExhausted
+	// sessionQueueExhausted indicates that all slots in the session have
+	// been allocated.
+	sessionQueueExhausted
+
+	// sessionQueueShuttingDown indicates that the session queue is
+	// shutting down and so is no longer accepting any more backups.
+	sessionQueueShuttingDown
 )
 
 // sessionQueueConfig bundles the resources required by the sessionQueue to
@@ -34,7 +38,7 @@ const (
 type sessionQueueConfig struct {
 	// ClientSession provides access to the negotiated session parameters
 	// and updating its persistent storage.
-	ClientSession *wtdb.ClientSession
+	ClientSession *ClientSession
 
 	// ChainHash identifies the chain for which the session's justice
 	// transactions are targeted.
@@ -45,7 +49,8 @@ type sessionQueueConfig struct {
 	Dial func(keychain.SingleKeyECDH, *lnwire.NetAddress) (wtserver.Peer,
 		error)
 
-	// SendMessage encodes, encrypts, and writes a message to the given peer.
+	// SendMessage encodes, encrypts, and writes a message to the given
+	// peer.
 	SendMessage func(wtserver.Peer, wtwire.Message) error
 
 	// ReadMessage receives, decypts, and decodes a message from the given
@@ -55,6 +60,15 @@ type sessionQueueConfig struct {
 	// Signer facilitates signing of inputs, used to construct the witnesses
 	// for justice transaction inputs.
 	Signer input.Signer
+
+	// BuildBreachRetribution is a function closure that allows the client
+	// to fetch the breach retribution info for a certain channel at a
+	// certain revoked commitment height.
+	BuildBreachRetribution BreachRetributionBuilder
+
+	// TaskPipeline is a pipeline which the sessionQueue should use to send
+	// any unhandled tasks on shutdown of the queue.
+	TaskPipeline *DiskOverflowQueue[*wtdb.BackupID]
 
 	// DB provides access to the client's stable storage.
 	DB DB
@@ -79,10 +93,8 @@ type sessionQueueConfig struct {
 
 // sessionQueue implements a reliable queue that will encrypt and send accepted
 // backups to the watchtower specified in the config's ClientSession. Calling
-// Quit will attempt to perform a clean shutdown by receiving an ACK from the
-// tower for all pending backups before exiting. The clean shutdown can be
-// aborted by using ForceQuit, which will attempt to shutdown the queue
-// immediately.
+// Stop will attempt to perform a clean shutdown replaying any un-committed
+// pending updates to the TowerClient's main task pipeline.
 type sessionQueue struct {
 	started sync.Once
 	stopped sync.Once
@@ -97,28 +109,24 @@ type sessionQueue struct {
 	queueCond    *sync.Cond
 
 	localInit *wtwire.Init
-	towerAddr *lnwire.NetAddress
+	tower     *Tower
 
 	seqNum uint16
 
 	retryBackoff time.Duration
 
-	quit      chan struct{}
-	forceQuit chan struct{}
-	shutdown  chan struct{}
+	quit chan struct{}
+	wg   sync.WaitGroup
 }
 
-// newSessionQueue intiializes a fresh sessionQueue.
-func newSessionQueue(cfg *sessionQueueConfig) *sessionQueue {
+// newSessionQueue initializes a fresh sessionQueue.
+func newSessionQueue(cfg *sessionQueueConfig,
+	updates []wtdb.CommittedUpdate) *sessionQueue {
+
 	localInit := wtwire.NewInitMessage(
 		lnwire.NewRawFeatureVector(wtwire.AltruistSessionsRequired),
 		cfg.ChainHash,
 	)
-
-	towerAddr := &lnwire.NetAddress{
-		IdentityKey: cfg.ClientSession.Tower.IdentityKey,
-		Address:     cfg.ClientSession.Tower.Addresses[0],
-	}
 
 	sq := &sessionQueue{
 		cfg:          cfg,
@@ -126,18 +134,16 @@ func newSessionQueue(cfg *sessionQueueConfig) *sessionQueue {
 		commitQueue:  list.New(),
 		pendingQueue: list.New(),
 		localInit:    localInit,
-		towerAddr:    towerAddr,
+		tower:        cfg.ClientSession.Tower,
 		seqNum:       cfg.ClientSession.SeqNum,
 		retryBackoff: cfg.MinBackoff,
 		quit:         make(chan struct{}),
-		forceQuit:    make(chan struct{}),
-		shutdown:     make(chan struct{}),
 	}
 	sq.queueCond = sync.NewCond(&sq.queueMtx)
 
 	// The database should return them in sorted order, and session queue's
 	// sequence number will be equal to that of the last committed update.
-	for _, update := range sq.cfg.ClientSession.CommittedUpdates {
+	for _, update := range updates {
 		sq.commitQueue.PushBack(update)
 	}
 
@@ -148,41 +154,102 @@ func newSessionQueue(cfg *sessionQueueConfig) *sessionQueue {
 // backups.
 func (q *sessionQueue) Start() {
 	q.started.Do(func() {
+		q.wg.Add(1)
 		go q.sessionManager()
 	})
 }
 
 // Stop idempotently stops the sessionQueue by initiating a clean shutdown that
 // will clear all pending tasks in the queue before returning to the caller.
-func (q *sessionQueue) Stop() {
+// The final param should only be set to true if this is the last time that
+// this session will be used. Otherwise, during normal shutdown, the final param
+// should be false.
+func (q *sessionQueue) Stop(final bool) error {
+	var returnErr error
 	q.stopped.Do(func() {
 		q.log.Debugf("SessionQueue(%s) stopping ...", q.ID())
 
 		close(q.quit)
-		q.signalUntilShutdown()
 
-		// Skip log if we also force quit.
-		select {
-		case <-q.forceQuit:
+		shutdown := make(chan struct{})
+		go func() {
+			for {
+				select {
+				case <-time.After(time.Millisecond):
+					q.queueCond.Signal()
+				case <-shutdown:
+					return
+				}
+			}
+		}()
+
+		q.wg.Wait()
+		close(shutdown)
+
+		// Now, for any task in the pending queue that we have not yet
+		// created a CommittedUpdate for, re-add the task to the main
+		// task pipeline.
+		updates, err := q.cfg.DB.FetchSessionCommittedUpdates(q.ID())
+		if err != nil {
+			returnErr = err
 			return
-		default:
 		}
+
+		unAckedUpdates := make(map[wtdb.BackupID]bool)
+		for _, update := range updates {
+			unAckedUpdates[update.BackupID] = true
+
+			if !final {
+				continue
+			}
+
+			err := q.cfg.TaskPipeline.QueueBackupID(
+				&update.BackupID,
+			)
+			if err != nil {
+				log.Errorf("could not re-queue %s: %v",
+					update.BackupID, err)
+				continue
+			}
+
+			err = q.cfg.DB.DeleteCommittedUpdate(
+				q.ID(), update.SeqNum,
+			)
+			if err != nil {
+				log.Errorf("could not delete committed "+
+					"update %d for session %s",
+					update.SeqNum, q.ID())
+			}
+		}
+
+		// Push any task that was on the pending queue that there is
+		// not yet a committed update for back to the main task
+		// pipeline.
+		q.queueCond.L.Lock()
+		for q.pendingQueue.Len() > 0 {
+			next := q.pendingQueue.Front()
+			q.pendingQueue.Remove(next)
+
+			//nolint:forcetypeassert
+			task := next.Value.(*backupTask)
+
+			if unAckedUpdates[task.id] {
+				continue
+			}
+
+			err := q.cfg.TaskPipeline.QueueBackupID(&task.id)
+			if err != nil {
+				log.Errorf("could not re-queue backup task: "+
+					"%v", err)
+				continue
+			}
+		}
+		q.queueCond.L.Unlock()
 
 		q.log.Debugf("SessionQueue(%s) stopped", q.ID())
 	})
-}
 
-// ForceQuit idempotently aborts any clean shutdown in progress and returns to
-// he caller after all lingering goroutines have spun down.
-func (q *sessionQueue) ForceQuit() {
-	q.forced.Do(func() {
-		q.log.Infof("SessionQueue(%s) force quitting...", q.ID())
-
-		close(q.forceQuit)
-		q.signalUntilShutdown()
-
-		q.log.Infof("SessionQueue(%s) force quit", q.ID())
-	})
+	return returnErr
 }
 
 // ID returns the wtdb.SessionID for the queue, which can be used to uniquely
@@ -193,9 +260,27 @@ func (q *sessionQueue) ID() *wtdb.SessionID {
 
 // AcceptTask attempts to queue a backupTask for delivery to the sessionQueue's
 // tower. The session will only be accepted if the queue is not already
-// exhausted and the task is successfully bound to the ClientSession.
-func (q *sessionQueue) AcceptTask(task *backupTask) (reserveStatus, bool) {
+// exhausted or shutting down and the task is successfully bound to the
+// ClientSession.
+func (q *sessionQueue) AcceptTask(task *backupTask) (sessionQueueStatus, bool) {
+	// Exit early if the queue has started shutting down.
+	select {
+	case <-q.quit:
+		return sessionQueueShuttingDown, false
+	default:
+	}
+
 	q.queueCond.L.Lock()
+
+	// There is a chance that sessionQueue started shutting down between
+	// the last quit channel check and waiting for the lock. So check one
+	// more time here.
+	select {
+	case <-q.quit:
+		q.queueCond.L.Unlock()
+		return sessionQueueShuttingDown, false
+	default:
+	}
 
 	numPending := uint32(q.pendingQueue.Len())
 	maxUpdates := q.cfg.ClientSession.Policy.MaxUpdates
@@ -204,14 +289,14 @@ func (q *sessionQueue) AcceptTask(task *backupTask) (reserveStatus, bool) {
 		q.ID(), task.id, q.seqNum, numPending, maxUpdates)
 
 	// Examine the current reserve status of the session queue.
-	curStatus := q.reserveStatus()
+	curStatus := q.status()
 
 	switch curStatus {
 
 	// The session queue is exhausted, and cannot accept the task because it
 	// is full. Reject the task such that it can be tried against a
 	// different session.
-	case reserveExhausted:
+	case sessionQueueExhausted:
 		q.queueCond.L.Unlock()
 		return curStatus, false
 
@@ -221,8 +306,11 @@ func (q *sessionQueue) AcceptTask(task *backupTask) (reserveStatus, bool) {
 	// tried again.
 	//
 	// TODO(conner): queue backups and retry with different session params.
-	case reserveAvailable:
-		err := task.bindSession(&q.cfg.ClientSession.ClientSessionBody)
+	case sessionQueueAvailable:
+		err := task.bindSession(
+			&q.cfg.ClientSession.ClientSessionBody,
+			q.cfg.BuildBreachRetribution,
+		)
 		if err != nil {
 			q.queueCond.L.Unlock()
 			q.log.Debugf("SessionQueue(%s) rejected %v: %v ",
@@ -238,7 +326,7 @@ func (q *sessionQueue) AcceptTask(task *backupTask) (reserveStatus, bool) {
 	// Finally, compute the session's *new* reserve status. This will be
 	// used by the client to determine if it can continue using this session
 	// queue, or if it should negotiate a new one.
-	newStatus := q.reserveStatus()
+	newStatus := q.status()
 	q.queueCond.L.Unlock()
 
 	q.queueCond.Signal()
@@ -249,7 +337,7 @@ func (q *sessionQueue) AcceptTask(task *backupTask) (reserveStatus, bool) {
 // sessionManager is the primary event loop for the sessionQueue, and is
 // responsible for encrypting and sending accepted tasks to the tower.
 func (q *sessionQueue) sessionManager() {
-	defer close(q.shutdown)
+	defer q.wg.Done()
 
 	for {
 		q.queueCond.L.Lock()
@@ -260,12 +348,6 @@ func (q *sessionQueue) sessionManager() {
 
 			select {
 			case <-q.quit:
-				if q.commitQueue.Len() == 0 &&
-					q.pendingQueue.Len() == 0 {
-					q.queueCond.L.Unlock()
-					return
-				}
-			case <-q.forceQuit:
 				q.queueCond.L.Unlock()
 				return
 			default:
@@ -273,12 +355,9 @@ func (q *sessionQueue) sessionManager() {
 		}
 		q.queueCond.L.Unlock()
 
-		// Exit immediately if a force quit has been requested.  If the
-		// either of the queues still has state updates to send to the
-		// tower, we may never exit in the above case if we are unable
-		// to reach the tower for some reason.
+		// Exit immediately if the sessionQueue has been stopped.
 		select {
-		case <-q.forceQuit:
+		case <-q.quit:
 			return
 		default:
 		}
@@ -291,18 +370,48 @@ func (q *sessionQueue) sessionManager() {
 
 // drainBackups attempts to send all pending updates in the queue to the tower.
 func (q *sessionQueue) drainBackups() {
-	// First, check that we are able to dial this session's tower.
-	conn, err := q.cfg.Dial(q.cfg.ClientSession.SessionKeyECDH, q.towerAddr)
-	if err != nil {
-		q.log.Errorf("SessionQueue(%s) unable to dial tower at %v: %v",
-			q.ID(), q.towerAddr, err)
+	var (
+		conn      wtserver.Peer
+		err       error
+		towerAddr = q.tower.Addresses.Peek()
+	)
 
-		q.increaseBackoff()
-		select {
-		case <-time.After(q.retryBackoff):
-		case <-q.forceQuit:
+	for {
+		q.log.Infof("SessionQueue(%s) attempting to dial tower at %v",
+			q.ID(), towerAddr)
+
+		// First, check that we are able to dial this session's tower.
+		conn, err = q.cfg.Dial(
+			q.cfg.ClientSession.SessionKeyECDH, &lnwire.NetAddress{
+				IdentityKey: q.tower.IdentityKey,
+				Address:     towerAddr,
+			},
+		)
+		if err != nil {
+			// If there are more addrs available, immediately try
+			// those.
+			nextAddr, iteratorErr := q.tower.Addresses.Next()
+			if iteratorErr == nil {
+				towerAddr = nextAddr
+				continue
+			}
+
+			// Otherwise, if we have exhausted the address list,
+			// back off and try again later.
+			q.tower.Addresses.Reset()
+
+			q.log.Errorf("SessionQueue(%s) unable to dial tower "+
+				"at any available Addresses: %v", q.ID(), err)
+
+			q.increaseBackoff()
+			select {
+			case <-time.After(q.retryBackoff):
+			case <-q.quit:
+			}
+			return
 		}
-		return
+
+		break
 	}
 	defer conn.Close()
 
@@ -312,19 +421,17 @@ func (q *sessionQueue) drainBackups() {
 	// Init.
 	for sendInit := true; ; sendInit = false {
 		// Generate the next state update to upload to the tower. This
-		// method will first proceed in dequeueing committed updates
+		// method will first proceed in dequeuing committed updates
 		// before attempting to dequeue any pending updates.
 		stateUpdate, isPending, backupID, err := q.nextStateUpdate()
 		if err != nil {
-			q.log.Errorf("SessionQueue(%v) unable to get next state "+
-				"update: %v", q.ID(), err)
+			q.log.Errorf("SessionQueue(%v) unable to get next "+
+				"state update: %v", q.ID(), err)
 			return
 		}
 
 		// Now, send the state update to the tower and wait for a reply.
-		err = q.sendStateUpdate(
-			conn, stateUpdate, q.localInit, sendInit, isPending,
-		)
+		err = q.sendStateUpdate(conn, stateUpdate, sendInit, isPending)
 		if err != nil {
 			q.log.Errorf("SessionQueue(%s) unable to send state "+
 				"update: %v", q.ID(), err)
@@ -332,7 +439,7 @@ func (q *sessionQueue) drainBackups() {
 			q.increaseBackoff()
 			select {
 			case <-time.After(q.retryBackoff):
-			case <-q.forceQuit:
+			case <-q.quit:
 			}
 			return
 		}
@@ -354,7 +461,7 @@ func (q *sessionQueue) drainBackups() {
 		// when we will do so.
 		select {
 		case <-time.After(time.Millisecond):
-		case <-q.forceQuit:
+		case <-q.quit:
 			return
 		}
 	}
@@ -478,11 +585,15 @@ func (q *sessionQueue) nextStateUpdate() (*wtwire.StateUpdate, bool,
 // the ACK before returning. If sendInit is true, this method will first send
 // the localInit message and verify that the tower supports our required feature
 // bits. And error is returned if any part of the send fails. The boolean return
-// variable indicates whether or not we should back off before attempting to
-// send the next state update.
+// variable indicates whether we should back off before attempting to send the
+// next state update.
 func (q *sessionQueue) sendStateUpdate(conn wtserver.Peer,
-	stateUpdate *wtwire.StateUpdate, localInit *wtwire.Init,
-	sendInit, isPending bool) error {
+	stateUpdate *wtwire.StateUpdate, sendInit, isPending bool) error {
+
+	towerAddr := &lnwire.NetAddress{
+		IdentityKey: conn.RemotePub(),
+		Address:     conn.RemoteAddr(),
+	}
 
 	// If this is the first message being sent to the tower, we must send an
 	// Init message to establish that server supports the features we
@@ -503,7 +614,7 @@ func (q *sessionQueue) sendStateUpdate(conn wtserver.Peer,
 		remoteInit, ok := remoteMsg.(*wtwire.Init)
 		if !ok {
 			return fmt.Errorf("watchtower %s responded with %T "+
-				"to Init", q.towerAddr, remoteMsg)
+				"to Init", towerAddr, remoteMsg)
 		}
 
 		// Validate Init.
@@ -530,7 +641,7 @@ func (q *sessionQueue) sendStateUpdate(conn wtserver.Peer,
 	stateUpdateReply, ok := remoteMsg.(*wtwire.StateUpdateReply)
 	if !ok {
 		return fmt.Errorf("watchtower %s responded with %T to "+
-			"StateUpdate", q.towerAddr, remoteMsg)
+			"StateUpdate", towerAddr, remoteMsg)
 	}
 
 	// Process the reply from the tower.
@@ -545,8 +656,8 @@ func (q *sessionQueue) sendStateUpdate(conn wtserver.Peer,
 		err := fmt.Errorf("received error code %v in "+
 			"StateUpdateReply for seqnum=%d",
 			stateUpdateReply.Code, stateUpdate.SeqNum)
-		q.log.Warnf("SessionQueue(%s) unable to upload state update to "+
-			"tower=%s: %v", q.ID(), q.towerAddr, err)
+		q.log.Warnf("SessionQueue(%s) unable to upload state update "+
+			"to tower=%s: %v", q.ID(), towerAddr, err)
 		return err
 	}
 
@@ -557,7 +668,8 @@ func (q *sessionQueue) sendStateUpdate(conn wtserver.Peer,
 		// TODO(conner): borked watchtower
 		err = fmt.Errorf("unable to ack seqnum=%d: %v",
 			stateUpdate.SeqNum, err)
-		q.log.Errorf("SessionQueue(%v) failed to ack update: %v", q.ID(), err)
+		q.log.Errorf("SessionQueue(%v) failed to ack update: %v",
+			q.ID(), err)
 		return err
 
 	case err == wtdb.ErrLastAppliedReversion:
@@ -596,21 +708,21 @@ func (q *sessionQueue) sendStateUpdate(conn wtserver.Peer,
 	return nil
 }
 
-// reserveStatus returns a reserveStatus indicating whether or not the
-// sessionQueue can accept another task. reserveAvailable is returned when a
-// task can be accepted, and reserveExhausted is returned if the all slots in
-// the session have been allocated.
+// status returns a sessionQueueStatus indicating whether the sessionQueue can
+// accept another task. sessionQueueAvailable is returned when a task can be
+// accepted, and sessionQueueExhausted is returned if the all slots in the
+// session have been allocated.
 //
 // NOTE: This method MUST be called with queueCond's exclusive lock held.
-func (q *sessionQueue) reserveStatus() reserveStatus {
+func (q *sessionQueue) status() sessionQueueStatus {
 	numPending := uint32(q.pendingQueue.Len())
 	maxUpdates := uint32(q.cfg.ClientSession.Policy.MaxUpdates)
 
 	if uint32(q.seqNum)+numPending < maxUpdates {
-		return reserveAvailable
+		return sessionQueueAvailable
 	}
 
-	return reserveExhausted
+	return sessionQueueExhausted
 
 }
 
@@ -628,37 +740,69 @@ func (q *sessionQueue) increaseBackoff() {
 	}
 }
 
-// signalUntilShutdown strobes the sessionQueue's condition variable until the
-// main event loop exits.
-func (q *sessionQueue) signalUntilShutdown() {
-	for {
-		select {
-		case <-time.After(time.Millisecond):
-			q.queueCond.Signal()
-		case <-q.shutdown:
-			return
-		}
+// sessionQueueSet maintains a mapping of SessionIDs to their corresponding
+// sessionQueue.
+type sessionQueueSet struct {
+	queues map[wtdb.SessionID]*sessionQueue
+	mu     sync.Mutex
+}
+
+// newSessionQueueSet constructs a new sessionQueueSet.
+func newSessionQueueSet() *sessionQueueSet {
+	return &sessionQueueSet{
+		queues: make(map[wtdb.SessionID]*sessionQueue),
 	}
 }
 
-// sessionQueueSet maintains a mapping of SessionIDs to their corresponding
-// sessionQueue.
-type sessionQueueSet map[wtdb.SessionID]*sessionQueue
+// AddAndStart inserts a sessionQueue into the sessionQueueSet and starts it.
+func (s *sessionQueueSet) AddAndStart(sessionQueue *sessionQueue) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-// Add inserts a sessionQueue into the sessionQueueSet.
-func (s *sessionQueueSet) Add(sessionQueue *sessionQueue) {
-	(*s)[*sessionQueue.ID()] = sessionQueue
+	s.queues[*sessionQueue.ID()] = sessionQueue
+
+	sessionQueue.Start()
+}
+
+// StopAndRemove stops the given session queue and removes it from the
+// sessionQueueSet.
+func (s *sessionQueueSet) StopAndRemove(id wtdb.SessionID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	queue, ok := s.queues[id]
+	if !ok {
+		return nil
+	}
+
+	delete(s.queues, id)
+
+	return queue.Stop(true)
+}
+
+// Get fetches and returns the sessionQueue with the given ID.
+func (s *sessionQueueSet) Get(id wtdb.SessionID) (*sessionQueue, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	q, ok := s.queues[id]
+
+	return q, ok
 }
 
 // ApplyAndWait executes the nil-adic function returned from getApply for each
 // sessionQueue in the set in parallel, then waits for all of them to finish
 // before returning to the caller.
 func (s *sessionQueueSet) ApplyAndWait(getApply func(*sessionQueue) func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	var wg sync.WaitGroup
-	for _, sessionq := range *s {
+	for _, sessionq := range s.queues {
 		wg.Add(1)
 		go func(sq *sessionQueue) {
 			defer wg.Done()
+
 			getApply(sq)()
 		}(sessionq)
 	}

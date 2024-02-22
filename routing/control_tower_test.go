@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"reflect"
 	"testing"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/routing/route"
 	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -47,10 +47,8 @@ var (
 func TestControlTowerSubscribeUnknown(t *testing.T) {
 	t.Parallel()
 
-	db, err := initDB()
-	if err != nil {
-		t.Fatalf("unable to init db: %v", err)
-	}
+	db, err := initDB(t, false)
+	require.NoError(t, err, "unable to init db")
 
 	pControl := NewControlTower(channeldb.NewPaymentControl(db))
 
@@ -66,10 +64,8 @@ func TestControlTowerSubscribeUnknown(t *testing.T) {
 func TestControlTowerSubscribeSuccess(t *testing.T) {
 	t.Parallel()
 
-	db, err := initDB()
-	if err != nil {
-		t.Fatalf("unable to init db: %v", err)
-	}
+	db, err := initDB(t, false)
+	require.NoError(t, err, "unable to init db")
 
 	pControl := NewControlTower(channeldb.NewPaymentControl(db))
 
@@ -87,9 +83,7 @@ func TestControlTowerSubscribeSuccess(t *testing.T) {
 	// Subscription should succeed and immediately report the InFlight
 	// status.
 	subscriber1, err := pControl.SubscribePayment(info.PaymentIdentifier)
-	if err != nil {
-		t.Fatalf("expected subscribe to succeed, but got: %v", err)
-	}
+	require.NoError(t, err, "expected subscribe to succeed, but got")
 
 	// Register an attempt.
 	err = pControl.RegisterAttempt(info.PaymentIdentifier, attempt)
@@ -99,9 +93,7 @@ func TestControlTowerSubscribeSuccess(t *testing.T) {
 
 	// Register a second subscriber after the first attempt has started.
 	subscriber2, err := pControl.SubscribePayment(info.PaymentIdentifier)
-	if err != nil {
-		t.Fatalf("expected subscribe to succeed, but got: %v", err)
-	}
+	require.NoError(t, err, "expected subscribe to succeed, but got")
 
 	// Mark the payment as successful.
 	settleInfo := channeldb.HTLCSettleInfo{
@@ -119,13 +111,11 @@ func TestControlTowerSubscribeSuccess(t *testing.T) {
 
 	// Register a third subscriber after the payment succeeded.
 	subscriber3, err := pControl.SubscribePayment(info.PaymentIdentifier)
-	if err != nil {
-		t.Fatalf("expected subscribe to succeed, but got: %v", err)
-	}
+	require.NoError(t, err, "expected subscribe to succeed, but got")
 
 	// We expect all subscribers to now report the final outcome followed by
 	// no other events.
-	subscribers := []*ControlTowerSubscriber{
+	subscribers := []ControlTowerSubscriber{
 		subscriber1, subscriber2, subscriber3,
 	}
 
@@ -133,7 +123,7 @@ func TestControlTowerSubscribeSuccess(t *testing.T) {
 		var result *channeldb.MPPayment
 		for result == nil || result.Status == channeldb.StatusInFlight {
 			select {
-			case item := <-s.Updates:
+			case item := <-s.Updates():
 				result = item.(*channeldb.MPPayment)
 			case <-time.After(testTimeout):
 				t.Fatal("timeout waiting for payment result")
@@ -159,7 +149,7 @@ func TestControlTowerSubscribeSuccess(t *testing.T) {
 
 		// After the final event, we expect the channel to be closed.
 		select {
-		case _, ok := <-s.Updates:
+		case _, ok := <-s.Updates():
 			if ok {
 				t.Fatal("expected channel to be closed")
 			}
@@ -174,19 +164,255 @@ func TestControlTowerSubscribeSuccess(t *testing.T) {
 func TestPaymentControlSubscribeFail(t *testing.T) {
 	t.Parallel()
 
-	t.Run("register attempt", func(t *testing.T) {
-		testPaymentControlSubscribeFail(t, true)
+	t.Run("register attempt, keep failed payments", func(t *testing.T) {
+		testPaymentControlSubscribeFail(t, true, true)
 	})
-	t.Run("no register attempt", func(t *testing.T) {
-		testPaymentControlSubscribeFail(t, false)
+	t.Run("register attempt, delete failed payments", func(t *testing.T) {
+		testPaymentControlSubscribeFail(t, true, false)
+	})
+	t.Run("no register attempt, keep failed payments", func(t *testing.T) {
+		testPaymentControlSubscribeFail(t, false, true)
+	})
+	t.Run("no register attempt, delete failed payments", func(t *testing.T) {
+		testPaymentControlSubscribeFail(t, false, false)
 	})
 }
 
-func testPaymentControlSubscribeFail(t *testing.T, registerAttempt bool) {
-	db, err := initDB()
-	if err != nil {
-		t.Fatalf("unable to init db: %v", err)
+// TestPaymentControlSubscribeAllSuccess tests that multiple payments are
+// properly sent to subscribers of TrackPayments.
+func TestPaymentControlSubscribeAllSuccess(t *testing.T) {
+	t.Parallel()
+
+	db, err := initDB(t, true)
+	require.NoError(t, err, "unable to init db: %v")
+
+	pControl := NewControlTower(channeldb.NewPaymentControl(db))
+
+	// Initiate a payment.
+	info1, attempt1, preimg1, err := genInfo()
+	require.NoError(t, err)
+
+	err = pControl.InitPayment(info1.PaymentIdentifier, info1)
+	require.NoError(t, err)
+
+	// Subscription should succeed and immediately report the InFlight
+	// status.
+	subscription, err := pControl.SubscribeAllPayments()
+	require.NoError(t, err, "expected subscribe to succeed, but got: %v")
+
+	// Register an attempt.
+	err = pControl.RegisterAttempt(info1.PaymentIdentifier, attempt1)
+	require.NoError(t, err)
+
+	// Initiate a second payment after the subscription is already active.
+	info2, attempt2, preimg2, err := genInfo()
+	require.NoError(t, err)
+
+	err = pControl.InitPayment(info2.PaymentIdentifier, info2)
+	require.NoError(t, err)
+
+	// Register an attempt on the second payment.
+	err = pControl.RegisterAttempt(info2.PaymentIdentifier, attempt2)
+	require.NoError(t, err)
+
+	// Mark the first payment as successful.
+	settleInfo1 := channeldb.HTLCSettleInfo{
+		Preimage: preimg1,
 	}
+	htlcAttempt1, err := pControl.SettleAttempt(
+		info1.PaymentIdentifier, attempt1.AttemptID, &settleInfo1,
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, settleInfo1, *htlcAttempt1.Settle,
+		"unexpected settle info returned",
+	)
+
+	// Mark the second payment as successful.
+	settleInfo2 := channeldb.HTLCSettleInfo{
+		Preimage: preimg2,
+	}
+	htlcAttempt2, err := pControl.SettleAttempt(
+		info2.PaymentIdentifier, attempt2.AttemptID, &settleInfo2,
+	)
+	require.NoError(t, err)
+	require.Equal(
+		t, settleInfo2, *htlcAttempt2.Settle,
+		"unexpected fail info returned",
+	)
+
+	// The two payments will be asserted individually, store the last update
+	// for each payment.
+	results := make(map[lntypes.Hash]*channeldb.MPPayment)
+
+	// After exactly 5 updates both payments will/should have completed.
+	for i := 0; i < 5; i++ {
+		select {
+		case item := <-subscription.Updates():
+			id := item.(*channeldb.MPPayment).Info.PaymentIdentifier
+			results[id] = item.(*channeldb.MPPayment)
+		case <-time.After(testTimeout):
+			require.Fail(t, "timeout waiting for payment result")
+		}
+	}
+
+	result1 := results[info1.PaymentIdentifier]
+	require.Equal(
+		t, channeldb.StatusSucceeded, result1.Status,
+		"unexpected payment state payment 1",
+	)
+
+	settle1, _ := result1.TerminalInfo()
+	require.Equal(
+		t, preimg1, settle1.Preimage, "unexpected preimage payment 1",
+	)
+
+	require.Len(
+		t, result1.HTLCs, 1, "expect 1 htlc for payment 1, got %d",
+		len(result1.HTLCs),
+	)
+
+	htlc1 := result1.HTLCs[0]
+	require.Equal(t, attempt1.Route, htlc1.Route, "unexpected htlc route.")
+
+	result2 := results[info2.PaymentIdentifier]
+	require.Equal(
+		t, channeldb.StatusSucceeded, result2.Status,
+		"unexpected payment state payment 2",
+	)
+
+	settle2, _ := result2.TerminalInfo()
+	require.Equal(
+		t, preimg2, settle2.Preimage, "unexpected preimage payment 2",
+	)
+	require.Len(
+		t, result2.HTLCs, 1, "expect 1 htlc for payment 2, got %d",
+		len(result2.HTLCs),
+	)
+
+	htlc2 := result2.HTLCs[0]
+	require.Equal(t, attempt2.Route, htlc2.Route, "unexpected htlc route.")
+}
+
+// TestPaymentControlSubscribeAllImmediate tests whether already inflight
+// payments are reported at the start of the SubscribeAllPayments subscription.
+func TestPaymentControlSubscribeAllImmediate(t *testing.T) {
+	t.Parallel()
+
+	db, err := initDB(t, true)
+	require.NoError(t, err, "unable to init db: %v")
+
+	pControl := NewControlTower(channeldb.NewPaymentControl(db))
+
+	// Initiate a payment.
+	info, attempt, _, err := genInfo()
+	require.NoError(t, err)
+
+	err = pControl.InitPayment(info.PaymentIdentifier, info)
+	require.NoError(t, err)
+
+	// Register a payment update.
+	err = pControl.RegisterAttempt(info.PaymentIdentifier, attempt)
+	require.NoError(t, err)
+
+	subscription, err := pControl.SubscribeAllPayments()
+	require.NoError(t, err, "expected subscribe to succeed, but got: %v")
+
+	// Assert the new subscription receives the old update.
+	select {
+	case update := <-subscription.Updates():
+		require.NotNil(t, update)
+		require.Equal(
+			t, info.PaymentIdentifier,
+			update.(*channeldb.MPPayment).Info.PaymentIdentifier,
+		)
+		require.Len(t, subscription.Updates(), 0)
+	case <-time.After(testTimeout):
+		require.Fail(t, "timeout waiting for payment result")
+	}
+}
+
+// TestPaymentControlUnsubscribeSuccess tests that when unsubscribed, there are
+// no more notifications to that specific subscription.
+func TestPaymentControlUnsubscribeSuccess(t *testing.T) {
+	t.Parallel()
+
+	db, err := initDB(t, true)
+	require.NoError(t, err, "unable to init db: %v")
+
+	pControl := NewControlTower(channeldb.NewPaymentControl(db))
+
+	subscription1, err := pControl.SubscribeAllPayments()
+	require.NoError(t, err, "expected subscribe to succeed, but got: %v")
+
+	subscription2, err := pControl.SubscribeAllPayments()
+	require.NoError(t, err, "expected subscribe to succeed, but got: %v")
+
+	// Initiate a payment.
+	info, attempt, _, err := genInfo()
+	require.NoError(t, err)
+
+	err = pControl.InitPayment(info.PaymentIdentifier, info)
+	require.NoError(t, err)
+
+	// Register a payment update.
+	err = pControl.RegisterAttempt(info.PaymentIdentifier, attempt)
+	require.NoError(t, err)
+
+	// Assert all subscriptions receive the update.
+	select {
+	case update1 := <-subscription1.Updates():
+		require.NotNil(t, update1)
+	case <-time.After(testTimeout):
+		require.Fail(t, "timeout waiting for payment result")
+	}
+
+	select {
+	case update2 := <-subscription2.Updates():
+		require.NotNil(t, update2)
+	case <-time.After(testTimeout):
+		require.Fail(t, "timeout waiting for payment result")
+	}
+
+	// Close the first subscription.
+	subscription1.Close()
+
+	// Register another update.
+	failInfo := channeldb.HTLCFailInfo{
+		Reason: channeldb.HTLCFailInternal,
+	}
+	_, err = pControl.FailAttempt(
+		info.PaymentIdentifier, attempt.AttemptID, &failInfo,
+	)
+	require.NoError(t, err, "unable to fail htlc")
+
+	// Assert only subscription 2 receives the update.
+	select {
+	case update2 := <-subscription2.Updates():
+		require.NotNil(t, update2)
+	case <-time.After(testTimeout):
+		require.Fail(t, "timeout waiting for payment result")
+	}
+
+	require.Len(t, subscription1.Updates(), 0)
+
+	// Close the second subscription.
+	subscription2.Close()
+
+	// Register a last update.
+	err = pControl.RegisterAttempt(info.PaymentIdentifier, attempt)
+	require.NoError(t, err)
+
+	// Assert no subscriptions receive the update.
+	require.Len(t, subscription1.Updates(), 0)
+	require.Len(t, subscription2.Updates(), 0)
+}
+
+func testPaymentControlSubscribeFail(t *testing.T, registerAttempt,
+	keepFailedPaymentAttempts bool) {
+
+	db, err := initDB(t, keepFailedPaymentAttempts)
+	require.NoError(t, err, "unable to init db")
 
 	pControl := NewControlTower(channeldb.NewPaymentControl(db))
 
@@ -203,9 +429,7 @@ func testPaymentControlSubscribeFail(t *testing.T, registerAttempt bool) {
 
 	// Subscription should succeed.
 	subscriber1, err := pControl.SubscribePayment(info.PaymentIdentifier)
-	if err != nil {
-		t.Fatalf("expected subscribe to succeed, but got: %v", err)
-	}
+	require.NoError(t, err, "expected subscribe to succeed, but got")
 
 	// Conditionally register the attempt based on the test type. This
 	// allows us to simulate failing after attempting with an htlc or before
@@ -233,19 +457,20 @@ func testPaymentControlSubscribeFail(t *testing.T, registerAttempt bool) {
 	}
 
 	// Mark the payment as failed.
-	if err := pControl.Fail(info.PaymentIdentifier, channeldb.FailureReasonTimeout); err != nil {
+	err = pControl.FailPayment(
+		info.PaymentIdentifier, channeldb.FailureReasonTimeout,
+	)
+	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Register a second subscriber after the payment failed.
 	subscriber2, err := pControl.SubscribePayment(info.PaymentIdentifier)
-	if err != nil {
-		t.Fatalf("expected subscribe to succeed, but got: %v", err)
-	}
+	require.NoError(t, err, "expected subscribe to succeed, but got")
 
-	// We expect all subscribers to now report the final outcome followed by
-	// no other events.
-	subscribers := []*ControlTowerSubscriber{
+	// We expect both subscribers to now report the final outcome followed
+	// by no other events.
+	subscribers := []ControlTowerSubscriber{
 		subscriber1, subscriber2,
 	}
 
@@ -253,7 +478,7 @@ func testPaymentControlSubscribeFail(t *testing.T, registerAttempt bool) {
 		var result *channeldb.MPPayment
 		for result == nil || result.Status == channeldb.StatusInFlight {
 			select {
-			case item := <-s.Updates:
+			case item := <-s.Updates():
 				result = item.(*channeldb.MPPayment)
 			case <-time.After(testTimeout):
 				t.Fatal("timeout waiting for payment result")
@@ -291,7 +516,7 @@ func testPaymentControlSubscribeFail(t *testing.T, registerAttempt bool) {
 
 		// After the final event, we expect the channel to be closed.
 		select {
-		case _, ok := <-s.Updates:
+		case _, ok := <-s.Updates():
 			if ok {
 				t.Fatal("expected channel to be closed")
 			}
@@ -301,13 +526,12 @@ func testPaymentControlSubscribeFail(t *testing.T, registerAttempt bool) {
 	}
 }
 
-func initDB() (*channeldb.DB, error) {
-	tempPath, err := ioutil.TempDir("", "routingdb")
-	if err != nil {
-		return nil, err
-	}
-
-	db, err := channeldb.Open(tempPath)
+func initDB(t *testing.T, keepFailedPaymentAttempts bool) (*channeldb.DB, error) {
+	db, err := channeldb.Open(
+		t.TempDir(), channeldb.OptionKeepFailedPaymentAttempts(
+			keepFailedPaymentAttempts,
+		),
+	)
 	if err != nil {
 		return nil, err
 	}

@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/ltcsuite/lnd/chainntnfs"
-	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/clock"
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/queue"
@@ -31,7 +30,7 @@ type invoiceExpiryTs struct {
 }
 
 // Less implements PriorityQueueItem.Less such that the top item in the
-// priorty queue will be the one that expires next.
+// priority queue will be the one that expires next.
 func (e invoiceExpiryTs) Less(other queue.PriorityQueueItem) bool {
 	return e.Expiry.Before(other.(*invoiceExpiryTs).Expiry)
 }
@@ -58,10 +57,10 @@ func (b invoiceExpiryHeight) expired(currentHeight, delta uint32) bool {
 	return currentHeight+delta >= b.expiryHeight
 }
 
-// InvoiceExpiryWatcher handles automatic invoice cancellation of expried
+// InvoiceExpiryWatcher handles automatic invoice cancellation of expired
 // invoices. Upon start InvoiceExpiryWatcher will retrieve all pending (not yet
-// settled or canceled) invoices invoices to its watcing queue. When a new
-// invoice is added to the InvoiceRegistry, it'll be forarded to the
+// settled or canceled) invoices invoices to its watching queue. When a new
+// invoice is added to the InvoiceRegistry, it'll be forwarded to the
 // InvoiceExpiryWatcher and will end up in the watching queue as well.
 // If any of the watched invoices expire, they'll be removed from the watching
 // queue and will be cancelled through InvoiceRegistry.CancelInvoice().
@@ -178,18 +177,18 @@ func (ew *InvoiceExpiryWatcher) Stop() {
 // makeInvoiceExpiry checks if the passed invoice may be canceled and calculates
 // the expiry time and creates a slimmer invoiceExpiry implementation.
 func makeInvoiceExpiry(paymentHash lntypes.Hash,
-	invoice *channeldb.Invoice) invoiceExpiry {
+	invoice *Invoice) invoiceExpiry {
 
 	switch invoice.State {
 	// If we have an open invoice with no htlcs, we want to expire the
 	// invoice based on timestamp
-	case channeldb.ContractOpen:
+	case ContractOpen:
 		return makeTimestampExpiry(paymentHash, invoice)
 
 	// If an invoice has active htlcs, we want to expire it based on block
 	// height. We only do this for hodl invoices, since regular invoices
 	// should resolve themselves automatically.
-	case channeldb.ContractAccepted:
+	case ContractAccepted:
 		if !invoice.HodlInvoice {
 			log.Debugf("Invoice in accepted state not added to "+
 				"expiry watcher: %v", paymentHash)
@@ -201,7 +200,7 @@ func makeInvoiceExpiry(paymentHash lntypes.Hash,
 		for _, htlc := range invoice.Htlcs {
 			// We only care about accepted htlcs, since they will
 			// trigger force-closes.
-			if htlc.State != channeldb.HtlcStateAccepted {
+			if htlc.State != HtlcStateAccepted {
 				continue
 			}
 
@@ -222,9 +221,9 @@ func makeInvoiceExpiry(paymentHash lntypes.Hash,
 
 // makeTimestampExpiry creates a timestamp-based expiry entry.
 func makeTimestampExpiry(paymentHash lntypes.Hash,
-	invoice *channeldb.Invoice) *invoiceExpiryTs {
+	invoice *Invoice) *invoiceExpiryTs {
 
-	if invoice.State != channeldb.ContractOpen {
+	if invoice.State != ContractOpen {
 		return nil
 	}
 
@@ -349,11 +348,11 @@ func (ew *InvoiceExpiryWatcher) expireInvoice(hash lntypes.Hash, force bool) {
 	switch err {
 	case nil:
 
-	case channeldb.ErrInvoiceAlreadyCanceled:
+	case ErrInvoiceAlreadyCanceled:
 
-	case channeldb.ErrInvoiceAlreadySettled:
+	case ErrInvoiceAlreadySettled:
 
-	case channeldb.ErrInvoiceNotFound:
+	case ErrInvoiceNotFound:
 		// It's possible that the user has manually canceled the invoice
 		// which will then be deleted by the garbage collector resulting
 		// in an ErrInvoiceNotFound error.
@@ -404,7 +403,6 @@ func (ew *InvoiceExpiryWatcher) mainLoop(blockNtfns *chainntnfs.BlockEpochEvent)
 		cancelNext()
 
 		select {
-
 		case newInvoices := <-ew.newInvoices:
 			// Take newly forwarded invoices with higher priority
 			// in order to not block the newInvoices channel.
@@ -413,7 +411,6 @@ func (ew *InvoiceExpiryWatcher) mainLoop(blockNtfns *chainntnfs.BlockEpochEvent)
 
 		default:
 			select {
-
 			// Wait until the next invoice expires.
 			case <-ew.nextTimestampExpiry():
 				cancelNext = ew.cancelNextExpiredInvoice

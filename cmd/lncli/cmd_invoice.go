@@ -17,7 +17,7 @@ var addInvoiceCommand = cli.Command{
 	Add a new invoice, expressing intent for a future payment.
 
 	Invoices without an amount can be created by not supplying any
-	parameters or providing an amount of 0. These invoices allow the payee
+	parameters or providing an amount of 0. These invoices allow the payer
 	to specify the amount of satoshis they wish to send.`,
 	ArgsUsage: "value preimage",
 	Flags: []cli.Flag{
@@ -57,14 +57,17 @@ var addInvoiceCommand = cli.Command{
 		cli.Int64Flag{
 			Name: "expiry",
 			Usage: "the invoice's expiry time in seconds. If not " +
-				"specified an expiry of 3600 seconds (1 hour) " +
-				"is implied.",
+				"specified, an expiry of " +
+				"86400 seconds (24 hours) is implied.",
 		},
-		cli.BoolTFlag{
+		cli.BoolFlag{
 			Name: "private",
 			Usage: "encode routing hints in the invoice with " +
 				"private channels in order to assist the " +
-				"payer in reaching you",
+				"payer in reaching you. If amt and amt_msat " +
+				"are zero, a large number of hints with " +
+				"these channels can be included, which " +
+				"might not be desirable.",
 		},
 		cli.BoolFlag{
 			Name: "amp",
@@ -231,6 +234,18 @@ var listInvoicesCommand = cli.Command{
 			Usage: "if set, invoices succeeding the " +
 				"index_offset will be returned",
 		},
+		cli.Uint64Flag{
+			Name: "creation_date_start",
+			Usage: "timestamp in seconds, if set, filter " +
+				"invoices with creation date greater than or " +
+				"equal to it",
+		},
+		cli.Uint64Flag{
+			Name: "creation_date_end",
+			Usage: "timestamp in seconds, if set, filter " +
+				"invoices with creation date less than or " +
+				"equal to it",
+		},
 	},
 	Action: actionDecorator(listInvoices),
 }
@@ -241,10 +256,12 @@ func listInvoices(ctx *cli.Context) error {
 	defer cleanUp()
 
 	req := &lnrpc.ListInvoiceRequest{
-		PendingOnly:    ctx.Bool("pending_only"),
-		IndexOffset:    ctx.Uint64("index_offset"),
-		NumMaxInvoices: ctx.Uint64("max_invoices"),
-		Reversed:       !ctx.Bool("paginate-forwards"),
+		PendingOnly:       ctx.Bool("pending_only"),
+		IndexOffset:       ctx.Uint64("index_offset"),
+		NumMaxInvoices:    ctx.Uint64("max_invoices"),
+		Reversed:          !ctx.Bool("paginate-forwards"),
+		CreationDateStart: ctx.Uint64("creation_date_start"),
+		CreationDateEnd:   ctx.Uint64("creation_date_end"),
 	}
 
 	invoices, err := client.ListInvoices(ctxc, req)
@@ -289,7 +306,7 @@ func decodePayReq(ctx *cli.Context) error {
 	}
 
 	resp, err := client.DecodePayReq(ctxc, &lnrpc.PayReqString{
-		PayReq: payreq,
+		PayReq: stripPrefix(payreq),
 	})
 	if err != nil {
 		return err

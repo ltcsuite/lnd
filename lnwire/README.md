@@ -1,7 +1,7 @@
 lnwire
 ======
 
-[![Build Status](http://img.shields.io/travis/lightningnetwork/lnd.svg)](https://travis-ci.org/lightningnetwork/lnd) 
+[![Build Status](http://img.shields.io/travis/ltcsuite/lnd.svg)](https://travis-ci.org/ltcsuite/lnd) 
 [![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/ltcsuite/lnd/blob/master/LICENSE)
 [![GoDoc](https://img.shields.io/badge/godoc-reference-blue.svg)](http://godoc.org/github.com/ltcsuite/lnd/lnwire)
 
@@ -14,5 +14,5 @@ protocol level.
 ## Installation and Updating
 
 ```shell
-⛰  go get -u github.com/ltcsuite/lnd/lnwire
+$  go get -u github.com/ltcsuite/lnd/lnwire
 ```

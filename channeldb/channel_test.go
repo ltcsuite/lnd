@@ -6,14 +6,15 @@ import (
 	"net"
 	"reflect"
 	"runtime"
+	"sync/atomic"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"github.com/davecgh/go-spew/spew"
+	"github.com/ltcsuite/lnd/channeldb/models"
 	"github.com/ltcsuite/lnd/clock"
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/kvdb"
+	"github.com/ltcsuite/lnd/lnmock"
 	"github.com/ltcsuite/lnd/lntest/channels"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/shachain"
@@ -22,6 +23,7 @@ import (
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
 	_ "github.com/ltcsuite/ltcwallet/walletdb/bdb"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -53,8 +55,22 @@ var (
 		Port: 18555,
 	}
 
-	// keyLocIndex is the KeyLocator Index we use for TestKeyLocatorEncoding.
+	// keyLocIndex is the KeyLocator Index we use for
+	// TestKeyLocatorEncoding.
 	keyLocIndex = uint32(2049)
+
+	// dummyLocalOutputIndex specifics a default value for our output index
+	// in this test.
+	dummyLocalOutputIndex = uint32(0)
+
+	// dummyRemoteOutIndex specifics a default value for their output index
+	// in this test.
+	dummyRemoteOutIndex = uint32(1)
+
+	// uniqueOutputIndex is used to create a unique funding outpoint.
+	//
+	// NOTE: must be incremented when used.
+	uniqueOutputIndex = atomic.Uint32{}
 )
 
 // testChannelParams is a struct which details the specifics of how a channel
@@ -78,25 +94,6 @@ type testChannelParams struct {
 // testChannelOption is a functional option which can be used to alter the
 // default channel that is creates for testing.
 type testChannelOption func(params *testChannelParams)
-
-// channelCommitmentOption is an option which allows overwriting of the default
-// commitment height and balances. The local boolean can be used to set these
-// balances on the local or remote commit.
-func channelCommitmentOption(height uint64, localBalance,
-	remoteBalance lnwire.MilliSatoshi, local bool) testChannelOption {
-
-	return func(params *testChannelParams) {
-		if local {
-			params.channel.LocalCommitment.CommitHeight = height
-			params.channel.LocalCommitment.LocalBalance = localBalance
-			params.channel.LocalCommitment.RemoteBalance = remoteBalance
-		} else {
-			params.channel.RemoteCommitment.CommitHeight = height
-			params.channel.RemoteCommitment.LocalBalance = localBalance
-			params.channel.RemoteCommitment.RemoteBalance = remoteBalance
-		}
-	}
-}
 
 // pendingHeightOption is an option which can be used to set the height the
 // channel is marked as pending at.
@@ -214,9 +211,7 @@ func createTestChannel(t *testing.T, cdb *ChannelStateDB,
 
 	// Mark the channel as open with the short channel id provided.
 	err = params.channel.MarkAsOpen(params.channel.ShortChannelID)
-	if err != nil {
-		t.Fatalf("unable to mark channel open: %v", err)
-	}
+	require.NoError(t, err, "unable to mark channel open")
 
 	return params.channel
 }
@@ -224,9 +219,7 @@ func createTestChannel(t *testing.T, cdb *ChannelStateDB,
 func createTestChannelState(t *testing.T, cdb *ChannelStateDB) *OpenChannel {
 	// Simulate 1000 channel updates.
 	producer, err := shachain.NewRevocationProducerFromBytes(key[:])
-	if err != nil {
-		t.Fatalf("could not get producer: %v", err)
-	}
+	require.NoError(t, err, "could not get producer")
 	store := shachain.NewRevocationStore()
 	for i := 0; i < 1; i++ {
 		preImage, err := producer.AtIndex(uint64(i))
@@ -313,10 +306,15 @@ func createTestChannelState(t *testing.T, cdb *ChannelStateDB) *OpenChannel {
 
 	chanID := lnwire.NewShortChanIDFromInt(uint64(rand.Int63()))
 
+	// Increment the uniqueOutputIndex so we always get a unique value for
+	// the funding outpoint.
+	uniqueOutputIndex.Add(1)
+	op := wire.OutPoint{Hash: key, Index: uniqueOutputIndex.Load()}
+
 	return &OpenChannel{
 		ChanType:          SingleFunderBit | FrozenBit,
 		ChainHash:         key,
-		FundingOutpoint:   wire.OutPoint{Hash: key, Index: rand.Uint32()},
+		FundingOutpoint:   op,
 		ShortChannelID:    chanID,
 		IsInitiator:       true,
 		IsPending:         true,
@@ -353,29 +351,29 @@ func createTestChannelState(t *testing.T, cdb *ChannelStateDB) *OpenChannel {
 		Packager:                NewChannelPackager(chanID),
 		FundingTxn:              channels.TestFundingTx,
 		ThawHeight:              uint32(defaultPendingHeight),
+		InitialLocalBalance:     lnwire.MilliSatoshi(9000),
+		InitialRemoteBalance:    lnwire.MilliSatoshi(3000),
 	}
 }
 
 func TestOpenChannelPutGetDelete(t *testing.T) {
 	t.Parallel()
 
-	fullDB, cleanUp, err := MakeTestDB()
-	if err != nil {
-		t.Fatalf("unable to make test database: %v", err)
-	}
-	defer cleanUp()
+	fullDB, err := MakeTestDB(t)
+	require.NoError(t, err, "unable to make test database")
 
 	cdb := fullDB.ChannelStateDB()
 
 	// Create the test channel state, with additional htlcs on the local
 	// and remote commitment.
 	localHtlcs := []HTLC{
-		{Signature: testSig.Serialize(),
+		{
+			Signature:     testSig.Serialize(),
 			Incoming:      true,
 			Amt:           10,
 			RHash:         key,
 			RefundTimeout: 1,
-			OnionBlob:     []byte("onionblob"),
+			OnionBlob:     lnmock.MockOnion(),
 		},
 	}
 
@@ -386,7 +384,7 @@ func TestOpenChannelPutGetDelete(t *testing.T) {
 			Amt:           10,
 			RHash:         key,
 			RefundTimeout: 1,
-			OnionBlob:     []byte("onionblob"),
+			OnionBlob:     lnmock.MockOnion(),
 		},
 	}
 
@@ -397,9 +395,7 @@ func TestOpenChannelPutGetDelete(t *testing.T) {
 	)
 
 	openChannels, err := cdb.FetchOpenChannels(state.IdentityPub)
-	if err != nil {
-		t.Fatalf("unable to fetch open channel: %v", err)
-	}
+	require.NoError(t, err, "unable to fetch open channel")
 
 	newState := openChannels[0]
 
@@ -414,17 +410,13 @@ func TestOpenChannelPutGetDelete(t *testing.T) {
 	// next revocation for the state machine. This tests the initial
 	// post-funding revocation exchange.
 	nextRevKey, err := btcec.NewPrivateKey()
-	if err != nil {
-		t.Fatalf("unable to create new private key: %v", err)
-	}
+	require.NoError(t, err, "unable to create new private key")
 	if err := state.InsertNextRevocation(nextRevKey.PubKey()); err != nil {
 		t.Fatalf("unable to update revocation: %v", err)
 	}
 
 	openChannels, err = cdb.FetchOpenChannels(state.IdentityPub)
-	if err != nil {
-		t.Fatalf("unable to fetch open channel: %v", err)
-	}
+	require.NoError(t, err, "unable to fetch open channel")
 	updatedChan := openChannels[0]
 
 	// Ensure that the revocation was set properly.
@@ -451,9 +443,7 @@ func TestOpenChannelPutGetDelete(t *testing.T) {
 	// As the channel is now closed, attempting to fetch all open channels
 	// for our fake node ID should return an empty slice.
 	openChans, err := cdb.FetchOpenChannels(state.IdentityPub)
-	if err != nil {
-		t.Fatalf("unable to fetch open channels: %v", err)
-	}
+	require.NoError(t, err, "unable to fetch open channels")
 	if len(openChans) != 0 {
 		t.Fatalf("all channels not deleted, found %v", len(openChans))
 	}
@@ -510,11 +500,10 @@ func TestOptionalShutdown(t *testing.T) {
 		test := test
 
 		t.Run(test.name, func(t *testing.T) {
-			fullDB, cleanUp, err := MakeTestDB()
+			fullDB, err := MakeTestDB(t)
 			if err != nil {
 				t.Fatalf("unable to make test database: %v", err)
 			}
-			defer cleanUp()
 
 			cdb := fullDB.ChannelStateDB()
 
@@ -566,14 +555,37 @@ func assertCommitmentEqual(t *testing.T, a, b *ChannelCommitment) {
 	}
 }
 
+// assertRevocationLogEntryEqual asserts that, for all the fields of a given
+// revocation log entry, their values match those on a given ChannelCommitment.
+func assertRevocationLogEntryEqual(t *testing.T, c *ChannelCommitment,
+	r *RevocationLog) {
+
+	// Check the common fields.
+	require.EqualValues(
+		t, r.CommitTxHash, c.CommitTx.TxHash(), "CommitTx mismatch",
+	)
+
+	// Now check the common fields from the HTLCs.
+	require.Equal(t, len(r.HTLCEntries), len(c.Htlcs), "HTLCs len mismatch")
+	for i, rHtlc := range r.HTLCEntries {
+		cHtlc := c.Htlcs[i]
+		require.Equal(t, rHtlc.RHash, cHtlc.RHash, "RHash mismatch")
+		require.Equal(t, rHtlc.Amt, cHtlc.Amt.ToSatoshis(),
+			"Amt mismatch")
+		require.Equal(t, rHtlc.RefundTimeout, cHtlc.RefundTimeout,
+			"RefundTimeout mismatch")
+		require.EqualValues(t, rHtlc.OutputIndex, cHtlc.OutputIndex,
+			"OutputIndex mismatch")
+		require.Equal(t, rHtlc.Incoming, cHtlc.Incoming,
+			"Incoming mismatch")
+	}
+}
+
 func TestChannelStateTransition(t *testing.T) {
 	t.Parallel()
 
-	fullDB, cleanUp, err := MakeTestDB()
-	if err != nil {
-		t.Fatalf("unable to make test database: %v", err)
-	}
-	defer cleanUp()
+	fullDB, err := MakeTestDB(t)
+	require.NoError(t, err, "unable to make test database")
 
 	cdb := fullDB.ChannelStateDB()
 
@@ -602,8 +614,10 @@ func TestChannelStateTransition(t *testing.T) {
 			LogIndex:      uint64(i * 2),
 			HtlcIndex:     uint64(i),
 		}
-		htlc.OnionBlob = make([]byte, 10)
-		copy(htlc.OnionBlob[:], bytes.Repeat([]byte{2}, 10))
+		copy(
+			htlc.OnionBlob[:],
+			bytes.Repeat([]byte{2}, lnwire.OnionPacketSize),
+		)
 		htlcs = append(htlcs, htlc)
 		htlcAmt += htlc.Amt
 	}
@@ -643,22 +657,19 @@ func TestChannelStateTransition(t *testing.T) {
 		},
 	}
 
-	err = channel.UpdateCommitment(&commitment, unsignedAckedUpdates)
-	if err != nil {
-		t.Fatalf("unable to update commitment: %v", err)
-	}
+	_, err = channel.UpdateCommitment(&commitment, unsignedAckedUpdates)
+	require.NoError(t, err, "unable to update commitment")
 
 	// Assert that update is correctly written to the database.
 	dbUnsignedAckedUpdates, err := channel.UnsignedAckedUpdates()
-	if err != nil {
-		t.Fatalf("unable to fetch dangling remote updates: %v", err)
-	}
+	require.NoError(t, err, "unable to fetch dangling remote updates")
 	if len(dbUnsignedAckedUpdates) != 1 {
 		t.Fatalf("unexpected number of dangling remote updates")
 	}
 	if !reflect.DeepEqual(
 		dbUnsignedAckedUpdates[0], unsignedAckedUpdates[0],
 	) {
+
 		t.Fatalf("unexpected update: expected %v, got %v",
 			spew.Sdump(unsignedAckedUpdates[0]),
 			spew.Sdump(dbUnsignedAckedUpdates))
@@ -668,14 +679,10 @@ func TestChannelStateTransition(t *testing.T) {
 	// commitment transaction along with the modified signature should all
 	// have been updated.
 	updatedChannel, err := cdb.FetchOpenChannels(channel.IdentityPub)
-	if err != nil {
-		t.Fatalf("unable to fetch updated channel: %v", err)
-	}
+	require.NoError(t, err, "unable to fetch updated channel")
 	assertCommitmentEqual(t, &commitment, &updatedChannel[0].LocalCommitment)
 	numDiskUpdates, err := updatedChannel[0].CommitmentHeight()
-	if err != nil {
-		t.Fatalf("unable to read commitment height from disk: %v", err)
-	}
+	require.NoError(t, err, "unable to read commitment height from disk")
 	if numDiskUpdates != uint64(commitment.CommitHeight) {
 		t.Fatalf("num disk updates doesn't match: %v vs %v",
 			numDiskUpdates, commitment.CommitHeight)
@@ -725,8 +732,8 @@ func TestChannelStateTransition(t *testing.T) {
 				},
 			},
 		},
-		OpenedCircuitKeys: []CircuitKey{},
-		ClosedCircuitKeys: []CircuitKey{},
+		OpenedCircuitKeys: []models.CircuitKey{},
+		ClosedCircuitKeys: []models.CircuitKey{},
 	}
 	copy(commitDiff.LogUpdates[0].UpdateMsg.(*lnwire.UpdateAddHTLC).PaymentHash[:],
 		bytes.Repeat([]byte{1}, 32))
@@ -739,9 +746,7 @@ func TestChannelStateTransition(t *testing.T) {
 	// The commitment tip should now match the commitment that we just
 	// inserted.
 	diskCommitDiff, err := channel.RemoteCommitChainTip()
-	if err != nil {
-		t.Fatalf("unable to fetch commit diff: %v", err)
-	}
+	require.NoError(t, err, "unable to fetch commit diff")
 	if !reflect.DeepEqual(commitDiff, diskCommitDiff) {
 		t.Fatalf("commit diffs don't match: %v vs %v", spew.Sdump(remoteCommit),
 			spew.Sdump(diskCommitDiff))
@@ -757,18 +762,16 @@ func TestChannelStateTransition(t *testing.T) {
 	// by the remote party.
 	channel.RemoteCurrentRevocation = channel.RemoteNextRevocation
 	newPriv, err := btcec.NewPrivateKey()
-	if err != nil {
-		t.Fatalf("unable to generate key: %v", err)
-	}
+	require.NoError(t, err, "unable to generate key")
 	channel.RemoteNextRevocation = newPriv.PubKey()
 
 	fwdPkg := NewFwdPkg(channel.ShortChanID(), oldRemoteCommit.CommitHeight,
 		diskCommitDiff.LogUpdates, nil)
 
-	err = channel.AdvanceCommitChainTail(fwdPkg, nil)
-	if err != nil {
-		t.Fatalf("unable to append to revocation log: %v", err)
-	}
+	err = channel.AdvanceCommitChainTail(
+		fwdPkg, nil, dummyLocalOutputIndex, dummyRemoteOutIndex,
+	)
+	require.NoError(t, err, "unable to append to revocation log")
 
 	// At this point, the remote commit chain should be nil, and the posted
 	// remote commitment should match the one we added as a diff above.
@@ -778,24 +781,28 @@ func TestChannelStateTransition(t *testing.T) {
 
 	// We should be able to fetch the channel delta created above by its
 	// update number with all the state properly reconstructed.
-	diskPrevCommit, err := channel.FindPreviousState(
+	diskPrevCommit, _, err := channel.FindPreviousState(
 		oldRemoteCommit.CommitHeight,
 	)
-	if err != nil {
-		t.Fatalf("unable to fetch past delta: %v", err)
-	}
+	require.NoError(t, err, "unable to fetch past delta")
+
+	// Check the output indexes are saved as expected.
+	require.EqualValues(
+		t, dummyLocalOutputIndex, diskPrevCommit.OurOutputIndex,
+	)
+	require.EqualValues(
+		t, dummyRemoteOutIndex, diskPrevCommit.TheirOutputIndex,
+	)
 
 	// The two deltas (the original vs the on-disk version) should
 	// identical, and all HTLC data should properly be retained.
-	assertCommitmentEqual(t, &oldRemoteCommit, diskPrevCommit)
+	assertRevocationLogEntryEqual(t, &oldRemoteCommit, diskPrevCommit)
 
 	// The state number recovered from the tail of the revocation log
 	// should be identical to this current state.
-	logTail, err := channel.RevocationLogTail()
-	if err != nil {
-		t.Fatalf("unable to retrieve log: %v", err)
-	}
-	if logTail.CommitHeight != oldRemoteCommit.CommitHeight {
+	logTailHeight, err := channel.revocationLogTailCommitHeight()
+	require.NoError(t, err, "unable to retrieve log")
+	if logTailHeight != oldRemoteCommit.CommitHeight {
 		t.Fatal("update number doesn't match")
 	}
 
@@ -813,33 +820,38 @@ func TestChannelStateTransition(t *testing.T) {
 
 	fwdPkg = NewFwdPkg(channel.ShortChanID(), oldRemoteCommit.CommitHeight, nil, nil)
 
-	err = channel.AdvanceCommitChainTail(fwdPkg, nil)
-	if err != nil {
-		t.Fatalf("unable to append to revocation log: %v", err)
-	}
+	err = channel.AdvanceCommitChainTail(
+		fwdPkg, nil, dummyLocalOutputIndex, dummyRemoteOutIndex,
+	)
+	require.NoError(t, err, "unable to append to revocation log")
 
 	// Once again, fetch the state and ensure it has been properly updated.
-	prevCommit, err := channel.FindPreviousState(oldRemoteCommit.CommitHeight)
-	if err != nil {
-		t.Fatalf("unable to fetch past delta: %v", err)
-	}
-	assertCommitmentEqual(t, &oldRemoteCommit, prevCommit)
+	prevCommit, _, err := channel.FindPreviousState(
+		oldRemoteCommit.CommitHeight,
+	)
+	require.NoError(t, err, "unable to fetch past delta")
+
+	// Check the output indexes are saved as expected.
+	require.EqualValues(
+		t, dummyLocalOutputIndex, diskPrevCommit.OurOutputIndex,
+	)
+	require.EqualValues(
+		t, dummyRemoteOutIndex, diskPrevCommit.TheirOutputIndex,
+	)
+
+	assertRevocationLogEntryEqual(t, &oldRemoteCommit, prevCommit)
 
 	// Once again, state number recovered from the tail of the revocation
 	// log should be identical to this current state.
-	logTail, err = channel.RevocationLogTail()
-	if err != nil {
-		t.Fatalf("unable to retrieve log: %v", err)
-	}
-	if logTail.CommitHeight != oldRemoteCommit.CommitHeight {
+	logTailHeight, err = channel.revocationLogTailCommitHeight()
+	require.NoError(t, err, "unable to retrieve log")
+	if logTailHeight != oldRemoteCommit.CommitHeight {
 		t.Fatal("update number doesn't match")
 	}
 
 	// The revocation state stored on-disk should now also be identical.
 	updatedChannel, err = cdb.FetchOpenChannels(channel.IdentityPub)
-	if err != nil {
-		t.Fatalf("unable to fetch updated channel: %v", err)
-	}
+	require.NoError(t, err, "unable to fetch updated channel")
 	if !channel.RemoteCurrentRevocation.IsEqual(updatedChannel[0].RemoteCurrentRevocation) {
 		t.Fatalf("revocation state was not synced")
 	}
@@ -867,9 +879,7 @@ func TestChannelStateTransition(t *testing.T) {
 	// If we attempt to fetch the target channel again, it shouldn't be
 	// found.
 	channels, err := cdb.FetchOpenChannels(channel.IdentityPub)
-	if err != nil {
-		t.Fatalf("unable to fetch updated channels: %v", err)
-	}
+	require.NoError(t, err, "unable to fetch updated channels")
 	if len(channels) != 0 {
 		t.Fatalf("%v channels, found, but none should be",
 			len(channels))
@@ -877,7 +887,9 @@ func TestChannelStateTransition(t *testing.T) {
 
 	// Attempting to find previous states on the channel should fail as the
 	// revocation log has been deleted.
-	_, err = updatedChannel[0].FindPreviousState(oldRemoteCommit.CommitHeight)
+	_, _, err = updatedChannel[0].FindPreviousState(
+		oldRemoteCommit.CommitHeight,
+	)
 	if err == nil {
 		t.Fatal("revocation log search should have failed")
 	}
@@ -890,11 +902,8 @@ func TestChannelStateTransition(t *testing.T) {
 func TestFetchPendingChannels(t *testing.T) {
 	t.Parallel()
 
-	fullDB, cleanUp, err := MakeTestDB()
-	if err != nil {
-		t.Fatalf("unable to make test database: %v", err)
-	}
-	defer cleanUp()
+	fullDB, err := MakeTestDB(t)
+	require.NoError(t, err, "unable to make test database")
 
 	cdb := fullDB.ChannelStateDB()
 
@@ -903,9 +912,7 @@ func TestFetchPendingChannels(t *testing.T) {
 	createTestChannel(t, cdb, pendingHeightOption(broadcastHeight))
 
 	pendingChannels, err := cdb.FetchPendingChannels()
-	if err != nil {
-		t.Fatalf("unable to list pending channels: %v", err)
-	}
+	require.NoError(t, err, "unable to list pending channels")
 
 	if len(pendingChannels) != 1 {
 		t.Fatalf("incorrect number of pending channels: expecting %v,"+
@@ -926,9 +933,7 @@ func TestFetchPendingChannels(t *testing.T) {
 		TxPosition:  15,
 	}
 	err = pendingChannels[0].MarkAsOpen(chanOpenLoc)
-	if err != nil {
-		t.Fatalf("unable to mark channel as open: %v", err)
-	}
+	require.NoError(t, err, "unable to mark channel as open")
 
 	if pendingChannels[0].IsPending {
 		t.Fatalf("channel marked open should no longer be pending")
@@ -943,9 +948,7 @@ func TestFetchPendingChannels(t *testing.T) {
 	// Next, we'll re-fetch the channel to ensure that the open height was
 	// properly set.
 	openChans, err := cdb.FetchAllChannels()
-	if err != nil {
-		t.Fatalf("unable to fetch channels: %v", err)
-	}
+	require.NoError(t, err, "unable to fetch channels")
 	if openChans[0].ShortChanID() != chanOpenLoc {
 		t.Fatalf("channel opening heights don't match: expected %v, "+
 			"got %v", spew.Sdump(openChans[0].ShortChanID()),
@@ -958,9 +961,7 @@ func TestFetchPendingChannels(t *testing.T) {
 	}
 
 	pendingChannels, err = cdb.FetchPendingChannels()
-	if err != nil {
-		t.Fatalf("unable to list pending channels: %v", err)
-	}
+	require.NoError(t, err, "unable to list pending channels")
 
 	if len(pendingChannels) != 0 {
 		t.Fatalf("incorrect number of pending channels: expecting %v,"+
@@ -971,11 +972,8 @@ func TestFetchPendingChannels(t *testing.T) {
 func TestFetchClosedChannels(t *testing.T) {
 	t.Parallel()
 
-	fullDB, cleanUp, err := MakeTestDB()
-	if err != nil {
-		t.Fatalf("unable to make test database: %v", err)
-	}
-	defer cleanUp()
+	fullDB, err := MakeTestDB(t)
+	require.NoError(t, err, "unable to make test database")
 
 	cdb := fullDB.ChannelStateDB()
 
@@ -1003,9 +1001,7 @@ func TestFetchClosedChannels(t *testing.T) {
 	// closed. We should get the same result whether querying for pending
 	// channels only, or not.
 	pendingClosed, err := cdb.FetchClosedChannels(true)
-	if err != nil {
-		t.Fatalf("failed fetching closed channels: %v", err)
-	}
+	require.NoError(t, err, "failed fetching closed channels")
 	if len(pendingClosed) != 1 {
 		t.Fatalf("incorrect number of pending closed channels: expecting %v,"+
 			"got %v", 1, len(pendingClosed))
@@ -1015,9 +1011,7 @@ func TestFetchClosedChannels(t *testing.T) {
 			spew.Sdump(summary), spew.Sdump(pendingClosed[0]))
 	}
 	closed, err := cdb.FetchClosedChannels(false)
-	if err != nil {
-		t.Fatalf("failed fetching all closed channels: %v", err)
-	}
+	require.NoError(t, err, "failed fetching all closed channels")
 	if len(closed) != 1 {
 		t.Fatalf("incorrect number of closed channels: expecting %v, "+
 			"got %v", 1, len(closed))
@@ -1029,24 +1023,18 @@ func TestFetchClosedChannels(t *testing.T) {
 
 	// Mark the channel as fully closed.
 	err = cdb.MarkChanFullyClosed(&state.FundingOutpoint)
-	if err != nil {
-		t.Fatalf("failed fully closing channel: %v", err)
-	}
+	require.NoError(t, err, "failed fully closing channel")
 
 	// The channel should no longer be considered pending, but should still
 	// be retrieved when fetching all the closed channels.
 	closed, err = cdb.FetchClosedChannels(false)
-	if err != nil {
-		t.Fatalf("failed fetching closed channels: %v", err)
-	}
+	require.NoError(t, err, "failed fetching closed channels")
 	if len(closed) != 1 {
 		t.Fatalf("incorrect number of closed channels: expecting %v, "+
 			"got %v", 1, len(closed))
 	}
 	pendingClose, err := cdb.FetchClosedChannels(true)
-	if err != nil {
-		t.Fatalf("failed fetching channels pending close: %v", err)
-	}
+	require.NoError(t, err, "failed fetching channels pending close")
 	if len(pendingClose) != 0 {
 		t.Fatalf("incorrect number of closed channels: expecting %v, "+
 			"got %v", 0, len(closed))
@@ -1064,11 +1052,8 @@ func TestFetchWaitingCloseChannels(t *testing.T) {
 	// We'll start by creating two channels within our test database. One of
 	// them will have their funding transaction confirmed on-chain, while
 	// the other one will remain unconfirmed.
-	fullDB, cleanUp, err := MakeTestDB()
-	if err != nil {
-		t.Fatalf("unable to make test database: %v", err)
-	}
-	defer cleanUp()
+	fullDB, err := MakeTestDB(t)
+	require.NoError(t, err, "unable to make test database")
 
 	cdb := fullDB.ChannelStateDB()
 
@@ -1129,9 +1114,7 @@ func TestFetchWaitingCloseChannels(t *testing.T) {
 	// database. We should expect to see both channels above, even if any of
 	// them haven't had their funding transaction confirm on-chain.
 	waitingCloseChannels, err := cdb.FetchWaitingCloseChannels()
-	if err != nil {
-		t.Fatalf("unable to fetch all waiting close channels: %v", err)
-	}
+	require.NoError(t, err, "unable to fetch all waiting close channels")
 	if len(waitingCloseChannels) != numChannels {
 		t.Fatalf("expected %d channels waiting to be closed, got %d", 2,
 			len(waitingCloseChannels))
@@ -1175,17 +1158,14 @@ func TestFetchWaitingCloseChannels(t *testing.T) {
 	}
 }
 
-// TestRefreshShortChanID asserts that RefreshShortChanID updates the in-memory
-// state of another OpenChannel to reflect a preceding call to MarkOpen on a
-// different OpenChannel.
-func TestRefreshShortChanID(t *testing.T) {
+// TestRefresh asserts that Refresh updates the in-memory state of another
+// OpenChannel to reflect a preceding call to MarkOpen on a different
+// OpenChannel.
+func TestRefresh(t *testing.T) {
 	t.Parallel()
 
-	fullDB, cleanUp, err := MakeTestDB()
-	if err != nil {
-		t.Fatalf("unable to make test database: %v", err)
-	}
-	defer cleanUp()
+	fullDB, err := MakeTestDB(t)
+	require.NoError(t, err, "unable to make test database")
 
 	cdb := fullDB.ChannelStateDB()
 
@@ -1219,9 +1199,7 @@ func TestRefreshShortChanID(t *testing.T) {
 	}
 
 	err = state.MarkAsOpen(chanOpenLoc)
-	if err != nil {
-		t.Fatalf("unable to mark channel open: %v", err)
-	}
+	require.NoError(t, err, "unable to mark channel open")
 
 	// The short_chan_id of the receiver to MarkAsOpen should reflect the
 	// open location, but the other pending channel should remain unchanged.
@@ -1240,11 +1218,9 @@ func TestRefreshShortChanID(t *testing.T) {
 			state.Packager.(*ChannelPackager).source)
 	}
 
-	// Now, refresh the short channel ID of the pending channel.
-	err = pendingChannel.RefreshShortChanID()
-	if err != nil {
-		t.Fatalf("unable to refresh short_chan_id: %v", err)
-	}
+	// Now, refresh the state of the pending channel.
+	err = pendingChannel.Refresh()
+	require.NoError(t, err, "unable to refresh short_chan_id")
 
 	// This should result in both OpenChannel's now having the same
 	// ShortChanID.
@@ -1331,12 +1307,11 @@ func TestCloseInitiator(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			fullDB, cleanUp, err := MakeTestDB()
+			fullDB, err := MakeTestDB(t)
 			if err != nil {
 				t.Fatalf("unable to make test database: %v",
 					err)
 			}
-			defer cleanUp()
 
 			cdb := fullDB.ChannelStateDB()
 
@@ -1378,12 +1353,11 @@ func TestCloseInitiator(t *testing.T) {
 // TestCloseChannelStatus tests setting of a channel status on the historical
 // channel on channel close.
 func TestCloseChannelStatus(t *testing.T) {
-	fullDB, cleanUp, err := MakeTestDB()
+	fullDB, err := MakeTestDB(t)
 	if err != nil {
 		t.Fatalf("unable to make test database: %v",
 			err)
 	}
-	defer cleanUp()
 
 	cdb := fullDB.ChannelStateDB()
 
@@ -1404,180 +1378,10 @@ func TestCloseChannelStatus(t *testing.T) {
 	histChan, err := channel.Db.FetchHistoricalChannel(
 		&channel.FundingOutpoint,
 	)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err, "unexpected error")
 
 	if !histChan.HasChanStatus(ChanStatusRemoteCloseInitiator) {
 		t.Fatalf("channel should have status")
-	}
-}
-
-// TestBalanceAtHeight tests lookup of our local and remote balance at a given
-// height.
-func TestBalanceAtHeight(t *testing.T) {
-	const (
-		// Values that will be set on our current local commit in
-		// memory.
-		localHeight        = 2
-		localLocalBalance  = 1000
-		localRemoteBalance = 1500
-
-		// Values that will be set on our current remote commit in
-		// memory.
-		remoteHeight        = 3
-		remoteLocalBalance  = 2000
-		remoteRemoteBalance = 2500
-
-		// Values that will be written to disk in the revocation log.
-		oldHeight        = 0
-		oldLocalBalance  = 200
-		oldRemoteBalance = 300
-
-		// Heights to test error cases.
-		unknownHeight   = 1
-		unreachedHeight = 4
-	)
-
-	// putRevokedState is a helper function used to put commitments is
-	// the revocation log bucket to test lookup of balances at heights that
-	// are not our current height.
-	putRevokedState := func(c *OpenChannel, height uint64, local,
-		remote lnwire.MilliSatoshi) error {
-
-		err := kvdb.Update(c.Db.backend, func(tx kvdb.RwTx) error {
-			chanBucket, err := fetchChanBucketRw(
-				tx, c.IdentityPub, &c.FundingOutpoint,
-				c.ChainHash,
-			)
-			if err != nil {
-				return err
-			}
-
-			logKey := revocationLogBucket
-			logBucket, err := chanBucket.CreateBucketIfNotExists(
-				logKey,
-			)
-			if err != nil {
-				return err
-			}
-
-			// Make a copy of our current commitment so we do not
-			// need to re-fill all the required fields and copy in
-			// our new desired values.
-			commit := c.LocalCommitment
-			commit.CommitHeight = height
-			commit.LocalBalance = local
-			commit.RemoteBalance = remote
-
-			return appendChannelLogEntry(logBucket, &commit)
-		}, func() {})
-
-		return err
-	}
-
-	tests := []struct {
-		name                  string
-		targetHeight          uint64
-		expectedLocalBalance  lnwire.MilliSatoshi
-		expectedRemoteBalance lnwire.MilliSatoshi
-		expectedError         error
-	}{
-		{
-			name:                  "target is current local height",
-			targetHeight:          localHeight,
-			expectedLocalBalance:  localLocalBalance,
-			expectedRemoteBalance: localRemoteBalance,
-			expectedError:         nil,
-		},
-		{
-			name:                  "target is current remote height",
-			targetHeight:          remoteHeight,
-			expectedLocalBalance:  remoteLocalBalance,
-			expectedRemoteBalance: remoteRemoteBalance,
-			expectedError:         nil,
-		},
-		{
-			name:                  "need to lookup commit",
-			targetHeight:          oldHeight,
-			expectedLocalBalance:  oldLocalBalance,
-			expectedRemoteBalance: oldRemoteBalance,
-			expectedError:         nil,
-		},
-		{
-			name:                  "height not found",
-			targetHeight:          unknownHeight,
-			expectedLocalBalance:  0,
-			expectedRemoteBalance: 0,
-			expectedError:         ErrLogEntryNotFound,
-		},
-		{
-			name:                  "height not reached",
-			targetHeight:          unreachedHeight,
-			expectedLocalBalance:  0,
-			expectedRemoteBalance: 0,
-			expectedError:         errHeightNotReached,
-		},
-	}
-
-	for _, test := range tests {
-		test := test
-
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-
-			fullDB, cleanUp, err := MakeTestDB()
-			if err != nil {
-				t.Fatalf("unable to make test database: %v",
-					err)
-			}
-			defer cleanUp()
-
-			cdb := fullDB.ChannelStateDB()
-
-			// Create options to set the heights and balances of
-			// our local and remote commitments.
-			localCommitOpt := channelCommitmentOption(
-				localHeight, localLocalBalance,
-				localRemoteBalance, true,
-			)
-
-			remoteCommitOpt := channelCommitmentOption(
-				remoteHeight, remoteLocalBalance,
-				remoteRemoteBalance, false,
-			)
-
-			// Create an open channel.
-			channel := createTestChannel(
-				t, cdb, openChannelOption(),
-				localCommitOpt, remoteCommitOpt,
-			)
-
-			// Write an older commit to disk.
-			err = putRevokedState(channel, oldHeight,
-				oldLocalBalance, oldRemoteBalance)
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			local, remote, err := channel.BalancesAtHeight(
-				test.targetHeight,
-			)
-			if err != test.expectedError {
-				t.Fatalf("expected: %v, got: %v",
-					test.expectedError, err)
-			}
-
-			if local != test.expectedLocalBalance {
-				t.Fatalf("expected local: %v, got: %v",
-					test.expectedLocalBalance, local)
-			}
-
-			if remote != test.expectedRemoteBalance {
-				t.Fatalf("expected remote: %v, got: %v",
-					test.expectedRemoteBalance, remote)
-			}
-		})
 	}
 }
 
@@ -1668,4 +1472,164 @@ func TestKeyLocatorEncoding(t *testing.T) {
 	// Finally, we'll compare that the original KeyLocator and the decoded
 	// version are equal.
 	require.Equal(t, keyLoc, decodedKeyLoc)
+}
+
+// TestFinalHtlcs tests final htlc storage and retrieval.
+func TestFinalHtlcs(t *testing.T) {
+	t.Parallel()
+
+	fullDB, err := MakeTestDB(t, OptionStoreFinalHtlcResolutions(true))
+	require.NoError(t, err, "unable to make test database")
+
+	cdb := fullDB.ChannelStateDB()
+
+	chanID := lnwire.ShortChannelID{
+		BlockHeight: 1,
+		TxIndex:     2,
+		TxPosition:  3,
+	}
+
+	// Test unknown htlc lookup.
+	const unknownHtlcID = 999
+
+	_, err = cdb.LookupFinalHtlc(chanID, unknownHtlcID)
+	require.ErrorIs(t, err, ErrHtlcUnknown)
+
+	// Test offchain final htlcs.
+	const offchainHtlcID = 1
+
+	err = kvdb.Update(cdb.backend, func(tx kvdb.RwTx) error {
+		bucket, err := fetchFinalHtlcsBucketRw(
+			tx, chanID,
+		)
+		require.NoError(t, err)
+
+		return putFinalHtlc(bucket, offchainHtlcID, FinalHtlcInfo{
+			Settled:  true,
+			Offchain: true,
+		})
+	}, func() {})
+	require.NoError(t, err)
+
+	info, err := cdb.LookupFinalHtlc(chanID, offchainHtlcID)
+	require.NoError(t, err)
+	require.True(t, info.Settled)
+	require.True(t, info.Offchain)
+
+	// Test onchain final htlcs.
+	const onchainHtlcID = 2
+
+	err = cdb.PutOnchainFinalHtlcOutcome(chanID, onchainHtlcID, true)
+	require.NoError(t, err)
+
+	info, err = cdb.LookupFinalHtlc(chanID, onchainHtlcID)
+	require.NoError(t, err)
+	require.True(t, info.Settled)
+	require.False(t, info.Offchain)
+
+	// Test unknown htlc lookup for existing channel.
+	_, err = cdb.LookupFinalHtlc(chanID, unknownHtlcID)
+	require.ErrorIs(t, err, ErrHtlcUnknown)
+}
+
+// TestHTLCsExtraData tests serialization and deserialization of HTLCs
+// combined with extra data.
+func TestHTLCsExtraData(t *testing.T) {
+	t.Parallel()
+
+	mockHtlc := HTLC{
+		Signature:     testSig.Serialize(),
+		Incoming:      false,
+		Amt:           10,
+		RHash:         key,
+		RefundTimeout: 1,
+		OnionBlob:     lnmock.MockOnion(),
+	}
+
+	testCases := []struct {
+		name  string
+		htlcs []HTLC
+	}{
+		{
+			// Serialize multiple HLTCs with no extra data to
+			// assert that there is no regression for HTLCs with
+			// no extra data.
+			name: "no extra data",
+			htlcs: []HTLC{
+				mockHtlc, mockHtlc,
+			},
+		},
+		{
+			name: "mixed extra data",
+			htlcs: []HTLC{
+				mockHtlc,
+				{
+					Signature:     testSig.Serialize(),
+					Incoming:      false,
+					Amt:           10,
+					RHash:         key,
+					RefundTimeout: 1,
+					OnionBlob:     lnmock.MockOnion(),
+					ExtraData:     []byte{1, 2, 3},
+				},
+				mockHtlc,
+				{
+					Signature:     testSig.Serialize(),
+					Incoming:      false,
+					Amt:           10,
+					RHash:         key,
+					RefundTimeout: 1,
+					OnionBlob:     lnmock.MockOnion(),
+					ExtraData: bytes.Repeat(
+						[]byte{9}, 999,
+					),
+				},
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		testCase := testCase
+
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			var b bytes.Buffer
+			err := SerializeHtlcs(&b, testCase.htlcs...)
+			require.NoError(t, err)
+
+			r := bytes.NewReader(b.Bytes())
+			htlcs, err := DeserializeHtlcs(r)
+			require.NoError(t, err)
+			require.Equal(t, testCase.htlcs, htlcs)
+		})
+	}
+}
+
+// TestOnionBlobIncorrectLength tests HTLC deserialization in the case where
+// the OnionBlob saved on disk is of an unexpected length. This error case is
+// only expected in the case of database corruption (or some severe protocol
+// breakdown/bug). A HTLC is manually serialized because we cannot force a
+// case where we write an onion blob of incorrect length.
+func TestOnionBlobIncorrectLength(t *testing.T) {
+	t.Parallel()
+
+	var b bytes.Buffer
+
+	var numHtlcs uint16 = 1
+	require.NoError(t, WriteElement(&b, numHtlcs))
+
+	require.NoError(t, WriteElements(
+		&b,
+		// Number of HTLCs.
+		numHtlcs,
+		// Signature, incoming, amount, Rhash, Timeout.
+		testSig.Serialize(), false, lnwire.MilliSatoshi(10), key,
+		uint32(1),
+		// Write an onion blob that is half of our expected size.
+		bytes.Repeat([]byte{1}, lnwire.OnionPacketSize/2),
+	))
+
+	_, err := DeserializeHtlcs(&b)
+	require.ErrorIs(t, err, ErrOnionBlobLength)
 }

@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"image/color"
+	"io"
 	"math"
-	"math/big"
 	"math/rand"
 	"net"
 	"reflect"
@@ -21,6 +22,7 @@ import (
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -28,16 +30,52 @@ var (
 	shaHash1, _      = chainhash.NewHash(shaHash1Bytes)
 	outpoint1        = wire.NewOutPoint(shaHash1, 0)
 
-	testR, _    = new(big.Int).SetString("63724406601629180062774974542967536251589935445068131219452686511677818569431", 10)
-	testS, _    = new(big.Int).SetString("18801056069249825825291287104931333862866033135609736119018462340006816851118", 10)
-	testRScalar = new(btcec.ModNScalar)
-	testSScalar = new(btcec.ModNScalar)
-	_           = testRScalar.SetByteSlice(testR.Bytes())
-	_           = testSScalar.SetByteSlice(testS.Bytes())
-	testSig     = ecdsa.NewSignature(testRScalar, testSScalar)
+	testRBytes, _ = hex.DecodeString("8ce2bc69281ce27da07e6683571319d18e949ddfa2965fb6caa1bf0314f882d7")
+	testSBytes, _ = hex.DecodeString("299105481d63e0f4bc2a88121167221b6700d72a0ead154c03be696a292d24ae")
+	testRScalar   = new(btcec.ModNScalar)
+	testSScalar   = new(btcec.ModNScalar)
+	_             = testRScalar.SetByteSlice(testRBytes)
+	_             = testSScalar.SetByteSlice(testSBytes)
+	testSig       = ecdsa.NewSignature(testRScalar, testSScalar)
 )
 
 const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+func randLocalNonce(r *rand.Rand) *Musig2Nonce {
+	var nonce Musig2Nonce
+	_, _ = io.ReadFull(r, nonce[:])
+
+	return &nonce
+}
+
+func randPartialSig(r *rand.Rand) (*PartialSig, error) {
+	var sigBytes [32]byte
+	if _, err := r.Read(sigBytes[:]); err != nil {
+		return nil, fmt.Errorf("unable to generate sig: %w", err)
+	}
+
+	var s btcec.ModNScalar
+	s.SetByteSlice(sigBytes[:])
+
+	return &PartialSig{
+		Sig: s,
+	}, nil
+}
+
+func randPartialSigWithNonce(r *rand.Rand) (*PartialSigWithNonce, error) {
+	var sigBytes [32]byte
+	if _, err := r.Read(sigBytes[:]); err != nil {
+		return nil, fmt.Errorf("unable to generate sig: %w", err)
+	}
+
+	var s btcec.ModNScalar
+	s.SetByteSlice(sigBytes[:])
+
+	return &PartialSigWithNonce{
+		PartialSig: NewPartialSig(s),
+		Nonce:      *randLocalNonce(r),
+	}, nil
+}
 
 func randAlias(r *rand.Rand) NodeAlias {
 	var a NodeAlias
@@ -159,6 +197,22 @@ func randV3OnionAddr(r *rand.Rand) (*tor.OnionAddr, error) {
 	return &tor.OnionAddr{OnionService: onionService, Port: addrPort}, nil
 }
 
+func randOpaqueAddr(r *rand.Rand) (*OpaqueAddrs, error) {
+	payloadLen := r.Int63n(64) + 1
+	payload := make([]byte, payloadLen)
+
+	// The first byte is the address type. So set it to one that we
+	// definitely don't know about.
+	payload[0] = math.MaxUint8
+
+	// Generate random bytes for the rest of the payload.
+	if _, err := r.Read(payload[1:]); err != nil {
+		return nil, err
+	}
+
+	return &OpaqueAddrs{Payload: payload}, nil
+}
+
 func randAddrs(r *rand.Rand) ([]net.Addr, error) {
 	tcp4Addr, err := randTCP4Addr(r)
 	if err != nil {
@@ -180,7 +234,14 @@ func randAddrs(r *rand.Rand) ([]net.Addr, error) {
 		return nil, err
 	}
 
-	return []net.Addr{tcp4Addr, tcp6Addr, v2OnionAddr, v3OnionAddr}, nil
+	opaqueAddrs, err := randOpaqueAddr(r)
+	if err != nil {
+		return nil, err
+	}
+
+	return []net.Addr{
+		tcp4Addr, tcp6Addr, v2OnionAddr, v3OnionAddr, opaqueAddrs,
+	}, nil
 }
 
 // TestChanUpdateChanFlags ensures that converting the ChanUpdateChanFlags and
@@ -225,6 +286,45 @@ func TestChanUpdateChanFlags(t *testing.T) {
 				test.expected, toStr)
 		}
 	}
+}
+
+// TestDecodeUnknownAddressType shows that an unknown address type is currently
+// incorrectly dealt with.
+func TestDecodeUnknownAddressType(t *testing.T) {
+	// Add a normal, clearnet address.
+	tcpAddr := &net.TCPAddr{
+		IP:   net.IP{127, 0, 0, 1},
+		Port: 8080,
+	}
+
+	// Add an onion address.
+	onionAddr := &tor.OnionAddr{
+		OnionService: "abcdefghijklmnop.onion",
+		Port:         9065,
+	}
+
+	// Now add an address with an unknown type.
+	var newAddrType addressType = math.MaxUint8
+	data := make([]byte, 0, 16)
+	data = append(data, uint8(newAddrType))
+	opaqueAddrs := &OpaqueAddrs{
+		Payload: data,
+	}
+
+	buffer := bytes.NewBuffer(make([]byte, 0, MaxMsgBody))
+	err := WriteNetAddrs(
+		buffer, []net.Addr{tcpAddr, onionAddr, opaqueAddrs},
+	)
+	require.NoError(t, err)
+
+	// Now we attempt to parse the bytes and assert that we get an error.
+	var addrs []net.Addr
+	err = ReadElement(buffer, &addrs)
+	require.NoError(t, err)
+	require.Len(t, addrs, 3)
+	require.Equal(t, tcpAddr.String(), addrs[0].String())
+	require.Equal(t, onionAddr.String(), addrs[1].String())
+	require.Equal(t, hex.EncodeToString(data), addrs[2].String())
 }
 
 func TestMaxOutPointIndex(t *testing.T) {
@@ -376,6 +476,8 @@ func TestLightningWireProtocol(t *testing.T) {
 
 				req.LeaseExpiry = new(LeaseExpiry)
 				*req.LeaseExpiry = LeaseExpiry(1337)
+
+				req.LocalNonce = randLocalNonce(r)
 			} else {
 				req.UpfrontShutdownScript = []byte{}
 			}
@@ -448,6 +550,8 @@ func TestLightningWireProtocol(t *testing.T) {
 
 				req.LeaseExpiry = new(LeaseExpiry)
 				*req.LeaseExpiry = LeaseExpiry(1337)
+
+				req.LocalNonce = randLocalNonce(r)
 			} else {
 				req.UpfrontShutdownScript = []byte{}
 			}
@@ -482,6 +586,16 @@ func TestLightningWireProtocol(t *testing.T) {
 				return
 			}
 
+			// 1/2 chance to attach a partial sig.
+			if r.Intn(2) == 0 {
+				req.PartialSig, err = randPartialSigWithNonce(r)
+				if err != nil {
+					t.Fatalf("unable to generate sig: %v",
+						err)
+					return
+				}
+			}
+
 			v[0] = reflect.ValueOf(req)
 		},
 		MsgFundingSigned: func(v []reflect.Value, r *rand.Rand) {
@@ -502,10 +616,19 @@ func TestLightningWireProtocol(t *testing.T) {
 				return
 			}
 
+			// 1/2 chance to attach a partial sig.
+			if r.Intn(2) == 0 {
+				req.PartialSig, err = randPartialSigWithNonce(r)
+				if err != nil {
+					t.Fatalf("unable to generate sig: %v",
+						err)
+					return
+				}
+			}
+
 			v[0] = reflect.ValueOf(req)
 		},
-		MsgFundingLocked: func(v []reflect.Value, r *rand.Rand) {
-
+		MsgChannelReady: func(v []reflect.Value, r *rand.Rand) {
 			var c [32]byte
 			if _, err := r.Read(c[:]); err != nil {
 				t.Fatalf("unable to generate chan id: %v", err)
@@ -518,9 +641,44 @@ func TestLightningWireProtocol(t *testing.T) {
 				return
 			}
 
-			req := NewFundingLocked(ChannelID(c), pubKey)
+			req := NewChannelReady(ChannelID(c), pubKey)
+
+			if r.Int31()%2 == 0 {
+				scid := NewShortChanIDFromInt(uint64(r.Int63()))
+				req.AliasScid = &scid
+				req.NextLocalNonce = randLocalNonce(r)
+			}
 
 			v[0] = reflect.ValueOf(*req)
+		},
+		MsgShutdown: func(v []reflect.Value, r *rand.Rand) {
+			var c [32]byte
+			_, err := r.Read(c[:])
+			if err != nil {
+				t.Fatalf("unable to generate chan id: %v", err)
+				return
+			}
+
+			shutdownAddr, err := randDeliveryAddress(r)
+			if err != nil {
+				t.Fatalf("unable to generate delivery "+
+					"address: %v", err)
+				return
+			}
+
+			req := Shutdown{
+				ChannelID: ChannelID(c),
+				Address:   shutdownAddr,
+				ExtraData: make([]byte, 0),
+			}
+
+			if r.Int31()%2 == 0 {
+				req.ShutdownNonce = (*ShutdownNonce)(
+					randLocalNonce(r),
+				)
+			}
+
+			v[0] = reflect.ValueOf(req)
 		},
 		MsgClosingSigned: func(v []reflect.Value, r *rand.Rand) {
 			req := ClosingSigned{
@@ -537,6 +695,15 @@ func TestLightningWireProtocol(t *testing.T) {
 			if _, err := r.Read(req.ChannelID[:]); err != nil {
 				t.Fatalf("unable to generate chan id: %v", err)
 				return
+			}
+
+			if r.Int31()%2 == 0 {
+				req.PartialSig, err = randPartialSig(r)
+				if err != nil {
+					t.Fatalf("unable to generate sig: %v",
+						err)
+					return
+				}
 			}
 
 			v[0] = reflect.ValueOf(req)
@@ -558,7 +725,7 @@ func TestLightningWireProtocol(t *testing.T) {
 			// Only create the slice if there will be any signatures
 			// in it to prevent false positive test failures due to
 			// an empty slice versus a nil slice.
-			numSigs := uint16(r.Int31n(1020))
+			numSigs := uint16(r.Int31n(1019))
 			if numSigs > 0 {
 				req.HtlcSigs = make([]Sig, numSigs)
 			}
@@ -566,6 +733,16 @@ func TestLightningWireProtocol(t *testing.T) {
 				req.HtlcSigs[i], err = NewSigFromSignature(testSig)
 				if err != nil {
 					t.Fatalf("unable to parse sig: %v", err)
+					return
+				}
+			}
+
+			// 50/50 chance to attach a partial sig.
+			if r.Int31()%2 == 0 {
+				req.PartialSig, err = randPartialSigWithNonce(r)
+				if err != nil {
+					t.Fatalf("unable to generate sig: %v",
+						err)
 					return
 				}
 			}
@@ -587,6 +764,11 @@ func TestLightningWireProtocol(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unable to generate key: %v", err)
 				return
+			}
+
+			// 50/50 chance to attach a local nonce.
+			if r.Int31()%2 == 0 {
+				req.LocalNonce = randLocalNonce(r)
 			}
 
 			v[0] = reflect.ValueOf(*req)
@@ -710,7 +892,7 @@ func TestLightningWireProtocol(t *testing.T) {
 			// as being part of the ChannelUpdate, to pass
 			// serialization tests, as it will be ignored if the bit
 			// is not set.
-			if msgFlags&ChanUpdateOptionMaxHtlc == 0 {
+			if msgFlags&ChanUpdateRequiredMaxHtlc == 0 {
 				maxHtlc = 0
 			}
 
@@ -809,6 +991,8 @@ func TestLightningWireProtocol(t *testing.T) {
 					t.Fatalf("unable to generate key: %v", err)
 					return
 				}
+
+				req.LocalNonce = randLocalNonce(r)
 			}
 
 			v[0] = reflect.ValueOf(req)
@@ -876,8 +1060,9 @@ func TestLightningWireProtocol(t *testing.T) {
 			//
 			// We'll allow the test to generate padding bytes up to
 			// the max message limit, factoring in the 2 bytes for
-			// the num pong bytes.
-			paddingBytes := make([]byte, r.Intn(MaxMsgBody-1))
+			// the num pong bytes and 2 bytes for encoding the
+			// length of the padding bytes.
+			paddingBytes := make([]byte, rand.Intn(MaxMsgBody-3))
 			req := Ping{
 				NumPongBytes: uint16(r.Intn(MaxPongBytes + 1)),
 				PaddingBytes: paddingBytes,
@@ -899,6 +1084,12 @@ func TestLightningWireProtocol(t *testing.T) {
 		{
 			msgType: MsgInit,
 			scenario: func(m Init) bool {
+				return mainScenario(&m)
+			},
+		},
+		{
+			msgType: MsgWarning,
+			scenario: func(m Warning) bool {
 				return mainScenario(&m)
 			},
 		},
@@ -945,8 +1136,8 @@ func TestLightningWireProtocol(t *testing.T) {
 			},
 		},
 		{
-			msgType: MsgFundingLocked,
-			scenario: func(m FundingLocked) bool {
+			msgType: MsgChannelReady,
+			scenario: func(m ChannelReady) bool {
 				return mainScenario(&m)
 			},
 		},

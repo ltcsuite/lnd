@@ -43,7 +43,8 @@ var (
 
 	// ErrPaymentTerminal is returned if we attempt to alter a payment that
 	// already has reached a terminal condition.
-	ErrPaymentTerminal = errors.New("payment has reached terminal condition")
+	ErrPaymentTerminal = errors.New("payment has reached terminal " +
+		"condition")
 
 	// ErrAttemptAlreadySettled is returned if we try to alter an already
 	// settled HTLC attempt.
@@ -64,11 +65,11 @@ var (
 		"amount")
 
 	// ErrNonMPPayment is returned if we try to register an MPP attempt for
-	// a payment that already has a non-MPP attempt regitered.
+	// a payment that already has a non-MPP attempt registered.
 	ErrNonMPPayment = errors.New("payment has non-MPP attempts")
 
 	// ErrMPPayment is returned if we try to register a non-MPP attempt for
-	// a payment that already has an MPP attempt regitered.
+	// a payment that already has an MPP attempt registered.
 	ErrMPPayment = errors.New("payment has MPP attempts")
 
 	// ErrMPPPaymentAddrMismatch is returned if we try to register an MPP
@@ -77,7 +78,8 @@ var (
 
 	// ErrMPPTotalAmountMismatch is returned if we try to register an MPP
 	// shard where the total amount doesn't match existing shards.
-	ErrMPPTotalAmountMismatch = errors.New("mp payment total amount mismatch")
+	ErrMPPTotalAmountMismatch = errors.New("mp payment total amount " +
+		"mismatch")
 
 	// errNoAttemptInfo is returned when no attempt info is stored yet.
 	errNoAttemptInfo = errors.New("unable to find attempt info for " +
@@ -106,7 +108,7 @@ func NewPaymentControl(db *DB) *PaymentControl {
 
 // InitPayment checks or records the given PaymentCreationInfo with the DB,
 // making sure it does not already exist as an in-flight payment. When this
-// method returns successfully, the payment is guranteeed to be in the InFlight
+// method returns successfully, the payment is guaranteed to be in the InFlight
 // state.
 func (p *PaymentControl) InitPayment(paymentHash lntypes.Hash,
 	info *PaymentCreationInfo) error {
@@ -223,6 +225,19 @@ func (p *PaymentControl) InitPayment(paymentHash lntypes.Hash,
 	return updateErr
 }
 
+// DeleteFailedAttempts deletes all failed htlcs for a payment if configured
+// by the PaymentControl db.
+func (p *PaymentControl) DeleteFailedAttempts(hash lntypes.Hash) error {
+	if !p.db.keepFailedPaymentAttempts {
+		const failedHtlcsOnly = true
+		err := p.db.DeletePayment(hash, failedHtlcsOnly)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // paymentIndexTypeHash is a payment index type which indicates that we have
 // created an index of payment sequence number to payment hash.
 type paymentIndexType uint8
@@ -324,7 +339,6 @@ func (p *PaymentControl) RegisterAttempt(paymentHash lntypes.Hash,
 			hMpp := h.Route.FinalHop().MPP
 
 			switch {
-
 			// We tried to register a non-MPP attempt for a MPP
 			// payment.
 			case mpp == nil && hMpp != nil:

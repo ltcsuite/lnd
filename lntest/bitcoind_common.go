@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/ltcsuite/lnd/lntest/node"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/rpcclient"
 )
@@ -29,6 +30,7 @@ type BitcoindBackendConfig struct {
 	zmqTxPath    string
 	p2pPort      int
 	rpcClient    *rpcclient.Client
+	rpcPolling   bool
 
 	// minerAddr is the p2p address of the miner to connect to.
 	minerAddr string
@@ -36,20 +38,29 @@ type BitcoindBackendConfig struct {
 
 // A compile time assertion to ensure BitcoindBackendConfig meets the
 // BackendConfig interface.
-var _ BackendConfig = (*BitcoindBackendConfig)(nil)
+var _ node.BackendConfig = (*BitcoindBackendConfig)(nil)
 
 // GenArgs returns the arguments needed to be passed to LND at startup for
 // using this node as a chain backend.
 func (b BitcoindBackendConfig) GenArgs() []string {
 	var args []string
-	args = append(args, "--bitcoin.node=bitcoind")
-	args = append(args, fmt.Sprintf("--bitcoind.rpchost=%v", b.rpcHost))
-	args = append(args, fmt.Sprintf("--bitcoind.rpcuser=%v", b.rpcUser))
-	args = append(args, fmt.Sprintf("--bitcoind.rpcpass=%v", b.rpcPass))
-	args = append(args, fmt.Sprintf("--bitcoind.zmqpubrawblock=%v",
-		b.zmqBlockPath))
-	args = append(args, fmt.Sprintf("--bitcoind.zmqpubrawtx=%v",
-		b.zmqTxPath))
+	args = append(args, "--litecoin.node=litecoind")
+	args = append(args, fmt.Sprintf("--litecoind.rpchost=%v", b.rpcHost))
+	args = append(args, fmt.Sprintf("--litecoind.rpcuser=%v", b.rpcUser))
+	args = append(args, fmt.Sprintf("--litecoind.rpcpass=%v", b.rpcPass))
+
+	if b.rpcPolling {
+		args = append(args, fmt.Sprintf("--litecoind.rpcpolling"))
+		args = append(args,
+			fmt.Sprintf("--litecoind.blockpollinginterval=10ms"))
+		args = append(args,
+			fmt.Sprintf("--litecoind.txpollinginterval=10ms"))
+	} else {
+		args = append(args, fmt.Sprintf("--litecoind.zmqpubrawblock=%v",
+			b.zmqBlockPath))
+		args = append(args, fmt.Sprintf("--litecoind.zmqpubrawtx=%v",
+			b.zmqTxPath))
+	}
 
 	return args
 }
@@ -64,17 +75,22 @@ func (b BitcoindBackendConfig) DisconnectMiner() error {
 	return b.rpcClient.AddNode(b.minerAddr, rpcclient.ANRemove)
 }
 
-// Name returns the name of the backend type.
-func (b BitcoindBackendConfig) Name() string {
-	return "bitcoind"
+// Credentials returns the rpc username, password and host for the backend.
+func (b BitcoindBackendConfig) Credentials() (string, string, string, error) {
+	return b.rpcUser, b.rpcPass, b.rpcHost, nil
 }
 
-// newBackend starts a bitcoind node with the given extra parameters and returns
-// a BitcoindBackendConfig for that node.
-func newBackend(miner string, netParams *chaincfg.Params, extraArgs []string) (
-	*BitcoindBackendConfig, func() error, error) {
+// Name returns the name of the backend type.
+func (b BitcoindBackendConfig) Name() string {
+	return "litecoind"
+}
 
-	baseLogDir := fmt.Sprintf(logDirPattern, GetLogDir())
+// newBackend starts a litecoind node with the given extra parameters and returns
+// a BitcoindBackendConfig for that node.
+func newBackend(miner string, netParams *chaincfg.Params, extraArgs []string,
+	rpcPolling bool) (*BitcoindBackendConfig, func() error, error) {
+
+	baseLogDir := fmt.Sprintf(logDirPattern, node.GetLogDir())
 	if netParams != &chaincfg.RegressionNetParams {
 		return nil, nil, fmt.Errorf("only regtest supported")
 	}
@@ -83,21 +99,23 @@ func newBackend(miner string, netParams *chaincfg.Params, extraArgs []string) (
 		return nil, nil, err
 	}
 
-	logFile, err := filepath.Abs(baseLogDir + "/bitcoind.log")
+	logFile, err := filepath.Abs(baseLogDir + "/litecoind.log")
 	if err != nil {
 		return nil, nil, err
 	}
 
-	tempBitcoindDir, err := ioutil.TempDir("", "bitcoind")
+	tempBitcoindDir, err := ioutil.TempDir("", "litecoind")
 	if err != nil {
 		return nil, nil,
 			fmt.Errorf("unable to create temp directory: %v", err)
 	}
 
-	zmqBlockAddr := fmt.Sprintf("tcp://127.0.0.1:%d", NextAvailablePort())
-	zmqTxAddr := fmt.Sprintf("tcp://127.0.0.1:%d", NextAvailablePort())
-	rpcPort := NextAvailablePort()
-	p2pPort := NextAvailablePort()
+	zmqBlockAddr := fmt.Sprintf("tcp://127.0.0.1:%d",
+		node.NextAvailablePort())
+	zmqTxAddr := fmt.Sprintf("tcp://127.0.0.1:%d",
+		node.NextAvailablePort())
+	rpcPort := node.NextAvailablePort()
+	p2pPort := node.NextAvailablePort()
 
 	cmdArgs := []string{
 		"-datadir=" + tempBitcoindDir,
@@ -112,7 +130,7 @@ func newBackend(miner string, netParams *chaincfg.Params, extraArgs []string) (
 		"-debuglogfile=" + logFile,
 	}
 	cmdArgs = append(cmdArgs, extraArgs...)
-	bitcoind := exec.Command("bitcoind", cmdArgs...)
+	bitcoind := exec.Command("litecoind", cmdArgs...)
 
 	err = bitcoind.Start()
 	if err != nil {
@@ -120,7 +138,7 @@ func newBackend(miner string, netParams *chaincfg.Params, extraArgs []string) (
 			fmt.Printf("unable to remote temp dir %v: %v",
 				tempBitcoindDir, err)
 		}
-		return nil, nil, fmt.Errorf("couldn't start bitcoind: %v", err)
+		return nil, nil, fmt.Errorf("couldn't start litecoind: %v", err)
 	}
 
 	cleanUp := func() error {
@@ -131,9 +149,9 @@ func newBackend(miner string, netParams *chaincfg.Params, extraArgs []string) (
 		// After shutting down the chain backend, we'll make a copy of
 		// the log file before deleting the temporary log dir.
 		logDestination := fmt.Sprintf(
-			"%s/output_bitcoind_chainbackend.log", GetLogDir(),
+			"%s/output_litecoind_chainbackend.log", node.GetLogDir(),
 		)
-		err := CopyFile(logDestination, logFile)
+		err := node.CopyFile(logDestination, logFile)
 		if err != nil {
 			errStr += fmt.Sprintf("unable to copy file: %v\n", err)
 		}
@@ -187,6 +205,7 @@ func newBackend(miner string, netParams *chaincfg.Params, extraArgs []string) (
 		p2pPort:      p2pPort,
 		rpcClient:    client,
 		minerAddr:    miner,
+		rpcPolling:   rpcPolling,
 	}
 
 	return &bd, cleanUp, nil

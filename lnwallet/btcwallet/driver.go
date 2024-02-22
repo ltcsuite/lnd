@@ -12,10 +12,10 @@ const (
 	walletType = "ltcwallet"
 )
 
-// createNewWallet creates a new instance of BtcWallet given the proper list of
+// createNewWallet creates a new instance of LtcWallet given the proper list of
 // initialization parameters. This function is the factory function required to
 // properly create an instance of the lnwallet.WalletDriver struct for
-// BtcWallet.
+// ltcwallet.
 func createNewWallet(args ...interface{}) (lnwallet.WalletController, error) {
 	if len(args) != 2 {
 		return nil, fmt.Errorf("incorrect number of arguments to .New(...), "+
@@ -30,7 +30,7 @@ func createNewWallet(args ...interface{}) (lnwallet.WalletController, error) {
 
 	blockCache, ok := args[1].(*blockcache.BlockCache)
 	if !ok {
-		return nil, fmt.Errorf("second argument to btcdnotifier.New is " +
+		return nil, fmt.Errorf("second argument to ltcdnotifier.New is " +
 			"incorrect, expected a *blockcache.BlockCache")
 	}
 

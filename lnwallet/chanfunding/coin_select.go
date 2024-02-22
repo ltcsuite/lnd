@@ -1,6 +1,7 @@
 package chanfunding
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/ltcsuite/lnd/input"
@@ -21,7 +22,7 @@ type ErrInsufficientFunds struct {
 // Error returns a human readable string describing the error.
 func (e *ErrInsufficientFunds) Error() string {
 	return fmt.Sprintf("not enough witness outputs to create funding "+
-		"transaction, need %v only have %v  available",
+		"transaction, need %v only have %v available",
 		e.amountAvailable, e.amountSelected)
 }
 
@@ -53,6 +54,7 @@ type Coin struct {
 // selected coins are returned in order for the caller to properly handle
 // change+fees.
 func selectInputs(amt ltcutil.Amount, coins []Coin) (ltcutil.Amount, []Coin, error) {
+
 	satSelected := ltcutil.Amount(0)
 	for i, coin := range coins {
 		satSelected += ltcutil.Amount(coin.Value)
@@ -73,12 +75,16 @@ func calculateFees(utxos []Coin, feeRate chainfee.SatPerKWeight) (ltcutil.Amount
 	var weightEstimate input.TxWeightEstimator
 	for _, utxo := range utxos {
 		switch {
-
 		case txscript.IsPayToWitnessPubKeyHash(utxo.PkScript):
 			weightEstimate.AddP2WKHInput()
 
 		case txscript.IsPayToScriptHash(utxo.PkScript):
 			weightEstimate.AddNestedP2WKHInput()
+
+		case txscript.IsPayToTaproot(utxo.PkScript):
+			weightEstimate.AddTaprootKeySpendInput(
+				txscript.SigHashDefault,
+			)
 
 		default:
 			return 0, 0, &errUnsupportedInput{utxo.PkScript}
@@ -94,8 +100,8 @@ func calculateFees(utxos []Coin, feeRate chainfee.SatPerKWeight) (ltcutil.Amount
 	requiredFeeNoChange := feeRate.FeeForWeight(totalWeight)
 
 	// Estimate the fee required for a transaction with a change output.
-	// Assume that change output is a P2WKH output.
-	weightEstimate.AddP2WKHOutput()
+	// Assume that change output is a P2TR output.
+	weightEstimate.AddP2TROutput()
 
 	// Now that we have added the change output, redo the fee
 	// estimate.
@@ -151,7 +157,6 @@ func CoinSelect(feeRate chainfee.SatPerKWeight, amt, dustLimit ltcutil.Amount,
 		var changeAmt ltcutil.Amount
 
 		switch {
-
 		// If the excess amount isn't enough to pay for fees based on
 		// fee rate and estimated size without using a change output,
 		// then increase the requested coin amount by the estimate
@@ -171,7 +176,6 @@ func CoinSelect(feeRate chainfee.SatPerKWeight, amt, dustLimit ltcutil.Amount,
 		// change output.
 		default:
 			changeAmt = 0
-
 		}
 
 		if changeAmt < dustLimit {
@@ -207,7 +211,8 @@ func CoinSelectSubtractFees(feeRate chainfee.SatPerKWeight, amt,
 	// Obtain fee estimates both with and without using a change
 	// output.
 	requiredFeeNoChange, requiredFeeWithChange, err := calculateFees(
-		selectedUtxos, feeRate)
+		selectedUtxos, feeRate,
+	)
 	if err != nil {
 		return nil, 0, 0, err
 	}
@@ -247,4 +252,104 @@ func CoinSelectSubtractFees(feeRate chainfee.SatPerKWeight, amt,
 	}
 
 	return selectedUtxos, outputAmt, changeAmt, nil
+}
+
+// CoinSelectUpToAmount attempts to select coins such that we'll select up to
+// maxAmount exclusive of fees and optional reserve if sufficient funds are
+// available. If insufficient funds are available this method selects all
+// available coins.
+func CoinSelectUpToAmount(feeRate chainfee.SatPerKWeight, minAmount, maxAmount,
+	reserved, dustLimit ltcutil.Amount, coins []Coin) ([]Coin,
+	ltcutil.Amount, ltcutil.Amount, error) {
+
+	var (
+		// selectSubtractFee is tracking if our coin selection was
+		// unsuccessful and whether we have to start a new round of
+		// selecting coins considering fees.
+		selectSubtractFee = false
+		outputAmount      = maxAmount
+	)
+
+	// Get total balance from coins which we need for reserve considerations
+	// and fee santiy checks.
+	var totalBalance ltcutil.Amount
+	for _, coin := range coins {
+		totalBalance += ltcutil.Amount(coin.Value)
+	}
+
+	// First we try to select coins to create an output of the specified
+	// maxAmount with or without a change output that covers the miner fee.
+	selected, changeAmt, err := CoinSelect(
+		feeRate, maxAmount, dustLimit, coins,
+	)
+
+	var errInsufficientFunds *ErrInsufficientFunds
+	if err == nil { //nolint:gocritic,ifElseChain
+		// If the coin selection succeeds we check if our total balance
+		// covers the selected set of coins including fees plus an
+		// optional anchor reserve.
+
+		// First we sum up the value of all selected coins.
+		var sumSelected ltcutil.Amount
+		for _, coin := range selected {
+			sumSelected += ltcutil.Amount(coin.Value)
+		}
+
+		// We then subtract the change amount from the value of all
+		// selected coins to obtain the actual amount that is selected.
+		sumSelected -= changeAmt
+
+		// Next we check if our total balance can cover for the selected
+		// output plus the optional anchor reserve.
+		if totalBalance-sumSelected < reserved {
+			// If our local balance is insufficient to cover for the
+			// reserve we try to select an output amount that uses
+			// our total balance minus reserve and fees.
+			selectSubtractFee = true
+		}
+	} else if errors.As(err, &errInsufficientFunds) {
+		// If the initial coin selection fails due to insufficient funds
+		// we select our total available balance minus fees.
+		selectSubtractFee = true
+	} else {
+		return nil, 0, 0, err
+	}
+
+	// If we determined that our local balance is insufficient we check
+	// our total balance minus fees and optional reserve.
+	if selectSubtractFee {
+		selected, outputAmount, changeAmt, err = CoinSelectSubtractFees(
+			feeRate, totalBalance-reserved, dustLimit, coins,
+		)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+	}
+
+	// Sanity check the resulting output values to make sure we don't burn a
+	// great part to fees.
+	totalOut := outputAmount + changeAmt
+	sum := func(coins []Coin) ltcutil.Amount {
+		var sum ltcutil.Amount
+		for _, coin := range coins {
+			sum += ltcutil.Amount(coin.Value)
+		}
+
+		return sum
+	}
+	err = sanityCheckFee(totalOut, sum(selected)-totalOut)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+
+	// In case the selected amount is lower than minimum funding amount we
+	// must return an error. The minimum funding amount is determined
+	// upstream and denotes either the minimum viable channel size or an
+	// amount sufficient to cover for the initial remote balance.
+	if outputAmount < minAmount {
+		return nil, 0, 0, fmt.Errorf("available funds(%v) below the "+
+			"minimum amount(%v)", outputAmount, minAmount)
+	}
+
+	return selected, outputAmount, changeAmt, nil
 }

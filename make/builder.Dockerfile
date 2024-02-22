@@ -4,9 +4,9 @@
 # /dev.Dockerfile
 # /.github/workflows/main.yml
 # /.github/workflows/release.yml
-FROM golang:1.17.3-buster
+FROM golang:1.21.0-bookworm
 
-MAINTAINER Olaoluwa Osuntokun <laolu@lightning.engineering>
+MAINTAINER Loshan <loshan1212@gmail.com>
 
 # Golang build related environment variables that are static and used for all
 # architectures/OSes.

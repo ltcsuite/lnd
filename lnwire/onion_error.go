@@ -2,12 +2,12 @@ package lnwire
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"io"
-
-	"bytes"
+	"io/ioutil"
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/go-errors/errors"
@@ -345,6 +345,9 @@ type FailIncorrectDetails struct {
 
 	// height is the block height when the htlc was received.
 	height uint32
+
+	// extraOpaqueData contains additional failure message tlv data.
+	extraOpaqueData ExtraOpaqueData
 }
 
 // NewFailIncorrectDetails makes a new instance of the FailIncorrectDetails
@@ -353,8 +356,9 @@ func NewFailIncorrectDetails(amt MilliSatoshi,
 	height uint32) *FailIncorrectDetails {
 
 	return &FailIncorrectDetails{
-		amount: amt,
-		height: height,
+		amount:          amt,
+		height:          height,
+		extraOpaqueData: []byte{},
 	}
 }
 
@@ -366,6 +370,11 @@ func (f *FailIncorrectDetails) Amount() MilliSatoshi {
 // Height is the block height when the htlc was received.
 func (f *FailIncorrectDetails) Height() uint32 {
 	return f.height
+}
+
+// ExtraOpaqueData returns additional failure message tlv data.
+func (f *FailIncorrectDetails) ExtraOpaqueData() ExtraOpaqueData {
+	return f.extraOpaqueData
 }
 
 // Code returns the failure unique code.
@@ -413,7 +422,7 @@ func (f *FailIncorrectDetails) Decode(r io.Reader, pver uint32) error {
 		return err
 	}
 
-	return nil
+	return f.extraOpaqueData.Decode(r)
 }
 
 // Encode writes the failure in bytes stream.
@@ -424,7 +433,11 @@ func (f *FailIncorrectDetails) Encode(w *bytes.Buffer, pver uint32) error {
 		return err
 	}
 
-	return WriteUint32(w, f.height)
+	if err := WriteUint32(w, f.height); err != nil {
+		return err
+	}
+
+	return f.extraOpaqueData.Encode(w)
 }
 
 // FailFinalExpiryTooSoon is returned if the cltv_expiry is too low, the final
@@ -583,8 +596,15 @@ func (f *FailInvalidOnionKey) Error() string {
 // attempt to parse these messages in order to retain compatibility. If we're
 // unable to pull out a fully valid version, then we'll fall back to the
 // regular parsing mechanism which includes the length prefix an NO type byte.
-func parseChannelUpdateCompatabilityMode(r *bufio.Reader,
+func parseChannelUpdateCompatabilityMode(reader io.Reader, length uint16,
 	chanUpdate *ChannelUpdate, pver uint32) error {
+
+	// Instantiate a LimitReader because there may be additional data
+	// present after the channel update. Without limiting the stream, the
+	// additional data would be interpreted as channel update tlv data.
+	limitReader := io.LimitReader(reader, int64(length))
+
+	r := bufio.NewReader(limitReader)
 
 	// We'll peek out two bytes from the buffer without advancing the
 	// buffer so we can decide how to parse the remainder of it.
@@ -664,7 +684,7 @@ func (f *FailTemporaryChannelFailure) Decode(r io.Reader, pver uint32) error {
 	if length != 0 {
 		f.Update = &ChannelUpdate{}
 		return parseChannelUpdateCompatabilityMode(
-			bufio.NewReader(r), f.Update, pver,
+			r, length, f.Update, pver,
 		)
 	}
 
@@ -748,7 +768,7 @@ func (f *FailAmountBelowMinimum) Decode(r io.Reader, pver uint32) error {
 
 	f.Update = ChannelUpdate{}
 	return parseChannelUpdateCompatabilityMode(
-		bufio.NewReader(r), &f.Update, pver,
+		r, length, &f.Update, pver,
 	)
 }
 
@@ -816,7 +836,7 @@ func (f *FailFeeInsufficient) Decode(r io.Reader, pver uint32) error {
 
 	f.Update = ChannelUpdate{}
 	return parseChannelUpdateCompatabilityMode(
-		bufio.NewReader(r), &f.Update, pver,
+		r, length, &f.Update, pver,
 	)
 }
 
@@ -884,7 +904,7 @@ func (f *FailIncorrectCltvExpiry) Decode(r io.Reader, pver uint32) error {
 
 	f.Update = ChannelUpdate{}
 	return parseChannelUpdateCompatabilityMode(
-		bufio.NewReader(r), &f.Update, pver,
+		r, length, &f.Update, pver,
 	)
 }
 
@@ -941,7 +961,7 @@ func (f *FailExpiryTooSoon) Decode(r io.Reader, pver uint32) error {
 
 	f.Update = ChannelUpdate{}
 	return parseChannelUpdateCompatabilityMode(
-		bufio.NewReader(r), &f.Update, pver,
+		r, length, &f.Update, pver,
 	)
 }
 
@@ -1005,7 +1025,7 @@ func (f *FailChannelDisabled) Decode(r io.Reader, pver uint32) error {
 
 	f.Update = ChannelUpdate{}
 	return parseChannelUpdateCompatabilityMode(
-		bufio.NewReader(r), &f.Update, pver,
+		r, length, &f.Update, pver,
 	)
 }
 
@@ -1223,18 +1243,41 @@ func DecodeFailure(r io.Reader, pver uint32) (FailureMessage, error) {
 	// is a 2 byte length followed by the payload itself.
 	var failureLength uint16
 	if err := ReadElement(r, &failureLength); err != nil {
-		return nil, fmt.Errorf("unable to read error len: %v", err)
+		return nil, fmt.Errorf("unable to read failure len: %w", err)
 	}
-	if failureLength > FailureMessageLength {
-		return nil, fmt.Errorf("failure message is too "+
-			"long: %v", failureLength)
-	}
+
 	failureData := make([]byte, failureLength)
 	if _, err := io.ReadFull(r, failureData); err != nil {
 		return nil, fmt.Errorf("unable to full read payload of "+
-			"%v: %v", failureLength, err)
+			"%v: %w", failureLength, err)
 	}
 
+	// Read the padding.
+	var padLength uint16
+	if err := ReadElement(r, &padLength); err != nil {
+		return nil, fmt.Errorf("unable to read pad len: %w", err)
+	}
+
+	if _, err := io.CopyN(ioutil.Discard, r, int64(padLength)); err != nil {
+		return nil, fmt.Errorf("unable to read padding %w", err)
+	}
+
+	// Verify that we are at the end of the stream now.
+	scratch := make([]byte, 1)
+	_, err := r.Read(scratch)
+	if err != io.EOF {
+		return nil, fmt.Errorf("unexpected failure bytes")
+	}
+
+	// Check the total length. Convert to 32 bits to prevent overflow.
+	totalLength := uint32(padLength) + uint32(failureLength)
+	if totalLength < FailureMessageLength {
+		return nil, fmt.Errorf("failure message too short: "+
+			"msg=%v, pad=%v, total=%v",
+			failureLength, padLength, totalLength)
+	}
+
+	// Decode the failure message.
 	dataReader := bytes.NewReader(failureData)
 
 	return DecodeFailureMessage(dataReader, pver)

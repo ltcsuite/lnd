@@ -3,9 +3,9 @@ package channelnotifier
 import (
 	"sync"
 
-	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/subscribe"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // ChannelNotifier is a subsystem which all active, inactive, and closed channel
@@ -44,6 +44,13 @@ type OpenChannelEvent struct {
 // switch. This happens before the ActiveChannelEvent.
 type ActiveLinkEvent struct {
 	// ChannelPoint is the channel point for the newly active channel.
+	ChannelPoint *wire.OutPoint
+}
+
+// InactiveLinkEvent represents a new event where the link becomes inactive in
+// the switch.
+type InactiveLinkEvent struct {
+	// ChannelPoint is the channel point for the inactive channel.
 	ChannelPoint *wire.OutPoint
 }
 
@@ -87,7 +94,7 @@ func New(chanDB *channeldb.ChannelStateDB) *ChannelNotifier {
 func (c *ChannelNotifier) Start() error {
 	var err error
 	c.started.Do(func() {
-		log.Trace("ChannelNotifier starting")
+		log.Info("ChannelNotifier starting")
 		err = c.ntfnServer.Start()
 	})
 	return err
@@ -190,6 +197,15 @@ func (c *ChannelNotifier) NotifyActiveChannelEvent(chanPoint wire.OutPoint) {
 	event := ActiveChannelEvent{ChannelPoint: &chanPoint}
 	if err := c.ntfnServer.SendUpdate(event); err != nil {
 		log.Warnf("Unable to send active channel update: %v", err)
+	}
+}
+
+// NotifyInactiveLinkEvent notifies the channelEventNotifier goroutine that a
+// link has been removed from the switch.
+func (c *ChannelNotifier) NotifyInactiveLinkEvent(chanPoint wire.OutPoint) {
+	event := InactiveLinkEvent{ChannelPoint: &chanPoint}
+	if err := c.ntfnServer.SendUpdate(event); err != nil {
+		log.Warnf("Unable to send inactive link update: %v", err)
 	}
 }
 

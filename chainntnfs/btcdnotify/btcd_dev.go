@@ -1,7 +1,7 @@
 //go:build dev
 // +build dev
 
-package ltcdnotify
+package btcdnotify
 
 import (
 	"fmt"

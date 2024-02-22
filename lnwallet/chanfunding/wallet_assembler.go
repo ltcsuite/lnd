@@ -21,7 +21,7 @@ import (
 //
 // Steps to final channel provisioning:
 //  1. Call BindKeys to notify the intent which keys to use when constructing
-//  the multi-sig output.
+//     the multi-sig output.
 //  2. Call CompileFundingTx afterwards to obtain the funding transaction.
 //
 // If either of these steps fail, then the Cancel method MUST be called.
@@ -107,11 +107,15 @@ func (f *FullIntent) CompileFundingTx(extraInputs []*wire.TxIn,
 
 	// Next, sign all inputs that are ours, collecting the signatures in
 	// order of the inputs.
-	signDesc := input.SignDescriptor{
-		HashType:  txscript.SigHashAll,
-		SigHashes: txscript.NewTxSigHashes(fundingTx),
-	}
+	prevOutFetcher := NewSegWitV0DualFundingPrevOutputFetcher(
+		f.coinSource, extraInputs,
+	)
+	sigHashes := txscript.NewTxSigHashes(fundingTx, prevOutFetcher)
 	for i, txIn := range fundingTx.TxIn {
+		signDesc := input.SignDescriptor{
+			SigHashes:         sigHashes,
+			PrevOutputFetcher: prevOutFetcher,
+		}
 		// We can only sign this input if it's ours, so we'll ask the
 		// coin source if it can map this outpoint into a coin we own.
 		// If not, then we'll continue as it isn't our input.
@@ -129,6 +133,13 @@ func (f *FullIntent) CompileFundingTx(extraInputs []*wire.TxIn,
 			PkScript: info.PkScript,
 		}
 		signDesc.InputIndex = i
+
+		// We support spending a p2tr input ourselves. But not as part
+		// of their inputs.
+		signDesc.HashType = txscript.SigHashAll
+		if txscript.IsPayToTaproot(info.PkScript) {
+			signDesc.HashType = txscript.SigHashDefault
+		}
 
 		// Finally, we'll sign the input as is, and populate the input
 		// with the witness and sigScript (if needed).
@@ -249,22 +260,63 @@ func (w *WalletAssembler) ProvisionChannel(r *Request) (Intent, error) {
 		log.Infof("Performing funding tx coin selection using %v "+
 			"sat/kw as fee rate", int64(r.FeeRate))
 
+		var (
+			// allCoins refers to the entirety of coins in our
+			// wallet that are available for funding a channel.
+			allCoins []Coin
+
+			// manuallySelectedCoins refers to the client-side
+			// selected coins that should be considered available
+			// for funding a channel.
+			manuallySelectedCoins []Coin
+			err                   error
+		)
+
+		// Convert manually selected outpoints to coins.
+		manuallySelectedCoins, err = outpointsToCoins(
+			r.Outpoints, w.cfg.CoinSource.CoinFromOutPoint,
+		)
+		if err != nil {
+			return err
+		}
+
 		// Find all unlocked unspent witness outputs that satisfy the
 		// minimum number of confirmations required. Coin selection in
 		// this function currently ignores the configured coin selection
 		// strategy.
-		coins, err := w.cfg.CoinSource.ListCoins(
+		allCoins, err = w.cfg.CoinSource.ListCoins(
 			r.MinConfs, math.MaxInt32,
 		)
 		if err != nil {
 			return err
 		}
 
+		// Ensure that all manually selected coins remain unspent.
+		unspent := make(map[wire.OutPoint]struct{})
+		for _, coin := range allCoins {
+			unspent[coin.OutPoint] = struct{}{}
+		}
+		for _, coin := range manuallySelectedCoins {
+			if _, ok := unspent[coin.OutPoint]; !ok {
+				return fmt.Errorf("outpoint already spent: %v",
+					coin.OutPoint)
+			}
+		}
+
 		var (
+			coins                []Coin
 			selectedCoins        []Coin
 			localContributionAmt ltcutil.Amount
 			changeAmt            ltcutil.Amount
 		)
+
+		// If outputs were specified manually then we'll take the
+		// corresponding coins as basis for coin selection. Otherwise,
+		// all available coins from our wallet are used.
+		coins = allCoins
+		if len(manuallySelectedCoins) > 0 {
+			coins = manuallySelectedCoins
+		}
 
 		// Perform coin selection over our available, unlocked unspent
 		// outputs in order to find enough coins to meet the funding
@@ -273,8 +325,89 @@ func (w *WalletAssembler) ProvisionChannel(r *Request) (Intent, error) {
 		// If there's no funding amount at all (receiving an inbound
 		// single funder request), then we don't need to perform any
 		// coin selection at all.
-		case r.LocalAmt == 0:
+		case r.LocalAmt == 0 && r.FundUpToMaxAmt == 0:
 			break
+
+		// The local funding amount cannot be used in combination with
+		// the funding up to some maximum amount. If that is the case
+		// we return an error.
+		case r.LocalAmt != 0 && r.FundUpToMaxAmt != 0:
+			return fmt.Errorf("cannot use a local funding amount " +
+				"and fundmax parameters")
+
+		// We cannot use the subtract fees flag while using the funding
+		// up to some maximum amount. If that is the case we return an
+		// error.
+		case r.SubtractFees && r.FundUpToMaxAmt != 0:
+			return fmt.Errorf("cannot subtract fees from local " +
+				"amount while using fundmax parameters")
+
+		// In case this request uses funding up to some maximum amount,
+		// we will call the specialized coin selection function for
+		// that.
+		case r.FundUpToMaxAmt != 0 && r.MinFundAmt != 0:
+
+			// We need to ensure that manually selected coins, which
+			// are spent entirely on the channel funding, leave
+			// enough funds in the wallet to cover for a reserve.
+			reserve := r.WalletReserve
+			if len(manuallySelectedCoins) > 0 {
+				sumCoins := func(coins []Coin) ltcutil.Amount {
+					var sum ltcutil.Amount
+					for _, coin := range coins {
+						sum += ltcutil.Amount(
+							coin.Value,
+						)
+					}
+
+					return sum
+				}
+
+				sumManual := sumCoins(manuallySelectedCoins)
+				sumAll := sumCoins(allCoins)
+
+				// If sufficient reserve funds are available we
+				// don't have to provide for it during coin
+				// selection. The manually selected coins can be
+				// spent entirely on the channel funding. If
+				// the excess of coins cover the reserve
+				// partially then we have to provide for the
+				// rest during coin selection.
+				excess := sumAll - sumManual
+				if excess >= reserve {
+					reserve = 0
+				} else {
+					reserve -= excess
+				}
+			}
+
+			selectedCoins, localContributionAmt, changeAmt,
+				err = CoinSelectUpToAmount(
+				r.FeeRate, r.MinFundAmt, r.FundUpToMaxAmt,
+				reserve, w.cfg.DustLimit, coins,
+			)
+			if err != nil {
+				return err
+			}
+
+			// Now where the actual channel capacity is determined
+			// we can check for local contribution constraints.
+			//
+			// Ensure that the remote channel reserve does not
+			// exceed 20% of the channel capacity.
+			if r.RemoteChanReserve >= localContributionAmt/5 {
+				return fmt.Errorf("remote channel reserve " +
+					"must be less than the %%20 of the " +
+					"channel capacity")
+			}
+			// Ensure that the initial remote balance does not
+			// exceed our local contribution as that would leave a
+			// negative balance on our side.
+			if r.PushAmt >= localContributionAmt {
+				return fmt.Errorf("amount pushed to remote " +
+					"peer for initial state must be " +
+					"below the local funding amount")
+			}
 
 		// In case this request want the fees subtracted from the local
 		// amount, we'll call the specialized method for that. This
@@ -282,7 +415,8 @@ func (w *WalletAssembler) ProvisionChannel(r *Request) (Intent, error) {
 		// from our wallet.
 		case r.SubtractFees:
 			dustLimit := w.cfg.DustLimit
-			selectedCoins, localContributionAmt, changeAmt, err = CoinSelectSubtractFees(
+			selectedCoins, localContributionAmt, changeAmt,
+				err = CoinSelectSubtractFees(
 				r.FeeRate, r.LocalAmt, dustLimit, coins,
 			)
 			if err != nil {
@@ -342,6 +476,7 @@ func (w *WalletAssembler) ProvisionChannel(r *Request) (Intent, error) {
 			ShimIntent: ShimIntent{
 				localFundingAmt:  localContributionAmt,
 				remoteFundingAmt: r.RemoteAmt,
+				musig2:           r.Musig2,
 			},
 			InputCoins: selectedCoins,
 			coinLocker: w.cfg.CoinLocker,
@@ -364,6 +499,27 @@ func (w *WalletAssembler) ProvisionChannel(r *Request) (Intent, error) {
 	return intent, nil
 }
 
+// outpointsToCoins maps outpoints to coins in our wallet iff these coins are
+// existent and returns an error otherwise.
+func outpointsToCoins(outpoints []wire.OutPoint,
+	coinFromOutPoint func(wire.OutPoint) (*Coin, error)) ([]Coin, error) {
+
+	var selectedCoins []Coin
+	for _, outpoint := range outpoints {
+		coin, err := coinFromOutPoint(
+			outpoint,
+		)
+		if err != nil {
+			return nil, err
+		}
+		selectedCoins = append(
+			selectedCoins, *coin,
+		)
+	}
+
+	return selectedCoins, nil
+}
+
 // FundingTxAvailable is an empty method that an assembler can implement to
 // signal to callers that its able to provide the funding transaction for the
 // channel via the intent it returns.
@@ -374,3 +530,57 @@ func (w *WalletAssembler) FundingTxAvailable() {}
 // A compile-time assertion to ensure the WalletAssembler meets the
 // FundingTxAssembler interface.
 var _ FundingTxAssembler = (*WalletAssembler)(nil)
+
+// SegWitV0DualFundingPrevOutputFetcher is a txscript.PrevOutputFetcher that
+// knows about local and remote funding inputs.
+//
+// TODO(guggero): Support dual funding with p2tr inputs, currently only segwit
+// v0 inputs are supported.
+type SegWitV0DualFundingPrevOutputFetcher struct {
+	local  CoinSource
+	remote *txscript.MultiPrevOutFetcher
+}
+
+var _ txscript.PrevOutputFetcher = (*SegWitV0DualFundingPrevOutputFetcher)(nil)
+
+// NewSegWitV0DualFundingPrevOutputFetcher creates a new
+// txscript.PrevOutputFetcher from the given local and remote inputs.
+//
+// NOTE: Since the actual pkScript and amounts aren't passed in, this will just
+// make sure that nothing will panic when creating a SegWit v0 sighash. But this
+// code will NOT WORK for transactions that spend any _remote_ Taproot inputs!
+// So basically dual-funding won't work with Taproot inputs unless the UTXO info
+// is exchanged between the peers.
+func NewSegWitV0DualFundingPrevOutputFetcher(localSource CoinSource,
+	remoteInputs []*wire.TxIn) txscript.PrevOutputFetcher {
+
+	remote := txscript.NewMultiPrevOutFetcher(nil)
+	for _, inp := range remoteInputs {
+		// We add an empty output to prevent the sighash calculation
+		// from panicking. But this will always detect the inputs as
+		// SegWig v0!
+		remote.AddPrevOut(inp.PreviousOutPoint, &wire.TxOut{})
+	}
+	return &SegWitV0DualFundingPrevOutputFetcher{
+		local:  localSource,
+		remote: remote,
+	}
+}
+
+// FetchPrevOutput attempts to fetch the previous output referenced by the
+// passed outpoint.
+//
+// NOTE: This is a part of the txscript.PrevOutputFetcher interface.
+func (d *SegWitV0DualFundingPrevOutputFetcher) FetchPrevOutput(
+	op wire.OutPoint) *wire.TxOut {
+
+	// Try the local source first. This will return nil if our internal
+	// wallet doesn't know the outpoint.
+	coin, err := d.local.CoinFromOutPoint(op)
+	if err == nil && coin != nil {
+		return &coin.TxOut
+	}
+
+	// Fall back to the remote
+	return d.remote.FetchPrevOutput(op)
+}

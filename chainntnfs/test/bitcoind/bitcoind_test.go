@@ -9,8 +9,16 @@ import (
 	chainntnfstest "github.com/ltcsuite/lnd/chainntnfs/test"
 )
 
-// TestInterfaces executes the generic notifier test suite against a bitcoind
+// TestInterfaces executes the generic notifier test suite against a litecoind
 // powered chain notifier.
 func TestInterfaces(t *testing.T) {
-	chainntnfstest.TestInterfaces(t, "bitcoind")
+	t.Run("litecoind", func(st *testing.T) {
+		st.Parallel()
+		chainntnfstest.TestInterfaces(st, "litecoind")
+	})
+
+	t.Run("litecoind rpc polling", func(st *testing.T) {
+		st.Parallel()
+		chainntnfstest.TestInterfaces(st, "litecoind-rpc-polling")
+	})
 }

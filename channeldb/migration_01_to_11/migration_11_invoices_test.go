@@ -10,7 +10,7 @@ import (
 	"github.com/ltcsuite/lnd/zpay32"
 	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/btcec/v2/ecdsa"
-	bitcoinCfg "github.com/ltcsuite/ltcd/chaincfg" //TODO(losh) : check if should revert
+	bitcoinCfg "github.com/ltcsuite/ltcd/chaincfg"
 	litecoinCfg "github.com/ltcsuite/ltcd/chaincfg"
 )
 

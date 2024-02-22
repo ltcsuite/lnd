@@ -4,7 +4,7 @@
 # /make/builder.Dockerfile
 # /.github/workflows/main.yml
 # /.github/workflows/release.yml
-FROM golang:1.17.3-alpine as builder
+FROM golang:1.21.0-alpine as builder
 
 LABEL maintainer="Loshan <loshan1212@gmail.com>"
 
@@ -12,7 +12,7 @@ LABEL maintainer="Loshan <loshan1212@gmail.com>"
 # queries required to connect to linked containers succeed.
 ENV GODEBUG netdns=cgo
 
-# Install dependencies and install/build lnd.
+# Install dependencies.
 RUN apk add --no-cache --update alpine-sdk \
     git \
     make 
@@ -20,9 +20,10 @@ RUN apk add --no-cache --update alpine-sdk \
 # Copy in the local repository to build from.
 COPY . /go/src/github.com/ltcsuite/lnd
 
+#  Install/build lnd.
 RUN cd /go/src/github.com/ltcsuite/lnd \
-    &&  make \
-    &&  make install tags="signrpc walletrpc chainrpc invoicesrpc"
+&&  make \
+&&  make install tags="signrpc walletrpc chainrpc invoicesrpc peersrpc"
 
 # Start a new, final image to reduce size.
 FROM alpine as final

@@ -8,6 +8,7 @@ import (
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/kvdb"
+	"github.com/ltcsuite/lnd/lnmock"
 	"github.com/ltcsuite/lnd/lntest/mock"
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwallet"
@@ -23,7 +24,7 @@ const (
 // timed out.
 func TestHtlcOutgoingResolverTimeout(t *testing.T) {
 	t.Parallel()
-	defer timeout(t)()
+	defer timeout()()
 
 	// Setup the resolver with our test resolution.
 	ctx := newOutgoingResolverTestContext(t)
@@ -33,7 +34,7 @@ func TestHtlcOutgoingResolverTimeout(t *testing.T) {
 
 	// Notify arrival of the block after which the timeout path of the htlc
 	// unlocks.
-	ctx.notifyEpoch(outgoingContestHtlcExpiry - 1)
+	ctx.notifyEpoch(outgoingContestHtlcExpiry)
 
 	// Assert that the resolver finishes without error and transforms in a
 	// timeout resolver.
@@ -44,7 +45,7 @@ func TestHtlcOutgoingResolverTimeout(t *testing.T) {
 // is claimed by the remote party.
 func TestHtlcOutgoingResolverRemoteClaim(t *testing.T) {
 	t.Parallel()
-	defer timeout(t)()
+	defer timeout()()
 
 	// Setup the resolver with our test resolution and start the resolution
 	// process.
@@ -183,7 +184,7 @@ func newOutgoingResolverTestContext(t *testing.T) *outgoingResolverTestContext {
 			htlc: channeldb.HTLC{
 				Amt:       lnwire.MilliSatoshi(testHtlcAmount),
 				RHash:     testResHash,
-				OnionBlob: testOnionBlob,
+				OnionBlob: lnmock.MockOnion(),
 			},
 		},
 	}

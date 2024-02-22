@@ -15,12 +15,12 @@ import (
 //
 // Example output:
 //
-// map[string]interface{}{
-// 	hex("1234"): map[string]interface{}{
-// 		"human-readable": hex("102030"),
-// 		hex("1111"): hex("5783492373"),
-// 	},
-// }
+//	map[string]interface{}{
+//		hex("1234"): map[string]interface{}{
+//			"human-readable": hex("102030"),
+//			hex("1111"): hex("5783492373"),
+//		},
+//	}
 func DumpDB(tx kvdb.RTx, rootKey []byte) error {
 	bucket := tx.ReadBucket(rootKey)
 	if bucket == nil {
@@ -72,7 +72,6 @@ func restoreDB(bucket kvdb.RwBucket, data map[string]interface{}) error {
 		key := []byte(k)
 
 		switch value := v.(type) {
-
 		// Key contains value.
 		case string:
 			err := bucket.Put(key, []byte(value))
@@ -114,7 +113,6 @@ func verifyDB(bucket kvdb.RBucket, data map[string]interface{}) error {
 		key := []byte(k)
 
 		switch value := v.(type) {
-
 		// Key contains value.
 		case string:
 			expectedValue := []byte(value)

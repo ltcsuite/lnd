@@ -2,7 +2,6 @@ package routing
 
 import (
 	"fmt"
-	"io/ioutil"
 	"math"
 	"os"
 	"testing"
@@ -11,6 +10,8 @@ import (
 	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/routing/route"
+	"github.com/ltcsuite/lnd/zpay32"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -48,6 +49,7 @@ type integratedRoutingContext struct {
 
 	mcCfg          MissionControlConfig
 	pathFindingCfg PathFindingConfig
+	routeHints     [][]zpay32.HopHint
 }
 
 // newIntegratedRoutingContext instantiates a new integrated routing test
@@ -67,6 +69,15 @@ func newIntegratedRoutingContext(t *testing.T) *integratedRoutingContext {
 	// defaults would break the unit tests. The actual values picked aren't
 	// critical to excite certain behavior, but do need to be aligned with
 	// the test case assertions.
+	aCfg := AprioriConfig{
+		PenaltyHalfLife:       30 * time.Minute,
+		AprioriHopProbability: 0.6,
+		AprioriWeight:         0.5,
+		CapacityFraction:      testCapacityFraction,
+	}
+	estimator, err := NewAprioriEstimator(aCfg)
+	require.NoError(t, err)
+
 	ctx := integratedRoutingContext{
 		t:           t,
 		graph:       graph,
@@ -74,11 +85,7 @@ func newIntegratedRoutingContext(t *testing.T) *integratedRoutingContext {
 		finalExpiry: 40,
 
 		mcCfg: MissionControlConfig{
-			ProbabilityEstimatorCfg: ProbabilityEstimatorCfg{
-				PenaltyHalfLife:       30 * time.Minute,
-				AprioriHopProbability: 0.6,
-				AprioriWeight:         0.5,
-			},
+			Estimator: estimator,
 		},
 
 		pathFindingCfg: PathFindingConfig{
@@ -122,13 +129,20 @@ func (c *integratedRoutingContext) testPayment(maxParts uint32,
 	)
 
 	// Create temporary database for mission control.
-	file, err := ioutil.TempFile("", "*.db")
+	file, err := os.CreateTemp("", "*.db")
 	if err != nil {
 		c.t.Fatal(err)
 	}
 
 	dbPath := file.Name()
-	defer os.Remove(dbPath)
+	c.t.Cleanup(func() {
+		if err := file.Close(); err != nil {
+			c.t.Fatal(err)
+		}
+		if err := os.Remove(dbPath); err != nil {
+			c.t.Fatal(err)
+		}
+	})
 
 	db, err := kvdb.Open(
 		kvdb.BoltBackendName, dbPath, true, kvdb.DefaultDBTimeout,
@@ -136,7 +150,11 @@ func (c *integratedRoutingContext) testPayment(maxParts uint32,
 	if err != nil {
 		c.t.Fatal(err)
 	}
-	defer db.Close()
+	c.t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			c.t.Fatal(err)
+		}
+	})
 
 	// Instantiate a new mission control with the current configuration
 	// values.
@@ -167,6 +185,7 @@ func (c *integratedRoutingContext) testPayment(maxParts uint32,
 		Amount:         c.amt,
 		CltvLimit:      math.MaxUint32,
 		MaxParts:       maxParts,
+		RouteHints:     c.routeHints,
 	}
 
 	var paymentHash [32]byte

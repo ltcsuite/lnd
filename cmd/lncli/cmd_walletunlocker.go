@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lightninglabs/protobuf-hex-display/jsonpb"
 	"github.com/ltcsuite/lnd/lncfg"
 	"github.com/ltcsuite/lnd/lnrpc"
 	"github.com/ltcsuite/lnd/lnrpc/walletrpc"
@@ -149,7 +148,6 @@ func create(ctx *cli.Context) error {
 
 	warningLoop:
 		for {
-
 			fmt.Println()
 			fmt.Printf("WARNING: You are attempting to restore from a " +
 				"static channel backup (SCB) file.\nThis action will CLOSE " +
@@ -688,6 +686,10 @@ var createWatchOnlyCommand = cli.Command{
 	Read the documentation under docs/remote-signing.md for more information
 	on how to set up a remote signing node over RPC.
 	`,
+	Flags: []cli.Flag{
+		statelessInitFlag,
+		saveToFlag,
+	},
 	Action: actionDecorator(createWatchOnly),
 }
 
@@ -700,6 +702,15 @@ func createWatchOnly(ctx *cli.Context) error {
 		return cli.ShowCommandHelp(ctx, "createwatchonly")
 	}
 
+	// Should the daemon be initialized stateless? Then we expect an answer
+	// with the admin macaroon later. Because the --save_to is related to
+	// stateless init, it doesn't make sense to be set on its own.
+	statelessInit := ctx.Bool(statelessInitFlag.Name)
+	if !statelessInit && ctx.IsSet(saveToFlag.Name) {
+		return fmt.Errorf("cannot set save_to parameter without " +
+			"stateless_init")
+	}
+
 	jsonFile := lncfg.CleanAndExpandPath(ctx.Args().First())
 	jsonBytes, err := ioutil.ReadFile(jsonFile)
 	if err != nil {
@@ -708,7 +719,7 @@ func createWatchOnly(ctx *cli.Context) error {
 	}
 
 	jsonAccts := &walletrpc.ListAccountsResponse{}
-	err = jsonpb.Unmarshal(bytes.NewReader(jsonBytes), jsonAccts)
+	err = lnrpc.ProtoJSONUnmarshalOpts.Unmarshal(jsonBytes, jsonAccts)
 	if err != nil {
 		return fmt.Errorf("error parsing JSON: %v", err)
 	}
@@ -755,12 +766,21 @@ func createWatchOnly(ctx *cli.Context) error {
 		}
 	}
 
-	_, err = client.InitWallet(ctxc, &lnrpc.InitWalletRequest{
+	initResp, err := client.InitWallet(ctxc, &lnrpc.InitWalletRequest{
 		WalletPassword: walletPassword,
 		WatchOnly:      rpcResp,
 		RecoveryWindow: recoveryWindow,
+		StatelessInit:  statelessInit,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+
+	if statelessInit {
+		return storeOrPrintAdminMac(ctx, initResp.AdminMacaroon)
+	}
+
+	return nil
 }
 
 // storeOrPrintAdminMac either stores the admin macaroon to a file specified or
@@ -768,9 +788,11 @@ func createWatchOnly(ctx *cli.Context) error {
 func storeOrPrintAdminMac(ctx *cli.Context, adminMac []byte) error {
 	// The user specified the optional --save_to parameter. We'll save the
 	// macaroon to that file.
-	if ctx.IsSet("save_to") {
-		macSavePath := lncfg.CleanAndExpandPath(ctx.String("save_to"))
-		err := ioutil.WriteFile(macSavePath, adminMac, 0644)
+	if ctx.IsSet(saveToFlag.Name) {
+		macSavePath := lncfg.CleanAndExpandPath(ctx.String(
+			saveToFlag.Name,
+		))
+		err := os.WriteFile(macSavePath, adminMac, 0644)
 		if err != nil {
 			_ = os.Remove(macSavePath)
 			return err
@@ -806,7 +828,7 @@ func askRecoveryWindow() (int32, error) {
 			return defaultRecoveryWindow, nil
 		}
 
-		lookAhead, err := strconv.Atoi(answer)
+		lookAhead, err := strconv.ParseInt(answer, 10, 32)
 		if err != nil {
 			fmt.Printf("Unable to parse recovery window: %v\n", err)
 			continue

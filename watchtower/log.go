@@ -4,6 +4,8 @@ import (
 	"github.com/btcsuite/btclog"
 	"github.com/ltcsuite/lnd/build"
 	"github.com/ltcsuite/lnd/watchtower/lookout"
+	"github.com/ltcsuite/lnd/watchtower/wtclient"
+	"github.com/ltcsuite/lnd/watchtower/wtdb"
 	"github.com/ltcsuite/lnd/watchtower/wtserver"
 )
 
@@ -30,4 +32,6 @@ func UseLogger(logger btclog.Logger) {
 	log = logger
 	lookout.UseLogger(logger)
 	wtserver.UseLogger(logger)
+	wtclient.UseLogger(logger)
+	wtdb.UseLogger(logger)
 }

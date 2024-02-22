@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb/models"
 	"github.com/ltcsuite/lnd/htlcswitch/hop"
 	"github.com/ltcsuite/lnd/lnwire"
 )
@@ -19,7 +20,7 @@ var EmptyCircuitKey CircuitKey
 // HTLCs in a circuit. Circuits are identified primarily by the circuit key of
 // the incoming HTLC. However, a circuit may also be referenced by its outgoing
 // circuit key after the HTLC has been forwarded via the outgoing link.
-type CircuitKey = channeldb.CircuitKey
+type CircuitKey = models.CircuitKey
 
 // PaymentCircuit is used by the switch as placeholder between when the
 // switch makes a forwarding decision and the outgoing link determines the

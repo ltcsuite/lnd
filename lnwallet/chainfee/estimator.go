@@ -85,7 +85,6 @@ type StaticEstimator struct {
 
 // NewStaticEstimator returns a new static fee estimator instance.
 func NewStaticEstimator(feePerKW, relayFee SatPerKWeight) *StaticEstimator {
-
 	return &StaticEstimator{
 		feePerKW: feePerKW,
 		relayFee: relayFee,
@@ -190,7 +189,7 @@ func (b *BtcdEstimator) Start() error {
 }
 
 // fetchMinRelayFee fetches and returns the minimum relay fee in sat/kb from
-// the btcd backend.
+// the ltcd backend.
 func (b *BtcdEstimator) fetchMinRelayFee() (SatPerKWeight, error) {
 	info, err := b.ltcdConn.GetInfo()
 	if err != nil {
@@ -611,7 +610,7 @@ func (w *WebAPIEstimator) EstimateFeePerKW(numBlocks uint32) (
 	// returned. We will log the error and return the fall back fee rate
 	// instead.
 	if err != nil {
-		log.Errorf("unable to query estimator: %v", err)
+		log.Errorf("Unable to query estimator: %v", err)
 	}
 
 	// If the result is too low, then we'll clamp it to our current fee

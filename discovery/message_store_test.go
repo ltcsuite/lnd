@@ -2,9 +2,7 @@ package discovery
 
 import (
 	"bytes"
-	"io/ioutil"
 	"math/rand"
-	"os"
 	"reflect"
 	"testing"
 
@@ -13,40 +11,32 @@ import (
 	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/stretchr/testify/require"
 )
 
-func createTestMessageStore(t *testing.T) (*MessageStore, func()) {
+func createTestMessageStore(t *testing.T) *MessageStore {
 	t.Helper()
 
-	tempDir, err := ioutil.TempDir("", "channeldb")
+	db, err := channeldb.Open(t.TempDir())
 	if err != nil {
-		t.Fatalf("unable to create temp dir: %v", err)
-	}
-	db, err := channeldb.Open(tempDir)
-	if err != nil {
-		os.RemoveAll(tempDir)
 		t.Fatalf("unable to open db: %v", err)
 	}
 
-	cleanUp := func() {
+	t.Cleanup(func() {
 		db.Close()
-		os.RemoveAll(tempDir)
-	}
+	})
 
 	store, err := NewMessageStore(db)
 	if err != nil {
-		cleanUp()
 		t.Fatalf("unable to initialize message store: %v", err)
 	}
 
-	return store, cleanUp
+	return store
 }
 
 func randPubKey(t *testing.T) *btcec.PublicKey {
 	priv, err := btcec.NewPrivateKey()
-	if err != nil {
-		t.Fatalf("unable to create private key: %v", err)
-	}
+	require.NoError(t, err, "unable to create private key")
 
 	return priv.PubKey()
 }
@@ -82,8 +72,7 @@ func TestMessageStoreMessages(t *testing.T) {
 	t.Parallel()
 
 	// We'll start by creating our test message store.
-	msgStore, cleanUp := createTestMessageStore(t)
-	defer cleanUp()
+	msgStore := createTestMessageStore(t)
 
 	// We'll then create some test messages for two test peers, and none for
 	// an additional test peer.
@@ -215,8 +204,7 @@ func TestMessageStoreUnsupportedMessage(t *testing.T) {
 	t.Parallel()
 
 	// We'll start by creating our test message store.
-	msgStore, cleanUp := createTestMessageStore(t)
-	defer cleanUp()
+	msgStore := createTestMessageStore(t)
 
 	// Create a message that is known to not be supported by the store.
 	peer := randCompressedPubKey(t)
@@ -242,24 +230,18 @@ func TestMessageStoreUnsupportedMessage(t *testing.T) {
 		messageStore := tx.ReadWriteBucket(messageStoreBucket)
 		return messageStore.Put(msgKey, rawMsg.Bytes())
 	}, func() {})
-	if err != nil {
-		t.Fatalf("unable to add unsupported message to store: %v", err)
-	}
+	require.NoError(t, err, "unable to add unsupported message to store")
 
 	// Finally, we'll check that the store can properly filter out messages
 	// that are currently unknown to it. We'll make sure this is done for
 	// both Messages and MessagesForPeer.
 	totalMsgs, err := msgStore.Messages()
-	if err != nil {
-		t.Fatalf("unable to retrieve messages: %v", err)
-	}
+	require.NoError(t, err, "unable to retrieve messages")
 	if len(totalMsgs) != 0 {
 		t.Fatalf("expected to filter out unsupported message")
 	}
 	peerMsgs, err := msgStore.MessagesForPeer(peer)
-	if err != nil {
-		t.Fatalf("unable to retrieve peer messages: %v", err)
-	}
+	require.NoError(t, err, "unable to retrieve peer messages")
 	if len(peerMsgs) != 0 {
 		t.Fatalf("expected to filter out unsupported message")
 	}
@@ -270,8 +252,7 @@ func TestMessageStoreUnsupportedMessage(t *testing.T) {
 func TestMessageStoreDeleteMessage(t *testing.T) {
 	t.Parallel()
 
-	msgStore, cleanUp := createTestMessageStore(t)
-	defer cleanUp()
+	msgStore := createTestMessageStore(t)
 
 	// assertMsg is a helper closure we'll use to ensure a message
 	// does/doesn't exist within the store.

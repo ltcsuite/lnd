@@ -1,12 +1,13 @@
 // Copyright (c) 2013-2017 The ltcsuite developers
 // Copyright (c) 2015-2016 The Decred developers
-// Heavily inspired by https://github.com/ltcsuite/ltcd/blob/master/version.go
-// Copyright (C) 2015-2017 The Lightning Network Developers
+// Heavily inspired by https://github.com/btcsuite/btcd/blob/master/version.go
+// Copyright (C) 2015-2022 The Lightning Network Developers
 
 package build
 
 import (
 	"fmt"
+	"runtime/debug"
 	"strings"
 )
 
@@ -17,16 +18,14 @@ var (
 	// -ldflags during compilation.
 	Commit string
 
-	// CommitHash stores the current commit hash of this build, this should
-	// be set using the -ldflags during compilation.
+	// CommitHash stores the current commit hash of this build.
 	CommitHash string
 
-	// RawTags contains the raw set of build tags, separated by commas. This
-	// should be set using -ldflags during compilation.
+	// RawTags contains the raw set of build tags, separated by commas.
 	RawTags string
 
 	// GoVersion stores the go version that the executable was compiled
-	// with. This hsould be set using -ldflags during compilation.
+	// with.
 	GoVersion string
 )
 
@@ -41,14 +40,14 @@ const (
 	AppMajor uint = 0
 
 	// AppMinor defines the minor version of this binary.
-	AppMinor uint = 14
+	AppMinor uint = 17
 
 	// AppPatch defines the application patch for this binary.
-	AppPatch uint = 2
+	AppPatch uint = 3
 
-	// AppPreRelease MUST only contain characters from semanticAlphabet
-	// per the semantic versioning spec.
-	AppPreRelease = "beta.rc3"
+	// AppPreRelease MUST only contain characters from semanticAlphabet per
+	// the semantic versioning spec.
+	AppPreRelease = "beta"
 )
 
 func init() {
@@ -60,6 +59,20 @@ func init() {
 		if !strings.ContainsRune(semanticAlphabet, r) {
 			panic(fmt.Errorf("rune: %v is not in the semantic "+
 				"alphabet", r))
+		}
+	}
+
+	// Get build information from the runtime.
+	if info, ok := debug.ReadBuildInfo(); ok {
+		GoVersion = info.GoVersion
+		for _, setting := range info.Settings {
+			switch setting.Key {
+			case "vcs.revision":
+				CommitHash = setting.Value
+
+			case "-tags":
+				RawTags = setting.Value
+			}
 		}
 	}
 }

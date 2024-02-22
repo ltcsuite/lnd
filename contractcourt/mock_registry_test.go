@@ -1,7 +1,7 @@
 package contractcourt
 
 import (
-	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb/models"
 	"github.com/ltcsuite/lnd/invoices"
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwire"
@@ -23,7 +23,7 @@ type mockRegistry struct {
 
 func (r *mockRegistry) NotifyExitHopHtlc(payHash lntypes.Hash,
 	paidAmount lnwire.MilliSatoshi, expiry uint32, currentHeight int32,
-	circuitKey channeldb.CircuitKey, hodlChan chan<- interface{},
+	circuitKey models.CircuitKey, hodlChan chan<- interface{},
 	payload invoices.Payload) (invoices.HtlcResolution, error) {
 
 	r.notifyChan <- notifyExitHopData{
@@ -39,8 +39,8 @@ func (r *mockRegistry) NotifyExitHopHtlc(payHash lntypes.Hash,
 
 func (r *mockRegistry) HodlUnsubscribeAll(subscriber chan<- interface{}) {}
 
-func (r *mockRegistry) LookupInvoice(lntypes.Hash) (channeldb.Invoice,
+func (r *mockRegistry) LookupInvoice(lntypes.Hash) (invoices.Invoice,
 	error) {
 
-	return channeldb.Invoice{}, channeldb.ErrInvoiceNotFound
+	return invoices.Invoice{}, invoices.ErrInvoiceNotFound
 }

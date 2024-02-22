@@ -134,7 +134,8 @@ type Wallet interface {
 	PsbtFundingFinalize([32]byte, *psbt.Packet, *wire.MsgTx) error
 
 	// PublishTransaction performs cursory validation (dust checks, etc),
-	// then finally broadcasts the passed transaction to the Bitcoin network.
+	// then finally broadcasts the passed transaction to the Bitcoin
+	// network.
 	PublishTransaction(*wire.MsgTx, string) error
 
 	// CancelFundingIntent allows a caller to cancel a previously registered
@@ -229,19 +230,31 @@ func (b *Batcher) BatchFund(ctx context.Context,
 				err)
 		}
 
+		//nolint:lll
 		fundingReq, err := b.cfg.RequestParser(&lnrpc.OpenChannelRequest{
-			SatPerVbyte:        uint64(req.SatPerVbyte),
-			NodePubkey:         rpcChannel.NodePubkey,
-			LocalFundingAmount: rpcChannel.LocalFundingAmount,
-			PushSat:            rpcChannel.PushSat,
-			TargetConf:         req.TargetConf,
-			Private:            rpcChannel.Private,
-			MinHtlcMsat:        rpcChannel.MinHtlcMsat,
-			RemoteCsvDelay:     rpcChannel.RemoteCsvDelay,
-			MinConfs:           req.MinConfs,
-			SpendUnconfirmed:   req.SpendUnconfirmed,
-			CloseAddress:       rpcChannel.CloseAddress,
-			CommitmentType:     rpcChannel.CommitmentType,
+			SatPerVbyte:                uint64(req.SatPerVbyte),
+			TargetConf:                 req.TargetConf,
+			MinConfs:                   req.MinConfs,
+			SpendUnconfirmed:           req.SpendUnconfirmed,
+			NodePubkey:                 rpcChannel.NodePubkey,
+			LocalFundingAmount:         rpcChannel.LocalFundingAmount,
+			PushSat:                    rpcChannel.PushSat,
+			Private:                    rpcChannel.Private,
+			MinHtlcMsat:                rpcChannel.MinHtlcMsat,
+			RemoteCsvDelay:             rpcChannel.RemoteCsvDelay,
+			CloseAddress:               rpcChannel.CloseAddress,
+			RemoteMaxValueInFlightMsat: rpcChannel.RemoteMaxValueInFlightMsat,
+			RemoteMaxHtlcs:             rpcChannel.RemoteMaxHtlcs,
+			MaxLocalCsv:                rpcChannel.MaxLocalCsv,
+			CommitmentType:             rpcChannel.CommitmentType,
+			ZeroConf:                   rpcChannel.ZeroConf,
+			ScidAlias:                  rpcChannel.ScidAlias,
+			BaseFee:                    rpcChannel.BaseFee,
+			FeeRate:                    rpcChannel.FeeRate,
+			UseBaseFee:                 rpcChannel.UseBaseFee,
+			UseFeeRate:                 rpcChannel.UseFeeRate,
+			RemoteChanReserveSat:       rpcChannel.RemoteChanReserveSat,
+			Memo:                       rpcChannel.Memo,
 			FundingShim: &lnrpc.FundingShim{
 				Shim: &lnrpc.FundingShim_PsbtShim{
 					PsbtShim: &lnrpc.PsbtShim{
@@ -319,6 +332,7 @@ func (b *Batcher) BatchFund(ctx context.Context,
 	// anyway.
 	firstReq := b.channels[0].fundingReq
 	feeRateSatPerKVByte := firstReq.FundingFeePerKw.FeePerKVByte()
+	changeType := walletrpc.ChangeAddressType_CHANGE_ADDRESS_TYPE_P2TR
 	fundPsbtReq := &walletrpc.FundPsbtRequest{
 		Template: &walletrpc.FundPsbtRequest_Raw{
 			Raw: txTemplate,
@@ -328,6 +342,7 @@ func (b *Batcher) BatchFund(ctx context.Context,
 		},
 		MinConfs:         firstReq.MinConfs,
 		SpendUnconfirmed: firstReq.MinConfs == 0,
+		ChangeType:       changeType,
 	}
 	fundPsbtResp, err := b.cfg.WalletKitServer.FundPsbt(ctx, fundPsbtReq)
 	if err != nil {
@@ -487,6 +502,7 @@ func (b *Batcher) cleanup(ctx context.Context) {
 		rpcOP := &lnrpc.OutPoint{
 			OutputIndex: lockedUTXO.Outpoint.OutputIndex,
 			TxidBytes:   lockedUTXO.Outpoint.TxidBytes,
+			TxidStr:     lockedUTXO.Outpoint.TxidStr,
 		}
 		_, err := b.cfg.WalletKitServer.ReleaseOutput(
 			ctx, &walletrpc.ReleaseOutputRequest{

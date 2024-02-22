@@ -19,183 +19,222 @@ const _ = grpc.SupportPackageIsVersion7
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type WalletKitClient interface {
-	//
-	//ListUnspent returns a list of all utxos spendable by the wallet with a
-	//number of confirmations between the specified minimum and maximum.
+	// ListUnspent returns a list of all utxos spendable by the wallet with a
+	// number of confirmations between the specified minimum and maximum. By
+	// default, all utxos are listed. To list only the unconfirmed utxos, set
+	// the unconfirmed_only to true.
 	ListUnspent(ctx context.Context, in *ListUnspentRequest, opts ...grpc.CallOption) (*ListUnspentResponse, error)
-	//
-	//LeaseOutput locks an output to the given ID, preventing it from being
-	//available for any future coin selection attempts. The absolute time of the
-	//lock's expiration is returned. The expiration of the lock can be extended by
-	//successive invocations of this RPC. Outputs can be unlocked before their
-	//expiration through `ReleaseOutput`.
+	// LeaseOutput locks an output to the given ID, preventing it from being
+	// available for any future coin selection attempts. The absolute time of the
+	// lock's expiration is returned. The expiration of the lock can be extended by
+	// successive invocations of this RPC. Outputs can be unlocked before their
+	// expiration through `ReleaseOutput`.
 	LeaseOutput(ctx context.Context, in *LeaseOutputRequest, opts ...grpc.CallOption) (*LeaseOutputResponse, error)
-	//
-	//ReleaseOutput unlocks an output, allowing it to be available for coin
-	//selection if it remains unspent. The ID should match the one used to
-	//originally lock the output.
+	// ReleaseOutput unlocks an output, allowing it to be available for coin
+	// selection if it remains unspent. The ID should match the one used to
+	// originally lock the output.
 	ReleaseOutput(ctx context.Context, in *ReleaseOutputRequest, opts ...grpc.CallOption) (*ReleaseOutputResponse, error)
-	//
-	//ListLeases lists all currently locked utxos.
+	// ListLeases lists all currently locked utxos.
 	ListLeases(ctx context.Context, in *ListLeasesRequest, opts ...grpc.CallOption) (*ListLeasesResponse, error)
-	//
-	//DeriveNextKey attempts to derive the *next* key within the key family
-	//(account in BIP43) specified. This method should return the next external
-	//child within this branch.
+	// DeriveNextKey attempts to derive the *next* key within the key family
+	// (account in BIP43) specified. This method should return the next external
+	// child within this branch.
 	DeriveNextKey(ctx context.Context, in *KeyReq, opts ...grpc.CallOption) (*signrpc.KeyDescriptor, error)
-	//
-	//DeriveKey attempts to derive an arbitrary key specified by the passed
-	//KeyLocator.
+	// DeriveKey attempts to derive an arbitrary key specified by the passed
+	// KeyLocator.
 	DeriveKey(ctx context.Context, in *signrpc.KeyLocator, opts ...grpc.CallOption) (*signrpc.KeyDescriptor, error)
-	//
-	//NextAddr returns the next unused address within the wallet.
+	// NextAddr returns the next unused address within the wallet.
 	NextAddr(ctx context.Context, in *AddrRequest, opts ...grpc.CallOption) (*AddrResponse, error)
-	//
-	//ListAccounts retrieves all accounts belonging to the wallet by default. A
-	//name and key scope filter can be provided to filter through all of the
-	//wallet accounts and return only those matching.
+	// ListAccounts retrieves all accounts belonging to the wallet by default. A
+	// name and key scope filter can be provided to filter through all of the
+	// wallet accounts and return only those matching.
 	ListAccounts(ctx context.Context, in *ListAccountsRequest, opts ...grpc.CallOption) (*ListAccountsResponse, error)
+	// RequiredReserve returns the minimum amount of satoshis that should be kept
+	// in the wallet in order to fee bump anchor channels if necessary. The value
+	// scales with the number of public anchor channels but is capped at a maximum.
+	RequiredReserve(ctx context.Context, in *RequiredReserveRequest, opts ...grpc.CallOption) (*RequiredReserveResponse, error)
+	// ListAddresses retrieves all the addresses along with their balance. An
+	// account name filter can be provided to filter through all of the
+	// wallet accounts and return the addresses of only those matching.
+	ListAddresses(ctx context.Context, in *ListAddressesRequest, opts ...grpc.CallOption) (*ListAddressesResponse, error)
+	// SignMessageWithAddr returns the compact signature (base64 encoded) created
+	// with the private key of the provided address. This requires the address
+	// to be solely based on a public key lock (no scripts). Obviously the internal
+	// lnd wallet has to possess the private key of the address otherwise
+	// an error is returned.
 	//
-	//ImportAccount imports an account backed by an account extended public key.
-	//The master key fingerprint denotes the fingerprint of the root key
-	//corresponding to the account public key (also known as the key with
-	//derivation path m/). This may be required by some hardware wallets for
-	//proper identification and signing.
+	// This method aims to provide full compatibility with the bitcoin-core and
+	// btcd implementation. Bitcoin-core's algorithm is not specified in a
+	// BIP and only applicable for legacy addresses. This method enhances the
+	// signing for additional address types: P2WKH, NP2WKH, P2TR.
+	// For P2TR addresses this represents a special case. ECDSA is used to create
+	// a compact signature which makes the public key of the signature recoverable.
+	SignMessageWithAddr(ctx context.Context, in *SignMessageWithAddrRequest, opts ...grpc.CallOption) (*SignMessageWithAddrResponse, error)
+	// VerifyMessageWithAddr returns the validity and the recovered public key of
+	// the provided compact signature (base64 encoded). The verification is
+	// twofold. First the validity of the signature itself is checked and then
+	// it is verified that the recovered public key of the signature equals
+	// the public key of the provided address. There is no dependence on the
+	// private key of the address therefore also external addresses are allowed
+	// to verify signatures.
+	// Supported address types are P2PKH, P2WKH, NP2WKH, P2TR.
 	//
-	//The address type can usually be inferred from the key's version, but may be
-	//required for certain keys to map them into the proper scope.
+	// This method is the counterpart of the related signing method
+	// (SignMessageWithAddr) and aims to provide full compatibility to
+	// bitcoin-core's implementation. Although bitcoin-core/btcd only provide
+	// this functionality for legacy addresses this function enhances it to
+	// the address types: P2PKH, P2WKH, NP2WKH, P2TR.
 	//
-	//For BIP-0044 keys, an address type must be specified as we intend to not
-	//support importing BIP-0044 keys into the wallet using the legacy
-	//pay-to-pubkey-hash (P2PKH) scheme. A nested witness address type will force
-	//the standard BIP-0049 derivation scheme, while a witness address type will
-	//force the standard BIP-0084 derivation scheme.
+	// The verification for P2TR addresses is a special case and requires the
+	// ECDSA compact signature to compare the reovered public key to the internal
+	// taproot key. The compact ECDSA signature format was used because there
+	// are still no known compact signature schemes for schnorr signatures.
+	VerifyMessageWithAddr(ctx context.Context, in *VerifyMessageWithAddrRequest, opts ...grpc.CallOption) (*VerifyMessageWithAddrResponse, error)
+	// ImportAccount imports an account backed by an account extended public key.
+	// The master key fingerprint denotes the fingerprint of the root key
+	// corresponding to the account public key (also known as the key with
+	// derivation path m/). This may be required by some hardware wallets for
+	// proper identification and signing.
 	//
-	//For BIP-0049 keys, an address type must also be specified to make a
-	//distinction between the standard BIP-0049 address schema (nested witness
-	//pubkeys everywhere) and our own BIP-0049Plus address schema (nested pubkeys
-	//externally, witness pubkeys internally).
+	// The address type can usually be inferred from the key's version, but may be
+	// required for certain keys to map them into the proper scope.
 	//
-	//NOTE: Events (deposits/spends) for keys derived from an account will only be
-	//detected by lnd if they happen after the import. Rescans to detect past
-	//events will be supported later on.
+	// For BIP-0044 keys, an address type must be specified as we intend to not
+	// support importing BIP-0044 keys into the wallet using the legacy
+	// pay-to-pubkey-hash (P2PKH) scheme. A nested witness address type will force
+	// the standard BIP-0049 derivation scheme, while a witness address type will
+	// force the standard BIP-0084 derivation scheme.
+	//
+	// For BIP-0049 keys, an address type must also be specified to make a
+	// distinction between the standard BIP-0049 address schema (nested witness
+	// pubkeys everywhere) and our own BIP-0049Plus address schema (nested pubkeys
+	// externally, witness pubkeys internally).
+	//
+	// NOTE: Events (deposits/spends) for keys derived from an account will only be
+	// detected by lnd if they happen after the import. Rescans to detect past
+	// events will be supported later on.
 	ImportAccount(ctx context.Context, in *ImportAccountRequest, opts ...grpc.CallOption) (*ImportAccountResponse, error)
+	// ImportPublicKey imports a public key as watch-only into the wallet. The
+	// public key is converted into a simple address of the given type and that
+	// address script is watched on chain. For Taproot keys, this will only watch
+	// the BIP-0086 style output script. Use ImportTapscript for more advanced key
+	// spend or script spend outputs.
 	//
-	//ImportPublicKey imports a public key as watch-only into the wallet.
-	//
-	//NOTE: Events (deposits/spends) for a key will only be detected by lnd if
-	//they happen after the import. Rescans to detect past events will be
-	//supported later on.
+	// NOTE: Events (deposits/spends) for a key will only be detected by lnd if
+	// they happen after the import. Rescans to detect past events will be
+	// supported later on.
 	ImportPublicKey(ctx context.Context, in *ImportPublicKeyRequest, opts ...grpc.CallOption) (*ImportPublicKeyResponse, error)
+	// ImportTapscript imports a Taproot script and internal key and adds the
+	// resulting Taproot output key as a watch-only output script into the wallet.
+	// For BIP-0086 style Taproot keys (no root hash commitment and no script spend
+	// path) use ImportPublicKey.
 	//
-	//PublishTransaction attempts to publish the passed transaction to the
-	//network. Once this returns without an error, the wallet will continually
-	//attempt to re-broadcast the transaction on start up, until it enters the
-	//chain.
+	// NOTE: Events (deposits/spends) for a key will only be detected by lnd if
+	// they happen after the import. Rescans to detect past events will be
+	// supported later on.
+	//
+	// NOTE: Taproot keys imported through this RPC currently _cannot_ be used for
+	// funding PSBTs. Only tracking the balance and UTXOs is currently supported.
+	ImportTapscript(ctx context.Context, in *ImportTapscriptRequest, opts ...grpc.CallOption) (*ImportTapscriptResponse, error)
+	// PublishTransaction attempts to publish the passed transaction to the
+	// network. Once this returns without an error, the wallet will continually
+	// attempt to re-broadcast the transaction on start up, until it enters the
+	// chain.
 	PublishTransaction(ctx context.Context, in *Transaction, opts ...grpc.CallOption) (*PublishResponse, error)
-	//
-	//SendOutputs is similar to the existing sendmany call in Bitcoind, and
-	//allows the caller to create a transaction that sends to several outputs at
-	//once. This is ideal when wanting to batch create a set of transactions.
+	// SendOutputs is similar to the existing sendmany call in Bitcoind, and
+	// allows the caller to create a transaction that sends to several outputs at
+	// once. This is ideal when wanting to batch create a set of transactions.
 	SendOutputs(ctx context.Context, in *SendOutputsRequest, opts ...grpc.CallOption) (*SendOutputsResponse, error)
-	//
-	//EstimateFee attempts to query the internal fee estimator of the wallet to
-	//determine the fee (in sat/kw) to attach to a transaction in order to
-	//achieve the confirmation target.
+	// EstimateFee attempts to query the internal fee estimator of the wallet to
+	// determine the fee (in sat/kw) to attach to a transaction in order to
+	// achieve the confirmation target.
 	EstimateFee(ctx context.Context, in *EstimateFeeRequest, opts ...grpc.CallOption) (*EstimateFeeResponse, error)
+	// PendingSweeps returns lists of on-chain outputs that lnd is currently
+	// attempting to sweep within its central batching engine. Outputs with similar
+	// fee rates are batched together in order to sweep them within a single
+	// transaction.
 	//
-	//PendingSweeps returns lists of on-chain outputs that lnd is currently
-	//attempting to sweep within its central batching engine. Outputs with similar
-	//fee rates are batched together in order to sweep them within a single
-	//transaction.
-	//
-	//NOTE: Some of the fields within PendingSweepsRequest are not guaranteed to
-	//remain supported. This is an advanced API that depends on the internals of
-	//the UtxoSweeper, so things may change.
+	// NOTE: Some of the fields within PendingSweepsRequest are not guaranteed to
+	// remain supported. This is an advanced API that depends on the internals of
+	// the UtxoSweeper, so things may change.
 	PendingSweeps(ctx context.Context, in *PendingSweepsRequest, opts ...grpc.CallOption) (*PendingSweepsResponse, error)
+	// BumpFee bumps the fee of an arbitrary input within a transaction. This RPC
+	// takes a different approach than bitcoind's bumpfee command. lnd has a
+	// central batching engine in which inputs with similar fee rates are batched
+	// together to save on transaction fees. Due to this, we cannot rely on
+	// bumping the fee on a specific transaction, since transactions can change at
+	// any point with the addition of new inputs. The list of inputs that
+	// currently exist within lnd's central batching engine can be retrieved
+	// through the PendingSweeps RPC.
 	//
-	//BumpFee bumps the fee of an arbitrary input within a transaction. This RPC
-	//takes a different approach than bitcoind's bumpfee command. lnd has a
-	//central batching engine in which inputs with similar fee rates are batched
-	//together to save on transaction fees. Due to this, we cannot rely on
-	//bumping the fee on a specific transaction, since transactions can change at
-	//any point with the addition of new inputs. The list of inputs that
-	//currently exist within lnd's central batching engine can be retrieved
-	//through the PendingSweeps RPC.
+	// When bumping the fee of an input that currently exists within lnd's central
+	// batching engine, a higher fee transaction will be created that replaces the
+	// lower fee transaction through the Replace-By-Fee (RBF) policy. If it
 	//
-	//When bumping the fee of an input that currently exists within lnd's central
-	//batching engine, a higher fee transaction will be created that replaces the
-	//lower fee transaction through the Replace-By-Fee (RBF) policy. If it
+	// This RPC also serves useful when wanting to perform a Child-Pays-For-Parent
+	// (CPFP), where the child transaction pays for its parent's fee. This can be
+	// done by specifying an outpoint within the low fee transaction that is under
+	// the control of the wallet.
 	//
-	//This RPC also serves useful when wanting to perform a Child-Pays-For-Parent
-	//(CPFP), where the child transaction pays for its parent's fee. This can be
-	//done by specifying an outpoint within the low fee transaction that is under
-	//the control of the wallet.
+	// The fee preference can be expressed either as a specific fee rate or a delta
+	// of blocks in which the output should be swept on-chain within. If a fee
+	// preference is not explicitly specified, then an error is returned.
 	//
-	//The fee preference can be expressed either as a specific fee rate or a delta
-	//of blocks in which the output should be swept on-chain within. If a fee
-	//preference is not explicitly specified, then an error is returned.
-	//
-	//Note that this RPC currently doesn't perform any validation checks on the
-	//fee preference being provided. For now, the responsibility of ensuring that
-	//the new fee preference is sufficient is delegated to the user.
+	// Note that this RPC currently doesn't perform any validation checks on the
+	// fee preference being provided. For now, the responsibility of ensuring that
+	// the new fee preference is sufficient is delegated to the user.
 	BumpFee(ctx context.Context, in *BumpFeeRequest, opts ...grpc.CallOption) (*BumpFeeResponse, error)
-	//
-	//ListSweeps returns a list of the sweep transactions our node has produced.
-	//Note that these sweeps may not be confirmed yet, as we record sweeps on
-	//broadcast, not confirmation.
+	// ListSweeps returns a list of the sweep transactions our node has produced.
+	// Note that these sweeps may not be confirmed yet, as we record sweeps on
+	// broadcast, not confirmation.
 	ListSweeps(ctx context.Context, in *ListSweepsRequest, opts ...grpc.CallOption) (*ListSweepsResponse, error)
-	//
-	//LabelTransaction adds a label to a transaction. If the transaction already
-	//has a label the call will fail unless the overwrite bool is set. This will
-	//overwrite the exiting transaction label. Labels must not be empty, and
-	//cannot exceed 500 characters.
+	// LabelTransaction adds a label to a transaction. If the transaction already
+	// has a label the call will fail unless the overwrite bool is set. This will
+	// overwrite the exiting transaction label. Labels must not be empty, and
+	// cannot exceed 500 characters.
 	LabelTransaction(ctx context.Context, in *LabelTransactionRequest, opts ...grpc.CallOption) (*LabelTransactionResponse, error)
+	// FundPsbt creates a fully populated PSBT that contains enough inputs to fund
+	// the outputs specified in the template. There are two ways of specifying a
+	// template: Either by passing in a PSBT with at least one output declared or
+	// by passing in a raw TxTemplate message.
 	//
-	//FundPsbt creates a fully populated PSBT that contains enough inputs to fund
-	//the outputs specified in the template. There are two ways of specifying a
-	//template: Either by passing in a PSBT with at least one output declared or
-	//by passing in a raw TxTemplate message.
+	// If there are no inputs specified in the template, coin selection is
+	// performed automatically. If the template does contain any inputs, it is
+	// assumed that full coin selection happened externally and no additional
+	// inputs are added. If the specified inputs aren't enough to fund the outputs
+	// with the given fee rate, an error is returned.
 	//
-	//If there are no inputs specified in the template, coin selection is
-	//performed automatically. If the template does contain any inputs, it is
-	//assumed that full coin selection happened externally and no additional
-	//inputs are added. If the specified inputs aren't enough to fund the outputs
-	//with the given fee rate, an error is returned.
+	// After either selecting or verifying the inputs, all input UTXOs are locked
+	// with an internal app ID.
 	//
-	//After either selecting or verifying the inputs, all input UTXOs are locked
-	//with an internal app ID.
-	//
-	//NOTE: If this method returns without an error, it is the caller's
-	//responsibility to either spend the locked UTXOs (by finalizing and then
-	//publishing the transaction) or to unlock/release the locked UTXOs in case of
-	//an error on the caller's side.
+	// NOTE: If this method returns without an error, it is the caller's
+	// responsibility to either spend the locked UTXOs (by finalizing and then
+	// publishing the transaction) or to unlock/release the locked UTXOs in case of
+	// an error on the caller's side.
 	FundPsbt(ctx context.Context, in *FundPsbtRequest, opts ...grpc.CallOption) (*FundPsbtResponse, error)
+	// SignPsbt expects a partial transaction with all inputs and outputs fully
+	// declared and tries to sign all unsigned inputs that have all required fields
+	// (UTXO information, BIP32 derivation information, witness or sig scripts)
+	// set.
+	// If no error is returned, the PSBT is ready to be given to the next signer or
+	// to be finalized if lnd was the last signer.
 	//
-	//SignPsbt expects a partial transaction with all inputs and outputs fully
-	//declared and tries to sign all unsigned inputs that have all required fields
-	//(UTXO information, BIP32 derivation information, witness or sig scripts)
-	//set.
-	//If no error is returned, the PSBT is ready to be given to the next signer or
-	//to be finalized if lnd was the last signer.
-	//
-	//NOTE: This RPC only signs inputs (and only those it can sign), it does not
-	//perform any other tasks (such as coin selection, UTXO locking or
-	//input/output/fee value validation, PSBT finalization). Any input that is
-	//incomplete will be skipped.
+	// NOTE: This RPC only signs inputs (and only those it can sign), it does not
+	// perform any other tasks (such as coin selection, UTXO locking or
+	// input/output/fee value validation, PSBT finalization). Any input that is
+	// incomplete will be skipped.
 	SignPsbt(ctx context.Context, in *SignPsbtRequest, opts ...grpc.CallOption) (*SignPsbtResponse, error)
+	// FinalizePsbt expects a partial transaction with all inputs and outputs fully
+	// declared and tries to sign all inputs that belong to the wallet. Lnd must be
+	// the last signer of the transaction. That means, if there are any unsigned
+	// non-witness inputs or inputs without UTXO information attached or inputs
+	// without witness data that do not belong to lnd's wallet, this method will
+	// fail. If no error is returned, the PSBT is ready to be extracted and the
+	// final TX within to be broadcast.
 	//
-	//FinalizePsbt expects a partial transaction with all inputs and outputs fully
-	//declared and tries to sign all inputs that belong to the wallet. Lnd must be
-	//the last signer of the transaction. That means, if there are any unsigned
-	//non-witness inputs or inputs without UTXO information attached or inputs
-	//without witness data that do not belong to lnd's wallet, this method will
-	//fail. If no error is returned, the PSBT is ready to be extracted and the
-	//final TX within to be broadcast.
-	//
-	//NOTE: This method does NOT publish the transaction once finalized. It is the
-	//caller's responsibility to either publish the transaction on success or
-	//unlock/release any locked UTXOs in case of an error in this method.
+	// NOTE: This method does NOT publish the transaction once finalized. It is the
+	// caller's responsibility to either publish the transaction on success or
+	// unlock/release any locked UTXOs in case of an error in this method.
 	FinalizePsbt(ctx context.Context, in *FinalizePsbtRequest, opts ...grpc.CallOption) (*FinalizePsbtResponse, error)
 }
 
@@ -279,6 +318,42 @@ func (c *walletKitClient) ListAccounts(ctx context.Context, in *ListAccountsRequ
 	return out, nil
 }
 
+func (c *walletKitClient) RequiredReserve(ctx context.Context, in *RequiredReserveRequest, opts ...grpc.CallOption) (*RequiredReserveResponse, error) {
+	out := new(RequiredReserveResponse)
+	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/RequiredReserve", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *walletKitClient) ListAddresses(ctx context.Context, in *ListAddressesRequest, opts ...grpc.CallOption) (*ListAddressesResponse, error) {
+	out := new(ListAddressesResponse)
+	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/ListAddresses", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *walletKitClient) SignMessageWithAddr(ctx context.Context, in *SignMessageWithAddrRequest, opts ...grpc.CallOption) (*SignMessageWithAddrResponse, error) {
+	out := new(SignMessageWithAddrResponse)
+	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/SignMessageWithAddr", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *walletKitClient) VerifyMessageWithAddr(ctx context.Context, in *VerifyMessageWithAddrRequest, opts ...grpc.CallOption) (*VerifyMessageWithAddrResponse, error) {
+	out := new(VerifyMessageWithAddrResponse)
+	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/VerifyMessageWithAddr", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *walletKitClient) ImportAccount(ctx context.Context, in *ImportAccountRequest, opts ...grpc.CallOption) (*ImportAccountResponse, error) {
 	out := new(ImportAccountResponse)
 	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/ImportAccount", in, out, opts...)
@@ -291,6 +366,15 @@ func (c *walletKitClient) ImportAccount(ctx context.Context, in *ImportAccountRe
 func (c *walletKitClient) ImportPublicKey(ctx context.Context, in *ImportPublicKeyRequest, opts ...grpc.CallOption) (*ImportPublicKeyResponse, error) {
 	out := new(ImportPublicKeyResponse)
 	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/ImportPublicKey", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *walletKitClient) ImportTapscript(ctx context.Context, in *ImportTapscriptRequest, opts ...grpc.CallOption) (*ImportTapscriptResponse, error) {
+	out := new(ImportTapscriptResponse)
+	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/ImportTapscript", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -391,183 +475,222 @@ func (c *walletKitClient) FinalizePsbt(ctx context.Context, in *FinalizePsbtRequ
 // All implementations must embed UnimplementedWalletKitServer
 // for forward compatibility
 type WalletKitServer interface {
-	//
-	//ListUnspent returns a list of all utxos spendable by the wallet with a
-	//number of confirmations between the specified minimum and maximum.
+	// ListUnspent returns a list of all utxos spendable by the wallet with a
+	// number of confirmations between the specified minimum and maximum. By
+	// default, all utxos are listed. To list only the unconfirmed utxos, set
+	// the unconfirmed_only to true.
 	ListUnspent(context.Context, *ListUnspentRequest) (*ListUnspentResponse, error)
-	//
-	//LeaseOutput locks an output to the given ID, preventing it from being
-	//available for any future coin selection attempts. The absolute time of the
-	//lock's expiration is returned. The expiration of the lock can be extended by
-	//successive invocations of this RPC. Outputs can be unlocked before their
-	//expiration through `ReleaseOutput`.
+	// LeaseOutput locks an output to the given ID, preventing it from being
+	// available for any future coin selection attempts. The absolute time of the
+	// lock's expiration is returned. The expiration of the lock can be extended by
+	// successive invocations of this RPC. Outputs can be unlocked before their
+	// expiration through `ReleaseOutput`.
 	LeaseOutput(context.Context, *LeaseOutputRequest) (*LeaseOutputResponse, error)
-	//
-	//ReleaseOutput unlocks an output, allowing it to be available for coin
-	//selection if it remains unspent. The ID should match the one used to
-	//originally lock the output.
+	// ReleaseOutput unlocks an output, allowing it to be available for coin
+	// selection if it remains unspent. The ID should match the one used to
+	// originally lock the output.
 	ReleaseOutput(context.Context, *ReleaseOutputRequest) (*ReleaseOutputResponse, error)
-	//
-	//ListLeases lists all currently locked utxos.
+	// ListLeases lists all currently locked utxos.
 	ListLeases(context.Context, *ListLeasesRequest) (*ListLeasesResponse, error)
-	//
-	//DeriveNextKey attempts to derive the *next* key within the key family
-	//(account in BIP43) specified. This method should return the next external
-	//child within this branch.
+	// DeriveNextKey attempts to derive the *next* key within the key family
+	// (account in BIP43) specified. This method should return the next external
+	// child within this branch.
 	DeriveNextKey(context.Context, *KeyReq) (*signrpc.KeyDescriptor, error)
-	//
-	//DeriveKey attempts to derive an arbitrary key specified by the passed
-	//KeyLocator.
+	// DeriveKey attempts to derive an arbitrary key specified by the passed
+	// KeyLocator.
 	DeriveKey(context.Context, *signrpc.KeyLocator) (*signrpc.KeyDescriptor, error)
-	//
-	//NextAddr returns the next unused address within the wallet.
+	// NextAddr returns the next unused address within the wallet.
 	NextAddr(context.Context, *AddrRequest) (*AddrResponse, error)
-	//
-	//ListAccounts retrieves all accounts belonging to the wallet by default. A
-	//name and key scope filter can be provided to filter through all of the
-	//wallet accounts and return only those matching.
+	// ListAccounts retrieves all accounts belonging to the wallet by default. A
+	// name and key scope filter can be provided to filter through all of the
+	// wallet accounts and return only those matching.
 	ListAccounts(context.Context, *ListAccountsRequest) (*ListAccountsResponse, error)
+	// RequiredReserve returns the minimum amount of satoshis that should be kept
+	// in the wallet in order to fee bump anchor channels if necessary. The value
+	// scales with the number of public anchor channels but is capped at a maximum.
+	RequiredReserve(context.Context, *RequiredReserveRequest) (*RequiredReserveResponse, error)
+	// ListAddresses retrieves all the addresses along with their balance. An
+	// account name filter can be provided to filter through all of the
+	// wallet accounts and return the addresses of only those matching.
+	ListAddresses(context.Context, *ListAddressesRequest) (*ListAddressesResponse, error)
+	// SignMessageWithAddr returns the compact signature (base64 encoded) created
+	// with the private key of the provided address. This requires the address
+	// to be solely based on a public key lock (no scripts). Obviously the internal
+	// lnd wallet has to possess the private key of the address otherwise
+	// an error is returned.
 	//
-	//ImportAccount imports an account backed by an account extended public key.
-	//The master key fingerprint denotes the fingerprint of the root key
-	//corresponding to the account public key (also known as the key with
-	//derivation path m/). This may be required by some hardware wallets for
-	//proper identification and signing.
+	// This method aims to provide full compatibility with the bitcoin-core and
+	// btcd implementation. Bitcoin-core's algorithm is not specified in a
+	// BIP and only applicable for legacy addresses. This method enhances the
+	// signing for additional address types: P2WKH, NP2WKH, P2TR.
+	// For P2TR addresses this represents a special case. ECDSA is used to create
+	// a compact signature which makes the public key of the signature recoverable.
+	SignMessageWithAddr(context.Context, *SignMessageWithAddrRequest) (*SignMessageWithAddrResponse, error)
+	// VerifyMessageWithAddr returns the validity and the recovered public key of
+	// the provided compact signature (base64 encoded). The verification is
+	// twofold. First the validity of the signature itself is checked and then
+	// it is verified that the recovered public key of the signature equals
+	// the public key of the provided address. There is no dependence on the
+	// private key of the address therefore also external addresses are allowed
+	// to verify signatures.
+	// Supported address types are P2PKH, P2WKH, NP2WKH, P2TR.
 	//
-	//The address type can usually be inferred from the key's version, but may be
-	//required for certain keys to map them into the proper scope.
+	// This method is the counterpart of the related signing method
+	// (SignMessageWithAddr) and aims to provide full compatibility to
+	// bitcoin-core's implementation. Although bitcoin-core/btcd only provide
+	// this functionality for legacy addresses this function enhances it to
+	// the address types: P2PKH, P2WKH, NP2WKH, P2TR.
 	//
-	//For BIP-0044 keys, an address type must be specified as we intend to not
-	//support importing BIP-0044 keys into the wallet using the legacy
-	//pay-to-pubkey-hash (P2PKH) scheme. A nested witness address type will force
-	//the standard BIP-0049 derivation scheme, while a witness address type will
-	//force the standard BIP-0084 derivation scheme.
+	// The verification for P2TR addresses is a special case and requires the
+	// ECDSA compact signature to compare the reovered public key to the internal
+	// taproot key. The compact ECDSA signature format was used because there
+	// are still no known compact signature schemes for schnorr signatures.
+	VerifyMessageWithAddr(context.Context, *VerifyMessageWithAddrRequest) (*VerifyMessageWithAddrResponse, error)
+	// ImportAccount imports an account backed by an account extended public key.
+	// The master key fingerprint denotes the fingerprint of the root key
+	// corresponding to the account public key (also known as the key with
+	// derivation path m/). This may be required by some hardware wallets for
+	// proper identification and signing.
 	//
-	//For BIP-0049 keys, an address type must also be specified to make a
-	//distinction between the standard BIP-0049 address schema (nested witness
-	//pubkeys everywhere) and our own BIP-0049Plus address schema (nested pubkeys
-	//externally, witness pubkeys internally).
+	// The address type can usually be inferred from the key's version, but may be
+	// required for certain keys to map them into the proper scope.
 	//
-	//NOTE: Events (deposits/spends) for keys derived from an account will only be
-	//detected by lnd if they happen after the import. Rescans to detect past
-	//events will be supported later on.
+	// For BIP-0044 keys, an address type must be specified as we intend to not
+	// support importing BIP-0044 keys into the wallet using the legacy
+	// pay-to-pubkey-hash (P2PKH) scheme. A nested witness address type will force
+	// the standard BIP-0049 derivation scheme, while a witness address type will
+	// force the standard BIP-0084 derivation scheme.
+	//
+	// For BIP-0049 keys, an address type must also be specified to make a
+	// distinction between the standard BIP-0049 address schema (nested witness
+	// pubkeys everywhere) and our own BIP-0049Plus address schema (nested pubkeys
+	// externally, witness pubkeys internally).
+	//
+	// NOTE: Events (deposits/spends) for keys derived from an account will only be
+	// detected by lnd if they happen after the import. Rescans to detect past
+	// events will be supported later on.
 	ImportAccount(context.Context, *ImportAccountRequest) (*ImportAccountResponse, error)
+	// ImportPublicKey imports a public key as watch-only into the wallet. The
+	// public key is converted into a simple address of the given type and that
+	// address script is watched on chain. For Taproot keys, this will only watch
+	// the BIP-0086 style output script. Use ImportTapscript for more advanced key
+	// spend or script spend outputs.
 	//
-	//ImportPublicKey imports a public key as watch-only into the wallet.
-	//
-	//NOTE: Events (deposits/spends) for a key will only be detected by lnd if
-	//they happen after the import. Rescans to detect past events will be
-	//supported later on.
+	// NOTE: Events (deposits/spends) for a key will only be detected by lnd if
+	// they happen after the import. Rescans to detect past events will be
+	// supported later on.
 	ImportPublicKey(context.Context, *ImportPublicKeyRequest) (*ImportPublicKeyResponse, error)
+	// ImportTapscript imports a Taproot script and internal key and adds the
+	// resulting Taproot output key as a watch-only output script into the wallet.
+	// For BIP-0086 style Taproot keys (no root hash commitment and no script spend
+	// path) use ImportPublicKey.
 	//
-	//PublishTransaction attempts to publish the passed transaction to the
-	//network. Once this returns without an error, the wallet will continually
-	//attempt to re-broadcast the transaction on start up, until it enters the
-	//chain.
+	// NOTE: Events (deposits/spends) for a key will only be detected by lnd if
+	// they happen after the import. Rescans to detect past events will be
+	// supported later on.
+	//
+	// NOTE: Taproot keys imported through this RPC currently _cannot_ be used for
+	// funding PSBTs. Only tracking the balance and UTXOs is currently supported.
+	ImportTapscript(context.Context, *ImportTapscriptRequest) (*ImportTapscriptResponse, error)
+	// PublishTransaction attempts to publish the passed transaction to the
+	// network. Once this returns without an error, the wallet will continually
+	// attempt to re-broadcast the transaction on start up, until it enters the
+	// chain.
 	PublishTransaction(context.Context, *Transaction) (*PublishResponse, error)
-	//
-	//SendOutputs is similar to the existing sendmany call in Bitcoind, and
-	//allows the caller to create a transaction that sends to several outputs at
-	//once. This is ideal when wanting to batch create a set of transactions.
+	// SendOutputs is similar to the existing sendmany call in Bitcoind, and
+	// allows the caller to create a transaction that sends to several outputs at
+	// once. This is ideal when wanting to batch create a set of transactions.
 	SendOutputs(context.Context, *SendOutputsRequest) (*SendOutputsResponse, error)
-	//
-	//EstimateFee attempts to query the internal fee estimator of the wallet to
-	//determine the fee (in sat/kw) to attach to a transaction in order to
-	//achieve the confirmation target.
+	// EstimateFee attempts to query the internal fee estimator of the wallet to
+	// determine the fee (in sat/kw) to attach to a transaction in order to
+	// achieve the confirmation target.
 	EstimateFee(context.Context, *EstimateFeeRequest) (*EstimateFeeResponse, error)
+	// PendingSweeps returns lists of on-chain outputs that lnd is currently
+	// attempting to sweep within its central batching engine. Outputs with similar
+	// fee rates are batched together in order to sweep them within a single
+	// transaction.
 	//
-	//PendingSweeps returns lists of on-chain outputs that lnd is currently
-	//attempting to sweep within its central batching engine. Outputs with similar
-	//fee rates are batched together in order to sweep them within a single
-	//transaction.
-	//
-	//NOTE: Some of the fields within PendingSweepsRequest are not guaranteed to
-	//remain supported. This is an advanced API that depends on the internals of
-	//the UtxoSweeper, so things may change.
+	// NOTE: Some of the fields within PendingSweepsRequest are not guaranteed to
+	// remain supported. This is an advanced API that depends on the internals of
+	// the UtxoSweeper, so things may change.
 	PendingSweeps(context.Context, *PendingSweepsRequest) (*PendingSweepsResponse, error)
+	// BumpFee bumps the fee of an arbitrary input within a transaction. This RPC
+	// takes a different approach than bitcoind's bumpfee command. lnd has a
+	// central batching engine in which inputs with similar fee rates are batched
+	// together to save on transaction fees. Due to this, we cannot rely on
+	// bumping the fee on a specific transaction, since transactions can change at
+	// any point with the addition of new inputs. The list of inputs that
+	// currently exist within lnd's central batching engine can be retrieved
+	// through the PendingSweeps RPC.
 	//
-	//BumpFee bumps the fee of an arbitrary input within a transaction. This RPC
-	//takes a different approach than bitcoind's bumpfee command. lnd has a
-	//central batching engine in which inputs with similar fee rates are batched
-	//together to save on transaction fees. Due to this, we cannot rely on
-	//bumping the fee on a specific transaction, since transactions can change at
-	//any point with the addition of new inputs. The list of inputs that
-	//currently exist within lnd's central batching engine can be retrieved
-	//through the PendingSweeps RPC.
+	// When bumping the fee of an input that currently exists within lnd's central
+	// batching engine, a higher fee transaction will be created that replaces the
+	// lower fee transaction through the Replace-By-Fee (RBF) policy. If it
 	//
-	//When bumping the fee of an input that currently exists within lnd's central
-	//batching engine, a higher fee transaction will be created that replaces the
-	//lower fee transaction through the Replace-By-Fee (RBF) policy. If it
+	// This RPC also serves useful when wanting to perform a Child-Pays-For-Parent
+	// (CPFP), where the child transaction pays for its parent's fee. This can be
+	// done by specifying an outpoint within the low fee transaction that is under
+	// the control of the wallet.
 	//
-	//This RPC also serves useful when wanting to perform a Child-Pays-For-Parent
-	//(CPFP), where the child transaction pays for its parent's fee. This can be
-	//done by specifying an outpoint within the low fee transaction that is under
-	//the control of the wallet.
+	// The fee preference can be expressed either as a specific fee rate or a delta
+	// of blocks in which the output should be swept on-chain within. If a fee
+	// preference is not explicitly specified, then an error is returned.
 	//
-	//The fee preference can be expressed either as a specific fee rate or a delta
-	//of blocks in which the output should be swept on-chain within. If a fee
-	//preference is not explicitly specified, then an error is returned.
-	//
-	//Note that this RPC currently doesn't perform any validation checks on the
-	//fee preference being provided. For now, the responsibility of ensuring that
-	//the new fee preference is sufficient is delegated to the user.
+	// Note that this RPC currently doesn't perform any validation checks on the
+	// fee preference being provided. For now, the responsibility of ensuring that
+	// the new fee preference is sufficient is delegated to the user.
 	BumpFee(context.Context, *BumpFeeRequest) (*BumpFeeResponse, error)
-	//
-	//ListSweeps returns a list of the sweep transactions our node has produced.
-	//Note that these sweeps may not be confirmed yet, as we record sweeps on
-	//broadcast, not confirmation.
+	// ListSweeps returns a list of the sweep transactions our node has produced.
+	// Note that these sweeps may not be confirmed yet, as we record sweeps on
+	// broadcast, not confirmation.
 	ListSweeps(context.Context, *ListSweepsRequest) (*ListSweepsResponse, error)
-	//
-	//LabelTransaction adds a label to a transaction. If the transaction already
-	//has a label the call will fail unless the overwrite bool is set. This will
-	//overwrite the exiting transaction label. Labels must not be empty, and
-	//cannot exceed 500 characters.
+	// LabelTransaction adds a label to a transaction. If the transaction already
+	// has a label the call will fail unless the overwrite bool is set. This will
+	// overwrite the exiting transaction label. Labels must not be empty, and
+	// cannot exceed 500 characters.
 	LabelTransaction(context.Context, *LabelTransactionRequest) (*LabelTransactionResponse, error)
+	// FundPsbt creates a fully populated PSBT that contains enough inputs to fund
+	// the outputs specified in the template. There are two ways of specifying a
+	// template: Either by passing in a PSBT with at least one output declared or
+	// by passing in a raw TxTemplate message.
 	//
-	//FundPsbt creates a fully populated PSBT that contains enough inputs to fund
-	//the outputs specified in the template. There are two ways of specifying a
-	//template: Either by passing in a PSBT with at least one output declared or
-	//by passing in a raw TxTemplate message.
+	// If there are no inputs specified in the template, coin selection is
+	// performed automatically. If the template does contain any inputs, it is
+	// assumed that full coin selection happened externally and no additional
+	// inputs are added. If the specified inputs aren't enough to fund the outputs
+	// with the given fee rate, an error is returned.
 	//
-	//If there are no inputs specified in the template, coin selection is
-	//performed automatically. If the template does contain any inputs, it is
-	//assumed that full coin selection happened externally and no additional
-	//inputs are added. If the specified inputs aren't enough to fund the outputs
-	//with the given fee rate, an error is returned.
+	// After either selecting or verifying the inputs, all input UTXOs are locked
+	// with an internal app ID.
 	//
-	//After either selecting or verifying the inputs, all input UTXOs are locked
-	//with an internal app ID.
-	//
-	//NOTE: If this method returns without an error, it is the caller's
-	//responsibility to either spend the locked UTXOs (by finalizing and then
-	//publishing the transaction) or to unlock/release the locked UTXOs in case of
-	//an error on the caller's side.
+	// NOTE: If this method returns without an error, it is the caller's
+	// responsibility to either spend the locked UTXOs (by finalizing and then
+	// publishing the transaction) or to unlock/release the locked UTXOs in case of
+	// an error on the caller's side.
 	FundPsbt(context.Context, *FundPsbtRequest) (*FundPsbtResponse, error)
+	// SignPsbt expects a partial transaction with all inputs and outputs fully
+	// declared and tries to sign all unsigned inputs that have all required fields
+	// (UTXO information, BIP32 derivation information, witness or sig scripts)
+	// set.
+	// If no error is returned, the PSBT is ready to be given to the next signer or
+	// to be finalized if lnd was the last signer.
 	//
-	//SignPsbt expects a partial transaction with all inputs and outputs fully
-	//declared and tries to sign all unsigned inputs that have all required fields
-	//(UTXO information, BIP32 derivation information, witness or sig scripts)
-	//set.
-	//If no error is returned, the PSBT is ready to be given to the next signer or
-	//to be finalized if lnd was the last signer.
-	//
-	//NOTE: This RPC only signs inputs (and only those it can sign), it does not
-	//perform any other tasks (such as coin selection, UTXO locking or
-	//input/output/fee value validation, PSBT finalization). Any input that is
-	//incomplete will be skipped.
+	// NOTE: This RPC only signs inputs (and only those it can sign), it does not
+	// perform any other tasks (such as coin selection, UTXO locking or
+	// input/output/fee value validation, PSBT finalization). Any input that is
+	// incomplete will be skipped.
 	SignPsbt(context.Context, *SignPsbtRequest) (*SignPsbtResponse, error)
+	// FinalizePsbt expects a partial transaction with all inputs and outputs fully
+	// declared and tries to sign all inputs that belong to the wallet. Lnd must be
+	// the last signer of the transaction. That means, if there are any unsigned
+	// non-witness inputs or inputs without UTXO information attached or inputs
+	// without witness data that do not belong to lnd's wallet, this method will
+	// fail. If no error is returned, the PSBT is ready to be extracted and the
+	// final TX within to be broadcast.
 	//
-	//FinalizePsbt expects a partial transaction with all inputs and outputs fully
-	//declared and tries to sign all inputs that belong to the wallet. Lnd must be
-	//the last signer of the transaction. That means, if there are any unsigned
-	//non-witness inputs or inputs without UTXO information attached or inputs
-	//without witness data that do not belong to lnd's wallet, this method will
-	//fail. If no error is returned, the PSBT is ready to be extracted and the
-	//final TX within to be broadcast.
-	//
-	//NOTE: This method does NOT publish the transaction once finalized. It is the
-	//caller's responsibility to either publish the transaction on success or
-	//unlock/release any locked UTXOs in case of an error in this method.
+	// NOTE: This method does NOT publish the transaction once finalized. It is the
+	// caller's responsibility to either publish the transaction on success or
+	// unlock/release any locked UTXOs in case of an error in this method.
 	FinalizePsbt(context.Context, *FinalizePsbtRequest) (*FinalizePsbtResponse, error)
 	mustEmbedUnimplementedWalletKitServer()
 }
@@ -600,11 +723,26 @@ func (UnimplementedWalletKitServer) NextAddr(context.Context, *AddrRequest) (*Ad
 func (UnimplementedWalletKitServer) ListAccounts(context.Context, *ListAccountsRequest) (*ListAccountsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListAccounts not implemented")
 }
+func (UnimplementedWalletKitServer) RequiredReserve(context.Context, *RequiredReserveRequest) (*RequiredReserveResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RequiredReserve not implemented")
+}
+func (UnimplementedWalletKitServer) ListAddresses(context.Context, *ListAddressesRequest) (*ListAddressesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListAddresses not implemented")
+}
+func (UnimplementedWalletKitServer) SignMessageWithAddr(context.Context, *SignMessageWithAddrRequest) (*SignMessageWithAddrResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SignMessageWithAddr not implemented")
+}
+func (UnimplementedWalletKitServer) VerifyMessageWithAddr(context.Context, *VerifyMessageWithAddrRequest) (*VerifyMessageWithAddrResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method VerifyMessageWithAddr not implemented")
+}
 func (UnimplementedWalletKitServer) ImportAccount(context.Context, *ImportAccountRequest) (*ImportAccountResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ImportAccount not implemented")
 }
 func (UnimplementedWalletKitServer) ImportPublicKey(context.Context, *ImportPublicKeyRequest) (*ImportPublicKeyResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ImportPublicKey not implemented")
+}
+func (UnimplementedWalletKitServer) ImportTapscript(context.Context, *ImportTapscriptRequest) (*ImportTapscriptResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ImportTapscript not implemented")
 }
 func (UnimplementedWalletKitServer) PublishTransaction(context.Context, *Transaction) (*PublishResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PublishTransaction not implemented")
@@ -793,6 +931,78 @@ func _WalletKit_ListAccounts_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WalletKit_RequiredReserve_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RequiredReserveRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletKitServer).RequiredReserve(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/walletrpc.WalletKit/RequiredReserve",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletKitServer).RequiredReserve(ctx, req.(*RequiredReserveRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WalletKit_ListAddresses_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListAddressesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletKitServer).ListAddresses(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/walletrpc.WalletKit/ListAddresses",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletKitServer).ListAddresses(ctx, req.(*ListAddressesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WalletKit_SignMessageWithAddr_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SignMessageWithAddrRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletKitServer).SignMessageWithAddr(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/walletrpc.WalletKit/SignMessageWithAddr",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletKitServer).SignMessageWithAddr(ctx, req.(*SignMessageWithAddrRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WalletKit_VerifyMessageWithAddr_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VerifyMessageWithAddrRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletKitServer).VerifyMessageWithAddr(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/walletrpc.WalletKit/VerifyMessageWithAddr",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletKitServer).VerifyMessageWithAddr(ctx, req.(*VerifyMessageWithAddrRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WalletKit_ImportAccount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ImportAccountRequest)
 	if err := dec(in); err != nil {
@@ -825,6 +1035,24 @@ func _WalletKit_ImportPublicKey_Handler(srv interface{}, ctx context.Context, de
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(WalletKitServer).ImportPublicKey(ctx, req.(*ImportPublicKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _WalletKit_ImportTapscript_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ImportTapscriptRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletKitServer).ImportTapscript(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/walletrpc.WalletKit/ImportTapscript",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletKitServer).ImportTapscript(ctx, req.(*ImportTapscriptRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1049,12 +1277,32 @@ var WalletKit_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _WalletKit_ListAccounts_Handler,
 		},
 		{
+			MethodName: "RequiredReserve",
+			Handler:    _WalletKit_RequiredReserve_Handler,
+		},
+		{
+			MethodName: "ListAddresses",
+			Handler:    _WalletKit_ListAddresses_Handler,
+		},
+		{
+			MethodName: "SignMessageWithAddr",
+			Handler:    _WalletKit_SignMessageWithAddr_Handler,
+		},
+		{
+			MethodName: "VerifyMessageWithAddr",
+			Handler:    _WalletKit_VerifyMessageWithAddr_Handler,
+		},
+		{
 			MethodName: "ImportAccount",
 			Handler:    _WalletKit_ImportAccount_Handler,
 		},
 		{
 			MethodName: "ImportPublicKey",
 			Handler:    _WalletKit_ImportPublicKey_Handler,
+		},
+		{
+			MethodName: "ImportTapscript",
+			Handler:    _WalletKit_ImportTapscript_Handler,
 		},
 		{
 			MethodName: "PublishTransaction",

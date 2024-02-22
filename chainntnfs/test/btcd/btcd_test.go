@@ -9,8 +9,8 @@ import (
 	chainntnfstest "github.com/ltcsuite/lnd/chainntnfs/test"
 )
 
-// TestInterfaces executes the generic notifier test suite against a btcd
+// TestInterfaces executes the generic notifier test suite against a ltcd
 // powered chain notifier.
 func TestInterfaces(t *testing.T) {
-	chainntnfstest.TestInterfaces(t, "btcd")
+	chainntnfstest.TestInterfaces(t, "ltcd")
 }

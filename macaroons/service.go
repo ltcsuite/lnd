@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/ltcsuite/lnd/kvdb"
 	"google.golang.org/grpc/metadata"
 	"gopkg.in/macaroon-bakery.v2/bakery"
 	"gopkg.in/macaroon-bakery.v2/bakery/checkers"
@@ -28,6 +27,13 @@ var (
 	// same entity:action pairs. For example: uri:/lnrpc.Lightning/GetInfo
 	// only gives access to the GetInfo call.
 	PermissionEntityCustomURI = "uri"
+
+	// ErrUnknownVersion is returned when a macaroon is of an unknown
+	// is presented.
+	ErrUnknownVersion = fmt.Errorf("unknown macaroon version")
+
+	// ErrInvalidID is returned when a macaroon ID is invalid.
+	ErrInvalidID = fmt.Errorf("invalid ID")
 )
 
 // MacaroonValidator is an interface type that can check if macaroons are valid.
@@ -41,13 +47,47 @@ type MacaroonValidator interface {
 		requiredPermissions []bakery.Op, fullMethod string) error
 }
 
+// ExtendedRootKeyStore is an interface augments the existing
+// macaroons.RootKeyStorage interface by adding a number of additional utility
+// methods such as encrypting and decrypting the root key given a password.
+type ExtendedRootKeyStore interface {
+	bakery.RootKeyStore
+
+	// Close closes the RKS and zeros out any in-memory encryption keys.
+	Close() error
+
+	// CreateUnlock calls the underlying root key store's CreateUnlock and
+	// returns the result.
+	CreateUnlock(password *[]byte) error
+
+	// ListMacaroonIDs returns all the root key ID values except the value
+	// of encryptedKeyID.
+	ListMacaroonIDs(ctxt context.Context) ([][]byte, error)
+
+	// DeleteMacaroonID removes one specific root key ID. If the root key
+	// ID is found and deleted, it will be returned.
+	DeleteMacaroonID(ctxt context.Context, rootKeyID []byte) ([]byte, error)
+
+	// ChangePassword calls the underlying root key store's ChangePassword
+	// and returns the result.
+	ChangePassword(oldPw, newPw []byte) error
+
+	// GenerateNewRootKey calls the underlying root key store's
+	// GenerateNewRootKey and returns the result.
+	GenerateNewRootKey() error
+
+	// SetRootKey calls the underlying root key store's SetRootKey and
+	// returns the result.
+	SetRootKey(rootKey []byte) error
+}
+
 // Service encapsulates bakery.Bakery and adds a Close() method that zeroes the
 // root key service encryption keys, as well as utility methods to validate a
 // macaroon against the bakery and gRPC middleware for macaroon-based auth.
 type Service struct {
 	bakery.Bakery
 
-	rks *RootKeyStorage
+	rks bakery.RootKeyStore
 
 	// ExternalValidators is a map between an absolute gRPC URIs and the
 	// corresponding external macaroon validator to be used for that URI.
@@ -67,17 +107,12 @@ type Service struct {
 // not harmful. Default checkers, such as those for `allow`, `time-before`,
 // `declared`, and `error` caveats are registered automatically and don't need
 // to be added.
-func NewService(db kvdb.Backend, location string, statelessInit bool,
-	checks ...Checker) (*Service, error) {
-
-	rootKeyStore, err := NewRootKeyStorage(db)
-	if err != nil {
-		return nil, err
-	}
+func NewService(keyStore bakery.RootKeyStore, location string,
+	statelessInit bool, checks ...Checker) (*Service, error) {
 
 	macaroonParams := bakery.BakeryParams{
 		Location:     location,
-		RootKeyStore: rootKeyStore,
+		RootKeyStore: keyStore,
 		// No third-party caveat support for now.
 		// TODO(aakselrod): Add third-party caveat support.
 		Locator: nil,
@@ -98,7 +133,7 @@ func NewService(db kvdb.Backend, location string, statelessInit bool,
 
 	return &Service{
 		Bakery:             *svc,
-		rks:                rootKeyStore,
+		rks:                keyStore,
 		ExternalValidators: make(map[string]MacaroonValidator),
 		StatelessInit:      statelessInit,
 	}, nil
@@ -180,6 +215,23 @@ func (svc *Service) CheckMacAuth(ctx context.Context, macBytes []byte,
 		return err
 	}
 
+	// Ensure that the macaroon is using the exact same version as we
+	// expect. In the future, we can relax this check to phase in new
+	// versions.
+	if mac.Version() != macaroon.V2 {
+		return fmt.Errorf("%w: %v", ErrUnknownVersion,
+			mac.Version())
+	}
+
+	// Run a similar version check on the ID used for the macaroon as well.
+	const minIDLength = 1
+	if len(mac.Id()) < minIDLength {
+		return ErrInvalidID
+	}
+	if mac.Id()[0] != byte(bakery.Version3) {
+		return ErrInvalidID
+	}
+
 	// Check the method being called against the permitted operation, the
 	// expiration time and IP address and return the result.
 	authChecker := svc.Checker.Auth(macaroon.Slice{mac})
@@ -204,18 +256,27 @@ func (svc *Service) CheckMacAuth(ctx context.Context, macBytes []byte,
 // Close closes the database that underlies the RootKeyStore and zeroes the
 // encryption keys.
 func (svc *Service) Close() error {
-	return svc.rks.Close()
+	if boltRKS, ok := svc.rks.(ExtendedRootKeyStore); ok {
+		return boltRKS.Close()
+	}
+
+	return nil
 }
 
 // CreateUnlock calls the underlying root key store's CreateUnlock and returns
 // the result.
 func (svc *Service) CreateUnlock(password *[]byte) error {
-	return svc.rks.CreateUnlock(password)
+	if boltRKS, ok := svc.rks.(ExtendedRootKeyStore); ok {
+		return boltRKS.CreateUnlock(password)
+	}
+
+	return nil
 }
 
 // NewMacaroon wraps around the function Oven.NewMacaroon with the defaults,
-//  - version is always bakery.LatestVersion;
-//  - caveats is always nil.
+//   - version is always bakery.LatestVersion;
+//   - caveats is always nil.
+//
 // In addition, it takes a rootKeyID parameter, and puts it into the context.
 // The context is passed through Oven.NewMacaroon(), in which calls the function
 // RootKey(), that reads the context for rootKeyID.
@@ -230,7 +291,7 @@ func (svc *Service) NewMacaroon(
 		return nil, ErrMissingRootKeyID
 	}
 
-	// // Pass the root key ID to context.
+	// Pass the root key ID to context.
 	ctx = ContextWithRootKeyID(ctx, rootKeyID)
 
 	return svc.Oven.NewMacaroon(ctx, bakery.LatestVersion, nil, ops...)
@@ -239,26 +300,53 @@ func (svc *Service) NewMacaroon(
 // ListMacaroonIDs returns all the root key ID values except the value of
 // encryptedKeyID.
 func (svc *Service) ListMacaroonIDs(ctxt context.Context) ([][]byte, error) {
-	return svc.rks.ListMacaroonIDs(ctxt)
+	if boltRKS, ok := svc.rks.(ExtendedRootKeyStore); ok {
+		return boltRKS.ListMacaroonIDs(ctxt)
+	}
+
+	return nil, nil
 }
 
 // DeleteMacaroonID removes one specific root key ID. If the root key ID is
 // found and deleted, it will be returned.
 func (svc *Service) DeleteMacaroonID(ctxt context.Context,
 	rootKeyID []byte) ([]byte, error) {
-	return svc.rks.DeleteMacaroonID(ctxt, rootKeyID)
+
+	if boltRKS, ok := svc.rks.(ExtendedRootKeyStore); ok {
+		return boltRKS.DeleteMacaroonID(ctxt, rootKeyID)
+	}
+
+	return nil, nil
 }
 
 // GenerateNewRootKey calls the underlying root key store's GenerateNewRootKey
 // and returns the result.
 func (svc *Service) GenerateNewRootKey() error {
-	return svc.rks.GenerateNewRootKey()
+	if boltRKS, ok := svc.rks.(ExtendedRootKeyStore); ok {
+		return boltRKS.GenerateNewRootKey()
+	}
+
+	return nil
+}
+
+// SetRootKey calls the underlying root key store's SetRootKey and returns the
+// result.
+func (svc *Service) SetRootKey(rootKey []byte) error {
+	if boltRKS, ok := svc.rks.(ExtendedRootKeyStore); ok {
+		return boltRKS.SetRootKey(rootKey)
+	}
+
+	return nil
 }
 
 // ChangePassword calls the underlying root key store's ChangePassword and
 // returns the result.
 func (svc *Service) ChangePassword(oldPw, newPw []byte) error {
-	return svc.rks.ChangePassword(oldPw, newPw)
+	if boltRKS, ok := svc.rks.(ExtendedRootKeyStore); ok {
+		return boltRKS.ChangePassword(oldPw, newPw)
+	}
+
+	return nil
 }
 
 // RawMacaroonFromContext is a helper function that extracts a raw macaroon

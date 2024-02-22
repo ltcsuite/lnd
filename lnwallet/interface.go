@@ -14,8 +14,10 @@ import (
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/ltcutil/hdkeychain"
 	"github.com/ltcsuite/ltcd/ltcutil/psbt"
+	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
+	base "github.com/ltcsuite/ltcwallet/wallet"
 	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
 )
@@ -30,6 +32,10 @@ const (
 // WalletController supports.
 type AddressType uint8
 
+// AccountAddressMap maps the account properties to an array of
+// address properties.
+type AccountAddressMap map[*waddrmgr.AccountProperties][]AddressProperty
+
 const (
 	// UnknownAddressType represents an output with an unknown or non-standard
 	// script.
@@ -41,6 +47,9 @@ const (
 	// NestedWitnessPubKey represents a p2sh output which is itself a
 	// nested p2wkh output.
 	NestedWitnessPubKey
+
+	// TaprootPubkey represents a p2tr key path spending address.
+	TaprootPubkey
 )
 
 var (
@@ -60,6 +69,12 @@ var (
 	// ErrNotMine is an error denoting that a WalletController instance is
 	// unable to spend a specified output.
 	ErrNotMine = errors.New("the passed output doesn't belong to the wallet")
+
+	// ErrMempoolFee is returned from PublishTransaction in case the tx
+	// being published is not accepted into mempool because the fee
+	// requirements of the mempool backend are not met.
+	ErrMempoolFee = errors.New("transaction rejected by the mempool " +
+		"because of low fees")
 )
 
 // ErrNoOutputs is returned if we try to create a transaction with no outputs
@@ -71,6 +86,31 @@ var ErrNoOutputs = errors.New("no outputs")
 var ErrInvalidMinconf = errors.New("minimum number of confirmations must " +
 	"be a non-negative number")
 
+// AddressProperty contains wallet related information of an address.
+type AddressProperty struct {
+	// Address is the address of an account.
+	Address string
+
+	// Internal denotes if the address is a change address.
+	Internal bool
+
+	// Balance returns the total balance of an address.
+	Balance ltcutil.Amount
+}
+
+// AccountIdentifier contains information to uniquely identify an account.
+type AccountIdentifier struct {
+	// Name is the name of the account.
+	Name string
+
+	// AddressType is the type of addresses supported by the account.
+	AddressType AddressType
+
+	// DerivationPath is the derivation path corresponding to the account
+	// public key.
+	DerivationPath string
+}
+
 // Utxo is an unspent output denoted by its outpoint, and output value of the
 // original output.
 type Utxo struct {
@@ -81,6 +121,27 @@ type Utxo struct {
 	wire.OutPoint
 	Derivation *psbt.Bip32Derivation
 	PrevTx     *wire.MsgTx
+}
+
+// OutputDetail contains additional information on a destination address.
+type OutputDetail struct {
+	OutputType   txscript.ScriptClass
+	Addresses    []ltcutil.Address
+	PkScript     []byte
+	OutputIndex  int
+	Value        ltcutil.Amount
+	IsOurAddress bool
+}
+
+// PreviousOutPoint contains information about the previous outpoint.
+type PreviousOutPoint struct {
+	// OutPoint is the transaction out point in the format txid:n.
+	OutPoint string
+
+	// IsOurOutput denotes if the previous output is controlled by the
+	// internal wallet. The flag will only detect p2wkh, np2wkh and p2tr
+	// inputs as its own.
+	IsOurOutput bool
 }
 
 // TransactionDetail describes a transaction with either inputs which belong to
@@ -117,14 +178,18 @@ type TransactionDetail struct {
 	// TotalFees is the total fee in satoshis paid by this transaction.
 	TotalFees int64
 
-	// DestAddresses are the destinations for a transaction
-	DestAddresses []ltcutil.Address
+	// OutputDetails contains output data for each destination address, such
+	// as the output script and amount.
+	OutputDetails []OutputDetail
 
 	// RawTx returns the raw serialized transaction.
 	RawTx []byte
 
 	// Label is an optional transaction label.
 	Label string
+
+	// PreviousOutpoints are the inputs for a transaction.
+	PreviousOutpoints []PreviousOutPoint
 }
 
 // TransactionSubscription is an interface which describes an object capable of
@@ -204,11 +269,26 @@ type WalletController interface {
 	// IsOurAddress checks if the passed address belongs to this wallet
 	IsOurAddress(a ltcutil.Address) bool
 
+	// AddressInfo returns the information about an address, if it's known
+	// to this wallet.
+	AddressInfo(a ltcutil.Address) (waddrmgr.ManagedAddress, error)
+
 	// ListAccounts retrieves all accounts belonging to the wallet by
 	// default. A name and key scope filter can be provided to filter
 	// through all of the wallet accounts and return only those matching.
 	ListAccounts(string, *waddrmgr.KeyScope) ([]*waddrmgr.AccountProperties,
 		error)
+
+	// RequiredReserve returns the minimum amount of satoshis that should be
+	// kept in the wallet in order to fee bump anchor channels if necessary.
+	// The value scales with the number of public anchor channels but is
+	// capped at a maximum.
+	RequiredReserve(uint32) ltcutil.Amount
+
+	// ListAddresses retrieves all the addresses along with their balance. An
+	// account name filter can be provided to filter through all of the
+	// wallet accounts and return the addresses of only those matching.
+	ListAddresses(string, bool) (AccountAddressMap, error)
 
 	// ImportAccount imports an account backed by an account extended public
 	// key. The master key fingerprint denotes the fingerprint of the root
@@ -241,6 +321,15 @@ type WalletController interface {
 	// wallet using the legacy pay-to-pubkey-hash (P2PKH) scheme.
 	ImportPublicKey(pubKey *btcec.PublicKey,
 		addrType waddrmgr.AddressType) error
+
+	// ImportTaprootScript imports a user-provided taproot script into the
+	// wallet. The imported script will act as a pay-to-taproot address.
+	//
+	// NOTE: Taproot keys imported through this RPC currently _cannot_ be
+	// used for funding PSBTs. Only tracking the balance and UTXOs is
+	// currently supported.
+	ImportTaprootScript(scope waddrmgr.KeyScope,
+		tapscript *waddrmgr.Tapscript) (waddrmgr.ManagedAddress, error)
 
 	// SendOutputs funds, signs, and broadcasts a Bitcoin transaction paying
 	// out to the specified outputs. In the case the wallet has insufficient
@@ -319,7 +408,8 @@ type WalletController interface {
 	//
 	// NOTE: This method requires the global coin selection lock to be held.
 	LeaseOutput(id wtxmgr.LockID, op wire.OutPoint,
-		duration time.Duration) (time.Time, error)
+		duration time.Duration) (time.Time, []byte, ltcutil.Amount,
+		error)
 
 	// ReleaseOutput unlocks an output, allowing it to be available for coin
 	// selection if it remains unspent. The ID should match the one used to
@@ -329,7 +419,7 @@ type WalletController interface {
 	ReleaseOutput(id wtxmgr.LockID, op wire.OutPoint) error
 
 	// ListLeasedOutputs returns a list of all currently locked outputs.
-	ListLeasedOutputs() ([]*wtxmgr.LockedOutput, error)
+	ListLeasedOutputs() ([]*base.ListLeasedOutputResult, error)
 
 	// PublishTransaction performs cursory validation (dust checks, etc),
 	// then finally broadcasts the passed transaction to the Bitcoin network.
@@ -346,12 +436,26 @@ type WalletController interface {
 	// is set. Labels must not be empty, and they are limited to 500 chars.
 	LabelTransaction(hash chainhash.Hash, label string, overwrite bool) error
 
+	// FetchTx attempts to fetch a transaction in the wallet's database
+	// identified by the passed transaction hash. If the transaction can't
+	// be found, then a nil pointer is returned.
+	FetchTx(chainhash.Hash) (*wire.MsgTx, error)
+
+	// RemoveDescendants attempts to remove any transaction from the
+	// wallet's tx store (that may be unconfirmed) that spends outputs
+	// created by the passed transaction. This remove propagates
+	// recursively down the chain of descendent transactions.
+	RemoveDescendants(*wire.MsgTx) error
+
 	// FundPsbt creates a fully populated PSBT packet that contains enough
 	// inputs to fund the outputs specified in the passed in packet with the
 	// specified fee rate. If there is change left, a change output from the
 	// internal wallet is added and the index of the change output is
 	// returned. Otherwise no additional output is created and the index -1
-	// is returned.
+	// is returned. If no custom change scope is specified, the BIP0084 will
+	// be used for default accounts and single imported public keys. For
+	// custom account, no key scope should be provided as the coin selection
+	// key scope will always be used to generate the change address.
 	//
 	// NOTE: If the packet doesn't contain any inputs, coin selection is
 	// performed automatically. The account parameter must be non-empty as
@@ -363,7 +467,8 @@ type WalletController interface {
 	// the selected/validated inputs. It is in the caller's responsibility
 	// to lock the inputs before handing them out.
 	FundPsbt(packet *psbt.Packet, minConfs int32,
-		feeRate chainfee.SatPerKWeight, account string) (int32, error)
+		feeRate chainfee.SatPerKWeight, account string,
+		changeScope *waddrmgr.KeyScope) (int32, error)
 
 	// SignPsbt expects a partial transaction with all inputs and outputs
 	// fully declared and tries to sign all unsigned inputs that have all
@@ -376,7 +481,7 @@ type WalletController interface {
 	// does not perform any other tasks (such as coin selection, UTXO
 	// locking or input/output/fee value validation, PSBT finalization). Any
 	// input that is incomplete will be skipped.
-	SignPsbt(packet *psbt.Packet) error
+	SignPsbt(packet *psbt.Packet) ([]uint32, error)
 
 	// FinalizePsbt expects a partial transaction with all inputs and
 	// outputs fully declared and tries to sign all inputs that belong to
@@ -422,7 +527,7 @@ type WalletController interface {
 	Stop() error
 
 	// BackEnd returns a name for the wallet's backing chain service,
-	// which could be e.g. ltcd, bitcoind, neutrino, or another consensus
+	// which could be e.g. ltcd, litecoind, neutrino, or another consensus
 	// service.
 	BackEnd() string
 }
@@ -457,6 +562,9 @@ type BlockChainIO interface {
 	// GetBlock returns the block in the main chain identified by the given
 	// hash.
 	GetBlock(blockHash *chainhash.Hash) (*wire.MsgBlock, error)
+
+	// GetBlockHeader returns the block header for the given block hash.
+	GetBlockHeader(blockHash *chainhash.Hash) (*wire.BlockHeader, error)
 }
 
 // MessageSigner represents an abstract object capable of signing arbitrary

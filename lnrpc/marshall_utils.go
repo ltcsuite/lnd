@@ -10,6 +10,7 @@ import (
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 var (
@@ -27,7 +28,6 @@ func CalculateFeeLimit(feeLimit *FeeLimit,
 	amount lnwire.MilliSatoshi) lnwire.MilliSatoshi {
 
 	switch feeLimit.GetLimit().(type) {
-
 	case *FeeLimit_Fixed:
 		return lnwire.NewMSatFromSatoshis(
 			ltcutil.Amount(feeLimit.GetFixed()),
@@ -89,12 +89,14 @@ func MarshalUtxos(utxos []*lnwallet.Utxo, activeNetParams *chaincfg.Params) (
 		// address type.
 		var addrType AddressType
 		switch utxo.AddressType {
-
 		case lnwallet.WitnessPubKey:
 			addrType = AddressType_WITNESS_PUBKEY_HASH
 
 		case lnwallet.NestedWitnessPubKey:
 			addrType = AddressType_NESTED_PUBKEY_HASH
+
+		case lnwallet.TaprootPubkey:
+			addrType = AddressType_TAPROOT_PUBKEY
 
 		case lnwallet.UnknownAddressType:
 			continue
@@ -105,11 +107,7 @@ func MarshalUtxos(utxos []*lnwallet.Utxo, activeNetParams *chaincfg.Params) (
 
 		// Now that we know we have a proper mapping to an address,
 		// we'll convert the regular outpoint to an lnrpc variant.
-		outpoint := &OutPoint{
-			TxidBytes:   utxo.OutPoint.Hash[:],
-			TxidStr:     utxo.OutPoint.Hash.String(),
-			OutputIndex: utxo.OutPoint.Index,
-		}
+		outpoint := MarshalOutPoint(&utxo.OutPoint)
 
 		utxoResp := Utxo{
 			AddressType:   addrType,
@@ -142,4 +140,42 @@ func MarshalUtxos(utxos []*lnwallet.Utxo, activeNetParams *chaincfg.Params) (
 	}
 
 	return res, nil
+}
+
+// MarshallOutputType translates a txscript.ScriptClass into a
+// lnrpc.OutputScriptType.
+func MarshallOutputType(o txscript.ScriptClass) OutputScriptType {
+	// Translate txscript ScriptClass type to the proper gRPC proto
+	// output script type.
+	switch o {
+	case txscript.ScriptHashTy:
+		return OutputScriptType_SCRIPT_TYPE_SCRIPT_HASH
+	case txscript.WitnessV0PubKeyHashTy:
+		return OutputScriptType_SCRIPT_TYPE_WITNESS_V0_PUBKEY_HASH
+	case txscript.WitnessV0ScriptHashTy:
+		return OutputScriptType_SCRIPT_TYPE_WITNESS_V0_SCRIPT_HASH
+	case txscript.PubKeyTy:
+		return OutputScriptType_SCRIPT_TYPE_PUBKEY
+	case txscript.MultiSigTy:
+		return OutputScriptType_SCRIPT_TYPE_MULTISIG
+	case txscript.NullDataTy:
+		return OutputScriptType_SCRIPT_TYPE_NULLDATA
+	case txscript.NonStandardTy:
+		return OutputScriptType_SCRIPT_TYPE_NON_STANDARD
+	case txscript.WitnessUnknownTy:
+		return OutputScriptType_SCRIPT_TYPE_WITNESS_UNKNOWN
+	case txscript.WitnessV1TaprootTy:
+		return OutputScriptType_SCRIPT_TYPE_WITNESS_V1_TAPROOT
+	default:
+		return OutputScriptType_SCRIPT_TYPE_PUBKEY_HASH
+	}
+}
+
+// MarshalOutPoint converts a wire.OutPoint to its proto counterpart.
+func MarshalOutPoint(op *wire.OutPoint) *OutPoint {
+	return &OutPoint{
+		TxidBytes:   op.Hash[:],
+		TxidStr:     op.Hash.String(),
+		OutputIndex: op.Index,
+	}
 }

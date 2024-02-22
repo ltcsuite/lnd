@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 
 	"github.com/ltcsuite/lnd/brontide"
+	"github.com/ltcsuite/lnd/lnencrypt"
 	"github.com/ltcsuite/lnd/tor"
 	"github.com/ltcsuite/lnd/watchtower/lookout"
 	"github.com/ltcsuite/lnd/watchtower/wtserver"
@@ -163,14 +164,22 @@ func (w *Standalone) createNewHiddenService() error {
 		listenPorts = append(listenPorts, port)
 	}
 
+	encrypter, err := lnencrypt.KeyRingEncrypter(w.cfg.KeyRing)
+	if err != nil {
+		return err
+	}
+
 	// Once we've created the port mapping, we can automatically create the
 	// hidden service. The service's private key will be saved on disk in order
 	// to persistently have access to this hidden service across restarts.
 	onionCfg := tor.AddOnionConfig{
 		VirtualPort: DefaultPeerPort,
 		TargetPorts: listenPorts,
-		Store:       tor.NewOnionFile(w.cfg.WatchtowerKeyPath, 0600),
-		Type:        w.cfg.Type,
+		Store: tor.NewOnionFile(
+			w.cfg.WatchtowerKeyPath, 0600, w.cfg.EncryptKey,
+			encrypter,
+		),
+		Type: w.cfg.Type,
 	}
 
 	addr, err := w.cfg.TorController.AddOnion(onionCfg)

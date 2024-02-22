@@ -3,10 +3,10 @@ package chainreg
 import (
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/ltcd/chaincfg"
-	bitcoinCfg "github.com/ltcsuite/ltcd/chaincfg" //TODO(losh)
+	bitcoinCfg "github.com/ltcsuite/ltcd/chaincfg" //TODO(litecoin)
 	litecoinCfg "github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	bitcoinWire "github.com/ltcsuite/ltcd/wire" //TODO(losh)
+	bitcoinWire "github.com/ltcsuite/ltcd/wire" //TODO(litecoin)
 	litecoinWire "github.com/ltcsuite/ltcd/wire"
 )
 

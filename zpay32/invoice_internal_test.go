@@ -12,6 +12,7 @@ import (
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/ltcutil/bech32"
+	"github.com/stretchr/testify/require"
 )
 
 // TestDecodeAmount ensures that the amount string in the hrp of the Invoice
@@ -452,7 +453,8 @@ func TestParseDestination(t *testing.T) {
 		if test.valid && !comparePubkeys(destination, test.result) {
 			t.Fatalf("test %d failed decoding destination: "+
 				"expected %x, got %x",
-				i, *test.result, *destination)
+				i, test.result.SerializeCompressed(),
+				destination.SerializeCompressed())
 			return
 		}
 	}
@@ -566,9 +568,7 @@ func TestParseMaxUint64Expiry(t *testing.T) {
 	expiryBytes := uint64ToBase32(expiry)
 
 	expiryReParse, err := base32ToUint64(expiryBytes)
-	if err != nil {
-		t.Fatalf("unable to parse uint64: %v", err)
-	}
+	require.NoError(t, err, "unable to parse uint64")
 
 	if expiryReParse != expiry {
 		t.Fatalf("wrong expiry: expected %v got %v", expiry,

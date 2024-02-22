@@ -2,6 +2,7 @@ package lnd
 
 import (
 	"fmt"
+	"net"
 	"reflect"
 
 	"github.com/btcsuite/btclog"
@@ -13,7 +14,10 @@ import (
 	"github.com/ltcsuite/lnd/lncfg"
 	"github.com/ltcsuite/lnd/lnrpc/autopilotrpc"
 	"github.com/ltcsuite/lnd/lnrpc/chainrpc"
+	"github.com/ltcsuite/lnd/lnrpc/devrpc"
 	"github.com/ltcsuite/lnd/lnrpc/invoicesrpc"
+	"github.com/ltcsuite/lnd/lnrpc/neutrinorpc"
+	"github.com/ltcsuite/lnd/lnrpc/peersrpc"
 	"github.com/ltcsuite/lnd/lnrpc/routerrpc"
 	"github.com/ltcsuite/lnd/lnrpc/signrpc"
 	"github.com/ltcsuite/lnd/lnrpc/walletrpc"
@@ -59,6 +63,14 @@ type subRPCServerConfigs struct {
 	// as a gRPC service.
 	InvoicesRPC *invoicesrpc.Config `group:"invoicesrpc" namespace:"invoicesrpc"`
 
+	// PeersRPC is a sub-RPC server that exposes peer related methods
+	// as a gRPC service.
+	PeersRPC *peersrpc.Config `group:"peersrpc" namespace:"peersrpc"`
+
+	// NeutrinoKitRPC is a sub-RPC server that exposes functionality allowing
+	// a client to interact with a running neutrino node.
+	NeutrinoKitRPC *neutrinorpc.Config `group:"neutrinorpc" namespace:"neutrinorpc"`
+
 	// RouterRPC is a sub-RPC server the exposes functionality that allows
 	// clients to send payments on the network, and perform Lightning
 	// payment related queries such as requests for estimates of off-chain
@@ -74,6 +86,11 @@ type subRPCServerConfigs struct {
 	// instance within lnd in order to add, remove, list registered client
 	// towers, etc.
 	WatchtowerClientRPC *wtclientrpc.Config `group:"wtclientrpc" namespace:"wtclientrpc"`
+
+	// DevRPC is a sub-RPC server that exposes functionality that allows
+	// developers manipulate LND state that is normally not possible.
+	// Should only be used for development purposes.
+	DevRPC *devrpc.Config `group:"devrpc" namespace:"devrpc"`
 }
 
 // PopulateDependencies attempts to iterate through all the sub-server configs
@@ -101,7 +118,12 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config,
 	tcpResolver lncfg.TCPResolver,
 	genInvoiceFeatures func() *lnwire.FeatureVector,
 	genAmpInvoiceFeatures func() *lnwire.FeatureVector,
-	rpcLogger btclog.Logger) error {
+	getNodeAnnouncement func() lnwire.NodeAnnouncement,
+	updateNodeAnnouncement func(features *lnwire.RawFeatureVector,
+		modifiers ...netann.NodeAnnModifier) error,
+	parseAddr func(addr string) (net.Addr, error),
+	rpcLogger btclog.Logger,
+	getAlias func(lnwire.ChannelID) (lnwire.ShortChannelID, error)) error {
 
 	// First, we'll use reflect to obtain a version of the config struct
 	// that allows us to programmatically inspect its fields.
@@ -173,6 +195,9 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config,
 			subCfgValue.FieldByName("ChainParams").Set(
 				reflect.ValueOf(activeNetParams),
 			)
+			subCfgValue.FieldByName("CurrentNumAnchorChans").Set(
+				reflect.ValueOf(cc.Wallet.CurrentNumAnchorChans),
+			)
 
 		case *autopilotrpc.Config:
 			subCfgValue := extractReflectValue(subCfg)
@@ -192,6 +217,9 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config,
 			)
 			subCfgValue.FieldByName("ChainNotifier").Set(
 				reflect.ValueOf(cc.ChainNotifier),
+			)
+			subCfgValue.FieldByName("Chain").Set(
+				reflect.ValueOf(cc.ChainIO),
 			)
 
 		case *invoicesrpc.Config:
@@ -234,6 +262,16 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config,
 			subCfgValue.FieldByName("GenAmpInvoiceFeatures").Set(
 				reflect.ValueOf(genAmpInvoiceFeatures),
 			)
+			subCfgValue.FieldByName("GetAlias").Set(
+				reflect.ValueOf(getAlias),
+			)
+
+		case *neutrinorpc.Config:
+			subCfgValue := extractReflectValue(subCfg)
+
+			subCfgValue.FieldByName("NeutrinoCS").Set(
+				reflect.ValueOf(cc.Cfg.NeutrinoCS),
+			)
 
 		// RouterRPC isn't conditionally compiled and doesn't need to be
 		// populated using reflection.
@@ -268,6 +306,32 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config,
 			)
 			subCfgValue.FieldByName("Log").Set(
 				reflect.ValueOf(rpcLogger),
+			)
+
+		case *devrpc.Config:
+			subCfgValue := extractReflectValue(subCfg)
+
+			subCfgValue.FieldByName("ActiveNetParams").Set(
+				reflect.ValueOf(activeNetParams),
+			)
+
+			subCfgValue.FieldByName("GraphDB").Set(
+				reflect.ValueOf(graphDB),
+			)
+
+		case *peersrpc.Config:
+			subCfgValue := extractReflectValue(subCfg)
+
+			subCfgValue.FieldByName("GetNodeAnnouncement").Set(
+				reflect.ValueOf(getNodeAnnouncement),
+			)
+
+			subCfgValue.FieldByName("ParseAddr").Set(
+				reflect.ValueOf(parseAddr),
+			)
+
+			subCfgValue.FieldByName("UpdateNodeAnnouncement").Set(
+				reflect.ValueOf(updateNodeAnnouncement),
 			)
 
 		default:

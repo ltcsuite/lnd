@@ -6,8 +6,8 @@ import (
 	"sync"
 
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb/models"
 	"github.com/ltcsuite/lnd/discovery"
-	"github.com/ltcsuite/lnd/htlcswitch"
 	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/lnrpc"
 	"github.com/ltcsuite/lnd/lnwire"
@@ -21,7 +21,7 @@ type Manager struct {
 	// UpdateForwardingPolicies is used by the manager to update active
 	// links with a new policy.
 	UpdateForwardingPolicies func(
-		chanPolicies map[wire.OutPoint]htlcswitch.ForwardingPolicy)
+		chanPolicies map[wire.OutPoint]models.ForwardingPolicy)
 
 	// PropagateChanPolicyUpdate is called to persist a new policy to disk
 	// and broadcast it to the network.
@@ -66,7 +66,7 @@ func (r *Manager) UpdatePolicy(newSchema routing.ChannelPolicy,
 
 	var failedUpdates []*lnrpc.FailedUpdate
 	var edgesToUpdate []discovery.EdgeWithInfo
-	policiesToUpdate := make(map[wire.OutPoint]htlcswitch.ForwardingPolicy)
+	policiesToUpdate := make(map[wire.OutPoint]models.ForwardingPolicy)
 
 	// Next, we'll loop over all the outgoing channels the router knows of.
 	// If we have a filter then we'll only collected those channels,
@@ -106,7 +106,7 @@ func (r *Manager) UpdatePolicy(newSchema routing.ChannelPolicy,
 		})
 
 		// Add updated policy to list of policies to send to switch.
-		policiesToUpdate[info.ChannelPoint] = htlcswitch.ForwardingPolicy{
+		policiesToUpdate[info.ChannelPoint] = models.ForwardingPolicy{
 			BaseFee:       edge.FeeBaseMSat,
 			FeeRate:       edge.FeeProportionalMillionths,
 			TimeLockDelta: uint32(edge.TimeLockDelta),
@@ -185,12 +185,11 @@ func (r *Manager) updateEdge(tx kvdb.RTx, chanPoint wire.OutPoint,
 	// Retrieve negotiated channel htlc amt limits.
 	amtMin, amtMax, err := r.getHtlcAmtLimits(tx, chanPoint)
 	if err != nil {
-		return nil
+		return err
 	}
 
 	// We now update the edge max htlc value.
 	switch {
-
 	// If a non-zero max htlc was specified, use it to update the edge.
 	// Otherwise keep the value unchanged.
 	case newSchema.MaxHTLC != 0:
@@ -214,7 +213,7 @@ func (r *Manager) updateEdge(tx kvdb.RTx, chanPoint wire.OutPoint,
 	}
 
 	// If the MaxHtlc flag wasn't already set, we can set it now.
-	edge.MessageFlags |= lnwire.ChanUpdateOptionMaxHtlc
+	edge.MessageFlags |= lnwire.ChanUpdateRequiredMaxHtlc
 
 	// Validate htlc amount constraints.
 	switch {
@@ -266,11 +265,7 @@ func (r *Manager) getHtlcAmtLimits(tx kvdb.RTx, chanPoint wire.OutPoint) (
 func makeFailureItem(outPoint wire.OutPoint, updateFailure lnrpc.UpdateFailure,
 	errStr string) *lnrpc.FailedUpdate {
 
-	outpoint := &lnrpc.OutPoint{
-		TxidBytes:   outPoint.Hash[:],
-		TxidStr:     outPoint.Hash.String(),
-		OutputIndex: outPoint.Index,
-	}
+	outpoint := lnrpc.MarshalOutPoint(&outPoint)
 
 	return &lnrpc.FailedUpdate{
 		Outpoint:    outpoint,

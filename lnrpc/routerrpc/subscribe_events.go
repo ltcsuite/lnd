@@ -14,7 +14,7 @@ func rpcHtlcEvent(htlcEvent interface{}) (*HtlcEvent, error) {
 	var (
 		key       htlcswitch.HtlcKey
 		timestamp time.Time
-		eventType htlcswitch.HtlcEventType
+		eventType *htlcswitch.HtlcEventType
 		event     isHtlcEvent_Event
 	)
 
@@ -27,7 +27,7 @@ func rpcHtlcEvent(htlcEvent interface{}) (*HtlcEvent, error) {
 		}
 
 		key = e.HtlcKey
-		eventType = e.HtlcEventType
+		eventType = &e.HtlcEventType
 		timestamp = e.Timestamp
 
 	case *htlcswitch.ForwardingFailEvent:
@@ -36,7 +36,7 @@ func rpcHtlcEvent(htlcEvent interface{}) (*HtlcEvent, error) {
 		}
 
 		key = e.HtlcKey
-		eventType = e.HtlcEventType
+		eventType = &e.HtlcEventType
 		timestamp = e.Timestamp
 
 	case *htlcswitch.LinkFailEvent:
@@ -57,7 +57,7 @@ func rpcHtlcEvent(htlcEvent interface{}) (*HtlcEvent, error) {
 		}
 
 		key = e.HtlcKey
-		eventType = e.HtlcEventType
+		eventType = &e.HtlcEventType
 		timestamp = e.Timestamp
 
 	case *htlcswitch.SettleEvent:
@@ -68,7 +68,20 @@ func rpcHtlcEvent(htlcEvent interface{}) (*HtlcEvent, error) {
 		}
 
 		key = e.HtlcKey
-		eventType = e.HtlcEventType
+		eventType = &e.HtlcEventType
+		timestamp = e.Timestamp
+
+	case *htlcswitch.FinalHtlcEvent:
+		event = &HtlcEvent_FinalHtlcEvent{
+			FinalHtlcEvent: &FinalHtlcEvent{
+				Settled:  e.Settled,
+				Offchain: e.Offchain,
+			},
+		}
+
+		key = htlcswitch.HtlcKey{
+			IncomingCircuit: e.CircuitKey,
+		}
 		timestamp = e.Timestamp
 
 	default:
@@ -85,18 +98,21 @@ func rpcHtlcEvent(htlcEvent interface{}) (*HtlcEvent, error) {
 	}
 
 	// Convert the htlc event type to a rpc event.
-	switch eventType {
-	case htlcswitch.HtlcEventTypeSend:
-		rpcEvent.EventType = HtlcEvent_SEND
+	if eventType != nil {
+		switch *eventType {
+		case htlcswitch.HtlcEventTypeSend:
+			rpcEvent.EventType = HtlcEvent_SEND
 
-	case htlcswitch.HtlcEventTypeReceive:
-		rpcEvent.EventType = HtlcEvent_RECEIVE
+		case htlcswitch.HtlcEventTypeReceive:
+			rpcEvent.EventType = HtlcEvent_RECEIVE
 
-	case htlcswitch.HtlcEventTypeForward:
-		rpcEvent.EventType = HtlcEvent_FORWARD
+		case htlcswitch.HtlcEventTypeForward:
+			rpcEvent.EventType = HtlcEvent_FORWARD
 
-	default:
-		return nil, fmt.Errorf("unknown event type: %v", eventType)
+		default:
+			return nil, fmt.Errorf("unknown event type: %v",
+				eventType)
+		}
 	}
 
 	return rpcEvent, nil
@@ -141,9 +157,7 @@ func rpcFailReason(linkErr *htlcswitch.LinkError) (lnrpc.Failure_FailureCode,
 	default:
 		return 0, 0, fmt.Errorf("unknown failure "+
 			"detail type: %T", linkErr.FailureDetail)
-
 	}
-
 }
 
 // rpcFailureResolution maps an invoice failure resolution to a rpc failure

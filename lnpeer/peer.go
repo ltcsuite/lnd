@@ -4,10 +4,21 @@ import (
 	"net"
 
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/wire"
 )
+
+// NewChannel is a newly funded channel. This struct couples a channel along
+// with the set of channel options that may change how the channel is created.
+// This can be used to pass along the nonce state needed for taproot channels.
+type NewChannel struct {
+	*channeldb.OpenChannel
+
+	// ChanOpts can be used to change how the channel is created.
+	ChanOpts []lnwallet.ChannelOpt
+}
 
 // Peer is an interface which represents a remote lightning node.
 type Peer interface {
@@ -25,7 +36,14 @@ type Peer interface {
 
 	// AddNewChannel adds a new channel to the peer. The channel should fail
 	// to be added if the cancel channel is closed.
-	AddNewChannel(channel *channeldb.OpenChannel, cancel <-chan struct{}) error
+	AddNewChannel(newChan *NewChannel, cancel <-chan struct{}) error
+
+	// AddPendingChannel adds a pending open channel ID to the peer. The
+	// channel should fail to be added if the cancel chan is closed.
+	AddPendingChannel(cid lnwire.ChannelID, cancel <-chan struct{}) error
+
+	// RemovePendingChannel removes a pending open channel ID to the peer.
+	RemovePendingChannel(cid lnwire.ChannelID) error
 
 	// WipeChannel removes the channel uniquely identified by its channel
 	// point from all indexes associated with the peer.

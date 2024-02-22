@@ -2,7 +2,6 @@ package channeldb_test
 
 import (
 	"bytes"
-	"io/ioutil"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -110,10 +109,10 @@ func checkPkgFilterRand(t *testing.T, b, p uint16) {
 }
 
 // checkPkgFilterEncodeDecode tests the serialization of a pkg filter by:
-//   1) writing it to a buffer
-//   2) verifying the number of bytes written matches the filter's Size()
-//   3) reconstructing the filter decoding the bytes
-//   4) checking that the two filters are the same according to Equal
+//  1. writing it to a buffer
+//  2. verifying the number of bytes written matches the filter's Size()
+//  3. reconstructing the filter decoding the bytes
+//  4. checking that the two filters are the same according to Equal
 func checkPkgFilterEncodeDecode(t *testing.T, i uint16, f *channeldb.PkgFilter) {
 	var b bytes.Buffer
 	if err := f.Encode(&b); err != nil {
@@ -843,21 +842,13 @@ func loadFwdPkgs(t *testing.T, db kvdb.Backend,
 // provided path is an empty, it will create a temp dir/file to use.
 func makeFwdPkgDB(t *testing.T, path string) kvdb.Backend { // nolint:unparam
 	if path == "" {
-		var err error
-		path, err = ioutil.TempDir("", "fwdpkgdb")
-		if err != nil {
-			t.Fatalf("unable to create temp path: %v", err)
-		}
-
-		path = filepath.Join(path, "fwdpkg.db")
+		path = filepath.Join(t.TempDir(), "fwdpkg.db")
 	}
 
 	bdb, err := kvdb.Create(
 		kvdb.BoltBackendName, path, true, kvdb.DefaultDBTimeout,
 	)
-	if err != nil {
-		t.Fatalf("unable to open boltdb: %v", err)
-	}
+	require.NoError(t, err, "unable to open boltdb")
 
 	return bdb
 }

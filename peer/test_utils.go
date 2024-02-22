@@ -5,15 +5,14 @@ import (
 	crand "crypto/rand"
 	"encoding/binary"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"net"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channelnotifier"
 	"github.com/ltcsuite/lnd/htlcswitch"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/keychain"
@@ -38,12 +37,13 @@ const (
 	// timeout is a timeout value to use for tests which need to wait for
 	// a return value on a channel.
 	timeout = time.Second * 5
+
+	// testCltvRejectDelta is the minimum delta between expiry and current
+	// height below which htlcs are rejected.
+	testCltvRejectDelta = 13
 )
 
 var (
-	// Just use some arbitrary bytes as delivery script.
-	dummyDeliveryScript = channels.AlicesPrivKey
-
 	testKeyLoc = keychain.KeyLocator{Family: keychain.KeyFamilyNodeKey}
 )
 
@@ -55,10 +55,10 @@ var noUpdate = func(a, b *channeldb.OpenChannel) {}
 // one of the nodes, together with the channel seen from both nodes. It takes
 // an updateChan function which can be used to modify the default values on
 // the channel states for each peer.
-func createTestPeer(notifier chainntnfs.ChainNotifier,
+func createTestPeer(t *testing.T, notifier chainntnfs.ChainNotifier,
 	publTx chan *wire.MsgTx, updateChan func(a, b *channeldb.OpenChannel),
 	mockSwitch *mockMessageSwitch) (
-	*Brontide, *lnwallet.LightningChannel, func(), error) {
+	*Brontide, *lnwallet.LightningChannel, error) {
 
 	nodeKeyLocator := keychain.KeyLocator{
 		Family: keychain.KeyFamilyNodeKey,
@@ -140,23 +140,23 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 
 	bobRoot, err := chainhash.NewHash(bobKeyPriv.Serialize())
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	bobPreimageProducer := shachain.NewRevocationProducer(*bobRoot)
 	bobFirstRevoke, err := bobPreimageProducer.AtIndex(0)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	bobCommitPoint := input.ComputeCommitmentPoint(bobFirstRevoke[:])
 
 	aliceRoot, err := chainhash.NewHash(aliceKeyPriv.Serialize())
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	alicePreimageProducer := shachain.NewRevocationProducer(*aliceRoot)
 	aliceFirstRevoke, err := alicePreimageProducer.AtIndex(0)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	aliceCommitPoint := input.ComputeCommitmentPoint(aliceFirstRevoke[:])
 
@@ -166,33 +166,29 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 		isAliceInitiator, 0,
 	)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
-	alicePath, err := ioutil.TempDir("", "alicedb")
+	dbAlice, err := channeldb.Open(t.TempDir())
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
+	t.Cleanup(func() {
+		require.NoError(t, dbAlice.Close())
+	})
 
-	dbAlice, err := channeldb.Open(alicePath)
+	dbBob, err := channeldb.Open(t.TempDir())
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-
-	bobPath, err := ioutil.TempDir("", "bobdb")
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	dbBob, err := channeldb.Open(bobPath)
-	if err != nil {
-		return nil, nil, nil, err
-	}
+	t.Cleanup(func() {
+		require.NoError(t, dbBob.Close())
+	})
 
 	estimator := chainfee.NewStaticEstimator(12500, 0)
 	feePerKw, err := estimator.EstimateFeePerKW(1)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	// TODO(roasbeef): need to factor in commit fee?
@@ -217,7 +213,7 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 
 	var chanIDBytes [8]byte
 	if _, err := io.ReadFull(crand.Reader, chanIDBytes[:]); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	shortChanID := lnwire.NewShortChanIDFromInt(
@@ -268,7 +264,7 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 	}
 
 	if err := aliceChannelState.SyncPending(aliceAddr, 0); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	bobAddr := &net.TCPAddr{
@@ -277,34 +273,39 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 	}
 
 	if err := bobChannelState.SyncPending(bobAddr, 0); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
-	cleanUpFunc := func() {
-		os.RemoveAll(bobPath)
-		os.RemoveAll(alicePath)
-	}
-
-	aliceSigner := &mock.SingleSigner{Privkey: aliceKeyPriv}
-	bobSigner := &mock.SingleSigner{Privkey: bobKeyPriv}
+	aliceSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{aliceKeyPriv}, nil,
+	)
+	bobSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{bobKeyPriv}, nil,
+	)
 
 	alicePool := lnwallet.NewSigPool(1, aliceSigner)
 	channelAlice, err := lnwallet.NewLightningChannel(
 		aliceSigner, aliceChannelState, alicePool,
 	)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	_ = alicePool.Start()
+	t.Cleanup(func() {
+		require.NoError(t, alicePool.Stop())
+	})
 
 	bobPool := lnwallet.NewSigPool(1, bobSigner)
 	channelBob, err := lnwallet.NewLightningChannel(
 		bobSigner, bobChannelState, bobPool,
 	)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	_ = bobPool.Start()
+	t.Cleanup(func() {
+		require.NoError(t, bobPool.Stop())
+	})
 
 	chainIO := &mock.ChainIO{
 		BestHeight: broadcastHeight,
@@ -336,18 +337,22 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 		OurPubKey:                aliceKeyPub,
 		OurKeyLoc:                testKeyLoc,
 		IsChannelActive:          func(lnwire.ChannelID) bool { return true },
-		ApplyChannelUpdate:       func(*lnwire.ChannelUpdate) error { return nil },
+		ApplyChannelUpdate: func(*lnwire.ChannelUpdate,
+			*wire.OutPoint, bool) error {
+
+			return nil
+		},
 	})
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	if err = chanStatusMgr.Start(); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	errBuffer, err := queue.NewCircularBuffer(ErrorBufferSize)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	var pubKey [33]byte
@@ -359,33 +364,60 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 		ChainNet:    wire.SimNet,
 	}
 
+	interceptableSwitchNotifier := &mock.ChainNotifier{
+		EpochChan: make(chan *chainntnfs.BlockEpoch, 1),
+	}
+	interceptableSwitchNotifier.EpochChan <- &chainntnfs.BlockEpoch{
+		Height: 1,
+	}
+
+	interceptableSwitch, err := htlcswitch.NewInterceptableSwitch(
+		&htlcswitch.InterceptableSwitchConfig{
+			CltvRejectDelta:    testCltvRejectDelta,
+			CltvInterceptDelta: testCltvRejectDelta + 3,
+			Notifier:           interceptableSwitchNotifier,
+		},
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// TODO(yy): change ChannelNotifier to be an interface.
+	channelNotifier := channelnotifier.New(dbAlice.ChannelStateDB())
+	require.NoError(t, channelNotifier.Start())
+	t.Cleanup(func() {
+		require.NoError(t, channelNotifier.Stop(),
+			"stop channel notifier failed")
+	})
+
 	cfg := &Config{
-		Addr:        cfgAddr,
-		PubKeyBytes: pubKey,
-		ErrorBuffer: errBuffer,
-		ChainIO:     chainIO,
-		Switch:      mockSwitch,
-
+		Addr:              cfgAddr,
+		PubKeyBytes:       pubKey,
+		ErrorBuffer:       errBuffer,
+		ChainIO:           chainIO,
+		Switch:            mockSwitch,
 		ChanActiveTimeout: chanActiveTimeout,
-		InterceptSwitch:   htlcswitch.NewInterceptableSwitch(nil),
-
-		ChannelDB:      dbAlice.ChannelStateDB(),
-		FeeEstimator:   estimator,
-		Wallet:         wallet,
-		ChainNotifier:  notifier,
-		ChanStatusMgr:  chanStatusMgr,
-		DisconnectPeer: func(b *btcec.PublicKey) error { return nil },
+		InterceptSwitch:   interceptableSwitch,
+		ChannelDB:         dbAlice.ChannelStateDB(),
+		FeeEstimator:      estimator,
+		Wallet:            wallet,
+		ChainNotifier:     notifier,
+		ChanStatusMgr:     chanStatusMgr,
+		Features:          lnwire.NewFeatureVector(nil, lnwire.Features),
+		DisconnectPeer:    func(b *btcec.PublicKey) error { return nil },
+		ChannelNotifier:   channelNotifier,
 	}
 
 	alicePeer := NewBrontide(*cfg)
+	alicePeer.remoteFeatures = lnwire.NewFeatureVector(nil, lnwire.Features)
 
 	chanID := lnwire.NewChanIDFromOutPoint(channelAlice.ChannelPoint())
-	alicePeer.activeChannels[chanID] = channelAlice
+	alicePeer.activeChannels.Store(chanID, channelAlice)
 
 	alicePeer.wg.Add(1)
 	go alicePeer.channelManager()
 
-	return alicePeer, channelBob, cleanUpFunc, nil
+	return alicePeer, channelBob, nil
 }
 
 // mockMessageSwitch is a mock implementation of the messageSwitch interface
@@ -465,6 +497,16 @@ type mockMessageConn struct {
 
 	readMessages   chan []byte
 	curReadMessage []byte
+
+	// writeRaceDetectingCounter is incremented on any function call
+	// associated with writing to the connection. The race detector will
+	// trigger on this counter if a data race exists.
+	writeRaceDetectingCounter int
+
+	// readRaceDetectingCounter is incremented on any function call
+	// associated with reading from the connection. The race detector will
+	// trigger on this counter if a data race exists.
+	readRaceDetectingCounter int
 }
 
 func newMockConn(t *testing.T, expectedMessages int) *mockMessageConn {
@@ -477,17 +519,20 @@ func newMockConn(t *testing.T, expectedMessages int) *mockMessageConn {
 
 // SetWriteDeadline mocks setting write deadline for our conn.
 func (m *mockMessageConn) SetWriteDeadline(time.Time) error {
+	m.writeRaceDetectingCounter++
 	return nil
 }
 
 // Flush mocks a message conn flush.
 func (m *mockMessageConn) Flush() (int, error) {
+	m.writeRaceDetectingCounter++
 	return 0, nil
 }
 
 // WriteMessage mocks sending of a message on our connection. It will push
 // the bytes sent into the mock's writtenMessages channel.
 func (m *mockMessageConn) WriteMessage(msg []byte) error {
+	m.writeRaceDetectingCounter++
 	select {
 	case m.writtenMessages <- msg:
 	case <-time.After(timeout):
@@ -510,15 +555,18 @@ func (m *mockMessageConn) assertWrite(expected []byte) {
 }
 
 func (m *mockMessageConn) SetReadDeadline(t time.Time) error {
+	m.readRaceDetectingCounter++
 	return nil
 }
 
 func (m *mockMessageConn) ReadNextHeader() (uint32, error) {
+	m.readRaceDetectingCounter++
 	m.curReadMessage = <-m.readMessages
 	return uint32(len(m.curReadMessage)), nil
 }
 
 func (m *mockMessageConn) ReadNextBody(buf []byte) ([]byte, error) {
+	m.readRaceDetectingCounter++
 	return m.curReadMessage, nil
 }
 
@@ -527,5 +575,9 @@ func (m *mockMessageConn) RemoteAddr() net.Addr {
 }
 
 func (m *mockMessageConn) LocalAddr() net.Addr {
+	return nil
+}
+
+func (m *mockMessageConn) Close() error {
 	return nil
 }

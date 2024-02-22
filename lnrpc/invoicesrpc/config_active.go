@@ -4,12 +4,12 @@
 package invoicesrpc
 
 import (
-	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/invoices"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/macaroons"
 	"github.com/ltcsuite/lnd/netann"
+	"github.com/ltcsuite/ltcd/chaincfg"
 )
 
 // Config is the primary configuration struct for the invoices RPC server. It
@@ -60,4 +60,8 @@ type Config struct {
 	// GenAmpInvoiceFeatures returns a feature containing feature bits that
 	// should be advertised on freshly generated AMP invoices.
 	GenAmpInvoiceFeatures func() *lnwire.FeatureVector
+
+	// GetAlias returns the peer's alias SCID if it exists given the
+	// 32-byte ChannelID.
+	GetAlias func(lnwire.ChannelID) (lnwire.ShortChannelID, error)
 }

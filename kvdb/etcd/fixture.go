@@ -5,8 +5,6 @@ package etcd
 
 import (
 	"context"
-	"io/ioutil"
-	"os"
 	"testing"
 	"time"
 
@@ -23,10 +21,9 @@ const (
 
 // EtcdTestFixture holds internal state of the etcd test fixture.
 type EtcdTestFixture struct {
-	t       *testing.T
-	cli     *clientv3.Client
-	config  *Config
-	cleanup func()
+	t      *testing.T
+	cli    *clientv3.Client
+	config *Config
 }
 
 // NewTestEtcdInstance creates an embedded etcd instance for testing, listening
@@ -43,15 +40,13 @@ func NewTestEtcdInstance(t *testing.T, path string) (*Config, func()) {
 	return config, cleanup
 }
 
-// NewTestEtcdTestFixture creates a new etcd-test fixture. This is helper
-// object to facilitate etcd tests and ensure pre and post conditions.
+// NewEtcdTestFixture creates a new etcd-test fixture. This is helper
+// object to facilitate etcd tests and ensure pre- and post-conditions.
 func NewEtcdTestFixture(t *testing.T) *EtcdTestFixture {
-	tmpDir, err := ioutil.TempDir("", "etcd")
-	if err != nil {
-		t.Fatalf("unable to create temp dir: %v", err)
-	}
+	tmpDir := t.TempDir()
 
 	config, etcdCleanup := NewTestEtcdInstance(t, tmpDir)
+	t.Cleanup(etcdCleanup)
 
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints: []string{config.Host},
@@ -59,7 +54,6 @@ func NewEtcdTestFixture(t *testing.T) *EtcdTestFixture {
 		Password:  config.Pass,
 	})
 	if err != nil {
-		os.RemoveAll(tmpDir)
 		t.Fatalf("unable to create etcd test fixture: %v", err)
 	}
 
@@ -72,10 +66,6 @@ func NewEtcdTestFixture(t *testing.T) *EtcdTestFixture {
 		t:      t,
 		cli:    cli,
 		config: config,
-		cleanup: func() {
-			etcdCleanup()
-			os.RemoveAll(tmpDir)
-		},
 	}
 }
 
@@ -137,14 +127,8 @@ func (f *EtcdTestFixture) Dump() map[string]string {
 	return result
 }
 
-// BackendConfig returns the backend config for connecting to theembedded
+// BackendConfig returns the backend config for connecting to the embedded
 // etcd instance.
 func (f *EtcdTestFixture) BackendConfig() Config {
 	return *f.config
-}
-
-// Cleanup should be called at test fixture teardown to stop the embedded
-// etcd instance and remove all temp db files form the filesystem.
-func (f *EtcdTestFixture) Cleanup() {
-	f.cleanup()
 }

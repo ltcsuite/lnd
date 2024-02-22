@@ -8,15 +8,16 @@
    1. [Code Documentation and Commenting](#code-documentation-and-commenting)
    1. [Model Git Commit Messages](#model-git-commit-messages)
    1. [Ideal Git Commit Structure](#ideal-git-commit-structure)
-   1. [Code Spacing](#code-spacing)
-   1. [Protobuf Compilation](#protobuf-compilation)
-   1. [Additional Style Constraints On Top of gofmt](#additional-style-constraints-on-top-of-gofmt)
-   1. [Pointing to Remote Dependant Branches in Go Modules](#pointing-to-remote-dependant-branches-in-go-modules)
+   1. [Sign Your Git Commits](#sign-your-git-commits)
+   1. [Code Spacing and formatting](#code-spacing-and-formatting)
+   1. [Pointing to Remote Dependent Branches in Go Modules](#pointing-to-remote-dependent-branches-in-go-modules)
    1. [Use of Log Levels](#use-of-log-levels)
+   1. [Use of Golang submodules](#use-of-golang-submodules)
 5. [Code Approval Process](#code-approval-process)
    1. [Code Review](#code-review)
    1. [Rework Code (if needed)](#rework-code-if-needed)
    1. [Acceptance](#acceptance)
+   1. [Review Bot](#review-bot)
 6. [Contribution Standards](#contribution-standards)
    1. [Contribution Checklist](#contribution-checklist)
    1. [Licensing of Contributions](#licensing-of-contributions)
@@ -81,11 +82,12 @@ security and performance implications.
   it must follow the guidelines therein.
 - [Original Satoshi Whitepaper](https://bitcoin.org/bitcoin.pdf) - This is the white paper that started it all. Having a solid
   foundation to build on will make the code much more comprehensible.
-- [Lightning Network Whitepaper](https://lightning.network/lightning-network-paper.pdf) - This is the white paper that kicked off the Layer 2 revolution. Having a good grasp of the concepts of Lightning will make the core logic within the daemon much more comprehensible: Bitcoin Script, off-chain blockchain protocols, payment channels, bi-directional payment channels, relative and absolute time-locks, commitment state revocations, and Segregated Witness.
-  - The original LN was written for a rather narrow audience, the paper may be a bit unapproachable to many. Thanks to the Bitcoin community, there exist many easily accessible supplemental resources which can help one see how all the pieces fit together from double-spend protection all the way up to commitment state transitions and Hash Time Locked Contracts (HTLCs):
-    - [Lightning Network Summary](https://lightning.network/lightning-network-summary.pdf)
-    - [Understanding the Lightning Network 3-Part series](https://bitcoinmagazine.com/articles/understanding-the-lightning-network-part-building-a-bidirectional-payment-channel-1464710791)
-    - [Deployable Lightning](https://github.com/ElementsProject/lightning/blob/master/doc/deployable-lightning.pdf)
+- [Lightning Network Whitepaper](https://lightning.network/lightning-network-paper.pdf) - This is the white paper that kicked off the Layer 2 revolution. Having a good grasp of the concepts of Lightning will make the core logic within the daemon much more comprehensible: Bitcoin Script, off-chain blockchain protocols, payment channels, bi-directional payment channels, relative and absolute time-locks, commitment state revocations, and Segregated Witness. 
+    - The original LN was written for a rather narrow audience, the paper may be a bit unapproachable to many. Thanks to the Bitcoin community, there exist many easily accessible supplemental resources which can help one see how all the pieces fit together from double-spend protection all the way up to commitment state transitions and Hash Time Locked Contracts (HTLCs): 
+        - [Lightning Network Summary](https://lightning.network/lightning-network-summary.pdf)
+        - [Understanding the Lightning Network 3-Part series](https://bitcoinmagazine.com/articles/understanding-the-lightning-network-part-building-a-bidirectional-payment-channel-1464710791) 
+        - [Deployable Lightning](https://github.com/ElementsProject/lightning/blob/master/doc/deployable-lightning.pdf) 
+
 
 Note that the core design of the Lightning Network has shifted over time as
 concrete implementation and design has expanded our knowledge beyond the
@@ -153,7 +155,7 @@ A quick summary of test practices follows:
   or RPC's will need to be accompanied by integration tests which use the
   [`networkHarness`framework](https://github.com/ltcsuite/lnd/blob/master/lntest/harness.go)
   contained within `lnd`. For example integration tests, see
-  [`lnd_test.go`](https://github.com/ltcsuite/lnd/blob/master/lnd_test.go#L181). 
+  [`lnd_test.go`](https://github.com/ltcsuite/lnd/blob/master/itest/lnd_test.go).
 - The itest log files are automatically scanned for `[ERR]` lines. There
   shouldn't be any of those in the logs, see [Use of Log Levels](#use-of-log-levels).
 
@@ -235,6 +237,22 @@ if amt < 546 {
 **NOTE:** The above should really use a constant as opposed to a magic number,
 but it was left as a magic number to show how much of a difference a good
 comment can make.
+
+## Code Spacing and formatting
+
+Code in general (and Open Source code specifically) is _read_ by developers many
+more times during its lifecycle than it is modified. With this fact in mind, the
+Golang language was designed for readability (among other goals).
+While the enforced formatting of `go fmt` and some best practices already
+eliminate many discussions, the resulting code can still look and feel very
+differently among different developers.
+
+We aim to enforce a few additional rules to unify the look and feel of all code
+in `lnd` to help improve the overall readability.
+
+**Please refer to the [code formatting rules
+document](./code_formatting_rules.md)** to see the list of additional style
+rules we enforce.
 
 ## Model Git Commit Messages
 
@@ -324,166 +342,83 @@ Examples of common patterns w.r.t commit structures within the project:
   * If a PR only fixes a trivial issue, such as updating documentation on a
     small scale, fix typos, or any changes that do not modify the code, the
     commit message should end with `[skip ci]` to skip the CI checks.
+    
+## Sign your git commits
 
-## Code Spacing 
+When contributing to `lnd` it is recommended to sign your git commits. This is
+easy to do and will help in assuring the integrity of the tree. See [mailing
+list entry](https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2014-May/005877.html)
+for more information.
 
-Blocks of code within `lnd` should be segmented into logical stanzas of
-operation. Such spacing makes the code easier to follow at a skim, and reduces
-unnecessary line noise. Coupled with the commenting scheme specified above,
-proper spacing allows readers to quickly scan code, extracting semantics quickly.
-Functions should _not_ just be laid out as a bare contiguous block of code.
+### How to sign your commits?
 
-**WRONG**
+Provide the `-S` flag (or `--gpg-sign`) to git commit when you commit
+your changes, for example
 
-```go
-	witness := make([][]byte, 4)
-	witness[0] = nil
-	if bytes.Compare(pubA, pubB) == -1 {
-		witness[1] = sigB
-		witness[2] = sigA
-	} else {
-		witness[1] = sigA
-		witness[2] = sigB
-	}
-	witness[3] = witnessScript
-	return witness
+```shell
+$  git commit -m "Commit message" -S
 ```
 
-**RIGHT**
+Optionally you can provide a key id after the `-S` option to sign with a
+specific key.
 
-```go
-	witness := make([][]byte, 4)
+To instruct `git` to auto-sign every commit, add the following lines to your
+`~/.gitconfig` file:
 
-	// When spending a p2wsh multi-sig script, rather than an OP_0, we add
-	// a nil stack element to eat the extra pop.
-	witness[0] = nil
-
-	// When initially generating the witnessScript, we sorted the serialized
-	// public keys in descending order. So we do a quick comparison in order
-	// to ensure the signatures appear on the Script Virtual Machine stack in
-	// the correct order.
-	if bytes.Compare(pubA, pubB) == -1 {
-		witness[1] = sigB
-		witness[2] = sigA
-	} else {
-		witness[1] = sigA
-		witness[2] = sigB
-	}
-
-	// Finally, add the preimage as the last witness element.
-	witness[3] = witnessScript
-
-	return witness
+```text
+[commit]
+        gpgsign = true
 ```
 
-Additionally, we favor spacing between stanzas within syntax like: switch case
-statements and select statements.
+### What if I forgot?
 
-**WRONG**
+You can retroactively sign your previous commit using `--amend`, for example
 
-```go
-    switch {
-        case a:
-            <code block>
-        case b:
-            <code block>
-        case c:
-            <code block>
-        case d:
-            <code block>
-        default:
-            <code block>
-    }
+```shell
+$  git commit -S --amend
 ```
 
-**RIGHT**
+If you need to go further back, you can use the interactive rebase
+command with 'edit'. Replace `HEAD~3` with the base commit from which
+you want to start.
 
-```go
-    switch {
-        // Brief comment detailing instances of this case (repeat below).
-        case a:
-            <code block>
-
-        case b:
-            <code block>
-
-        case c:
-            <code block>
-
-        case d:
-            <code block>
-
-        default:
-            <code block>
-    }
+```shell
+$  git rebase -i HEAD~3
 ```
 
-If one is forced to wrap lines of function arguments that exceed the 80
-character limit, then a new line should be inserted before the first stanza in
-the comment body.
+Replace 'pick' by 'edit' for the commit that you want to sign and the
+rebasing will stop after that commit. Then you can amend the commit as
+above. Afterwards, do
 
-**WRONG**
-
-```go
-   func foo(a, b, c,
-       d, e) error {
-       var a int
-   }
+```shell
+$  git rebase --continue
 ```
 
-**RIGHT**
+As this will rewrite history, you cannot do this when your commit is
+already merged. In that case, too bad, better luck next time.
 
-```go
-   func foo(a, b, c,
-       d, e) error {
+If you rewrite history for another reason - for example when squashing
+commits - make sure that you re-sign as the signatures will be lost.
 
-       var a int
-   }
+Multiple commits can also be re-signed with `git rebase`. For example, signing
+the last three commits can be done with:
+
+```shell
+$  git rebase --exec 'git commit --amend --no-edit -n -S' -i HEAD~3
 ```
 
-## Protobuf Compilation
+### How to check if commits are signed?
 
-The `lnd` project uses `protobuf`, and its extension [`gRPC`](www.grpc.io) in
-several areas and as the primary RPC interface. In order to ensure uniformity
-of all protos checked, in we require that all contributors pin against the
-_exact same_ version of `protoc`. As of the writing of this article, the `lnd`
-project uses [v3.4.0](https://github.com/google/protobuf/releases/tag/v3.4.0)
-of `protoc`.
+Use `git log` with `--show-signature`,
 
-For detailed instructions on how to compile modifications to `lnd`'s `protobuf`
-definitions, check out the [lnrpc README](https://github.com/ltcsuite/lnd/blob/master/lnrpc/README.md).
+```shell
+$  git log --show-signature
+```
 
-## Additional Style Constraints On Top of `gofmt`
+You can also pass the `--show-signature` option to `git show` to check a single
+commit.
 
-Before a PR is submitted, the proposer should ensure that the file passes the
-set of linting scripts run by `make lint`. These include `gofmt`. In addition
-to `gofmt` we've opted to enforce the following style guidelines.
-
-   * ALL columns (on a best effort basis) should be wrapped to 80 line columns.
-     Editors should be set to treat a tab as 8 spaces.
-   * When wrapping a line that contains a function call as the unwrapped line
-     exceeds the column limit, the close paren should be placed on its own
-     line. Additionally, all arguments should begin in a new line after the
-     open paren.
-
-     **WRONG**
-     ```go
-     value, err := bar(a,
-        a, b, c)
-     ```
-
-     **RIGHT**
-     ```go
-     value, err := bar(
-        a, a, b, c,
-     )
-     ```
-
-**Note that the above guidelines don't apply to log or error messages.** For
-log and error messages, committers should attempt to minimize the number of
-lines utilized, while still adhering to the 80-character column limit.
-
-## Pointing to Remote Dependant Branches in Go Modules
+## Pointing to Remote Dependent Branches in Go Modules
 
 It's common that a developer may need to make a change in a dependent project
 of `lnd` such as `btcd`, `neutrino`, `btcwallet`, etc. In order to test changes
@@ -492,12 +427,12 @@ without any further work, the `go.mod` and `go.sum` files will need to be
 updated. Luckily, the `go mod` command has a handy tool to do this
 automatically so developers don't need to manually edit the `go.mod` file:
 ```shell
-⛰  go mod edit -replace=IMPORT-PATH-IN-LND@LND-VERSION=DEV-FORK-IMPORT-PATH@DEV-FORK-VERSION
+$  go mod edit -replace=IMPORT-PATH-IN-LND@LND-VERSION=DEV-FORK-IMPORT-PATH@DEV-FORK-VERSION
 ```
 
 Here's an example replacing the `lightning-onion` version checked into `lnd` with a version in roasbeef's fork:
 ```shell
-⛰  go mod edit -replace=github.com/ltcsuite/lightning-onion@v0.0.0-20180605012408-ac4d9da8f1d6=github.com/roasbeef/lightning-onion@2e5ae87696046298365ab43bcd1cf3a7a1d69695
+$  go mod edit -replace=github.com/ltcsuite/lightning-onion@v0.0.0-20180605012408-ac4d9da8f1d6=github.com/roasbeef/lightning-onion@2e5ae87696046298365ab43bcd1cf3a7a1d69695
 ```
 
 ## Use of Log Levels
@@ -507,6 +442,24 @@ There are six log levels available: `trace`, `debug`, `info`, `warn`, `error` an
 Only use `error` for internal errors that are never expected to happen during
 normal operation. No event triggered by external sources (rpc, chain backend,
 etc) should lead to an `error` log.
+
+## Use of Golang submodules
+
+Changes to packages that are their own submodules (e.g. they contain a `go.mod`
+and `go.sum` file, for example `tor/go.mod`) require a specific process.
+We want to avoid the use of local replace directives in the root `go.mod`,
+therefore changes to a submodule are a bit involved.
+
+The main process for updating and then using code in a submodule is as follows:
+ - Create a PR for the changes to the submodule itself (e.g. edit something in
+   the `tor` package)
+ - Wait for the PR to be merged and a new tag (for example `tor/v1.0.x`) to be
+   pushed.
+ - Create a second PR that bumps the updated submodule in the root `go.mod` and
+   uses the new functionality in the main module.
+
+Of course the two PRs can be opened at the same time and be built on top of each
+other. But the merge and tag push order should always be maintained.
 
 # Code Approval Process
 
@@ -585,32 +538,46 @@ these signatures intact, we prefer using merge commits. PR proposers can use
 
 Rejoice as you will now be listed as a [contributor](https://github.com/ltcsuite/lnd/graphs/contributors)!
 
+## Review Bot
+
+In order to keep the review flow going, Lightning Labs uses a bot to remind 
+PR reviewers about their outstanding reviews or to remind authors to address 
+recent reviews. Here are some important things to know about the bot and some 
+controls for adjusting its behaviour:
+
+####🤖 Expected Behaviour:
+- The bot will not do anything if your PR is in draft mode.
+- It will ping a pending reviewer if they have not reviewed or commented on the 
+PR in x days since the last update or the last time the bot pinged them. 
+(default x = 3)
+- It will ping the author of the PR if they have not addressed a review on a PR 
+after x days since last review or the last time the bot pinged them. It will 
+also ping them to remind them to re-request review if needed. (default x = 3)
+
+####🤖 Controls:
+To control the bot, you need to add a comment on the PR starting with 
+`!lightninglabs-deploy` followed by the command. There are 2 control types: 
+mute/unmute & cadence. Only the latest comment for each control type will be 
+used. This also means you dont need to keep adding new control comments, just 
+edit the latest comment for that control type.
+
+- `!lightninglabs-deploy mute` will mute the bot on the PR completely.
+- `!lightninglabs-deploy mute 72h30m` will mute the bot for the given duration.
+- `!lightninglabs-deploy mute 2022-Feb-02` will mute the bot until the given 
+date (must be in this format!).
+- `!lightninglabs-deploy mute #4` will mute the bot until the given PR of the 
+same repo has been merged.
+- `!lightninglabs-deploy unmute` will unmute the bot (or just delete the comment
+that was muting it)
+- `!lightninglabs-deploy cadence 60h` change the cadence of the bot from the 
+default of 3 days to the given duration. 
+- it will auto-mute if the PR is in Draft mode
+
 # Contribution Standards
 
 ## Contribution Checklist
 
-- [&nbsp;&nbsp;] All changes are Go version 1.12 compliant
-- [&nbsp;&nbsp;] The code being submitted is commented according to
-  [Code Documentation and Commenting](#code-documentation-and-commenting)
-- [&nbsp;&nbsp;] For new code: Code is accompanied by tests which exercise both
-  the positive and negative (error paths) conditions (if applicable)
-- [&nbsp;&nbsp;] For bug fixes: Code is accompanied by new tests which trigger
-  the bug being fixed to prevent regressions
-- [&nbsp;&nbsp;] Any new logging statements use an appropriate subsystem and
-  logging level
-- [&nbsp;&nbsp;] Code has been formatted with `go fmt`
-- [&nbsp;&nbsp;] For code and documentation: lines are wrapped at 80 characters
-  (the tab character should be counted as 8 characters, not 4, as some IDEs do
-  per default)
-- [&nbsp;&nbsp;] Running `make check` does not fail any tests
-- [&nbsp;&nbsp;] Running `go vet` does not report any issues
-- [&nbsp;&nbsp;] Running `make lint` does not report any **new** issues that
-  did not already exist
-- [&nbsp;&nbsp;] All commits build properly and pass tests. Only in exceptional
-  cases it can be justifiable to violate this condition. In that case, the
-  reason should be stated in the commit message.
-- [&nbsp;&nbsp;] Commits have a logical structure according to
-  [Ideal Git Commit Structure](#ideal-git-commit-structure).
+See [template](https://github.com/lightningnetwork/lnd/blob/master/.github/pull_request_template.md).
 
 ## Licensing of Contributions
 ****

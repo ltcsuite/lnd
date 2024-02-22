@@ -17,10 +17,16 @@ import (
 	"github.com/ltcsuite/lnd/netann"
 	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/wire"
+	"github.com/stretchr/testify/require"
 )
 
 var (
 	testKeyLoc = keychain.KeyLocator{Family: keychain.KeyFamilyNodeKey}
+
+	// testSigBytes specifies a testing signature with the minimal length.
+	testSigBytes = []byte{
+		0x30, 0x06, 0x02, 0x01, 0x00, 0x02, 0x01, 0x00,
+	}
 )
 
 // randOutpoint creates a random wire.Outpoint.
@@ -29,9 +35,7 @@ func randOutpoint(t *testing.T) wire.OutPoint {
 
 	var buf [36]byte
 	_, err := io.ReadFull(rand.Reader, buf[:])
-	if err != nil {
-		t.Fatalf("unable to generate random outpoint: %v", err)
-	}
+	require.NoError(t, err, "unable to generate random outpoint")
 
 	op := wire.OutPoint{}
 	copy(op.Hash[:], buf[:32])
@@ -81,9 +85,7 @@ func createEdgePolicies(t *testing.T, channel *channeldb.OpenChannel,
 
 	// Generate and set pubkey2 for THEIR pubkey.
 	privKey2, err := btcec.NewPrivateKey()
-	if err != nil {
-		t.Fatalf("unable to generate key pair: %v", err)
-	}
+	require.NoError(t, err, "unable to generate key pair")
 	copy(pubkey2[:], privKey2.PubKey().SerializeCompressed())
 
 	// Set pubkey1 to the lower of the two pubkeys.
@@ -105,13 +107,13 @@ func createEdgePolicies(t *testing.T, channel *channeldb.OpenChannel,
 			ChannelID:    channel.ShortChanID().ToUint64(),
 			ChannelFlags: dir1,
 			LastUpdate:   time.Now(),
-			SigBytes:     make([]byte, 64),
+			SigBytes:     testSigBytes,
 		},
 		&channeldb.ChannelEdgePolicy{
 			ChannelID:    channel.ShortChanID().ToUint64(),
 			ChannelFlags: dir2,
 			LastUpdate:   time.Now(),
-			SigBytes:     make([]byte, 64),
+			SigBytes:     testSigBytes,
 		}
 }
 
@@ -174,7 +176,9 @@ func (g *mockGraph) FetchChannelEdgesByOutpoint(
 	return info, pol1, pol2, nil
 }
 
-func (g *mockGraph) ApplyChannelUpdate(update *lnwire.ChannelUpdate) error {
+func (g *mockGraph) ApplyChannelUpdate(update *lnwire.ChannelUpdate,
+	op *wire.OutPoint, private bool) error {
+
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -209,7 +213,7 @@ func (g *mockGraph) ApplyChannelUpdate(update *lnwire.ChannelUpdate) error {
 		ChannelID:    update.ShortChannelID.ToUint64(),
 		ChannelFlags: update.ChannelFlags,
 		LastUpdate:   timestamp,
-		SigBytes:     make([]byte, 64),
+		SigBytes:     testSigBytes,
 	}
 
 	if update1 {
@@ -311,9 +315,7 @@ func newManagerCfg(t *testing.T, numChannels int,
 	t.Helper()
 
 	privKey, err := btcec.NewPrivateKey()
-	if err != nil {
-		t.Fatalf("unable to generate key pair: %v", err)
-	}
+	require.NoError(t, err, "unable to generate key pair")
 	privKeySigner := keychain.NewPrivKeyMessageSigner(privKey, testKeyLoc)
 
 	graph := newMockGraph(
@@ -357,14 +359,10 @@ func newHarness(t *testing.T, numChannels int,
 	cfg, graph, htlcSwitch := newManagerCfg(t, numChannels, startEnabled)
 
 	mgr, err := netann.NewChanStatusManager(cfg)
-	if err != nil {
-		t.Fatalf("unable to create chan status manager: %v", err)
-	}
+	require.NoError(t, err, "unable to create chan status manager")
 
 	err = mgr.Start()
-	if err != nil {
-		t.Fatalf("unable to start chan status manager: %v", err)
-	}
+	require.NoError(t, err, "unable to start chan status manager")
 
 	h := testHarness{
 		t:                  t,
@@ -651,7 +649,7 @@ var stateMachineTests = []stateMachineTest{
 			time.Sleep(100 * time.Millisecond)
 			// Simulate reconnect by making channels active.
 			h.markActive(h.graph.chans())
-			// Request that all channels be reenabled.
+			// Request that all channels be re-enabled.
 			h.assertEnables(h.graph.chans(), nil, false)
 			// Pending disable should have been canceled, and
 			// no updates sent. Channels remain enabled on the

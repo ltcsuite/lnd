@@ -5,8 +5,10 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/btcec/v2/ecdsa"
+	"github.com/ltcsuite/ltcd/btcec/v2/schnorr"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
@@ -47,6 +49,26 @@ var (
 type MockSigner struct {
 	Privkeys  []*btcec.PrivateKey
 	NetParams *chaincfg.Params
+
+	*MusigSessionManager
+}
+
+// NewMockSigner returns a new instance of the MockSigner given a set of
+// backing private keys.
+func NewMockSigner(privKeys []*btcec.PrivateKey,
+	netParams *chaincfg.Params) *MockSigner {
+
+	signer := &MockSigner{
+		Privkeys:  privKeys,
+		NetParams: netParams,
+	}
+
+	keyFetcher := func(*keychain.KeyDescriptor) (*btcec.PrivateKey, error) {
+		return signer.Privkeys[0], nil
+	}
+	signer.MusigSessionManager = NewMusigSessionManager(keyFetcher)
+
+	return signer
 }
 
 // SignOutputRaw generates a signature for the passed transaction according to
@@ -68,9 +90,70 @@ func (m *MockSigner) SignOutputRaw(tx *wire.MsgTx,
 		return nil, fmt.Errorf("mock signer does not have key")
 	}
 
-	sig, err := txscript.RawTxInWitnessSignature(tx, signDesc.SigHashes,
-		signDesc.InputIndex, signDesc.Output.Value, signDesc.WitnessScript,
-		signDesc.HashType, privKey)
+	// In case of a taproot output any signature is always a Schnorr
+	// signature, based on the new tapscript sighash algorithm.
+	if txscript.IsPayToTaproot(signDesc.Output.PkScript) {
+		sigHashes := txscript.NewTxSigHashes(
+			tx, signDesc.PrevOutputFetcher,
+		)
+
+		// Are we spending a script path or the key path? The API is
+		// slightly different, so we need to account for that to get
+		// the raw signature.
+		var (
+			rawSig []byte
+			err    error
+		)
+		switch signDesc.SignMethod {
+		case TaprootKeySpendBIP0086SignMethod,
+			TaprootKeySpendSignMethod:
+
+			// This function tweaks the private key using the tap
+			// root key supplied as the tweak.
+			rawSig, err = txscript.RawTxInTaprootSignature(
+				tx, sigHashes, signDesc.InputIndex,
+				signDesc.Output.Value, signDesc.Output.PkScript,
+				signDesc.TapTweak, signDesc.HashType,
+				privKey,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+		case TaprootScriptSpendSignMethod:
+			leaf := txscript.TapLeaf{
+				LeafVersion: txscript.BaseLeafVersion,
+				Script:      signDesc.WitnessScript,
+			}
+			rawSig, err = txscript.RawTxInTapscriptSignature(
+				tx, sigHashes, signDesc.InputIndex,
+				signDesc.Output.Value, signDesc.Output.PkScript,
+				leaf, signDesc.HashType, privKey,
+			)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		// The signature returned above might have a sighash flag
+		// attached if a non-default type was used. We'll slice this
+		// off if it exists to ensure we can properly parse the raw
+		// signature.
+		sig, err := schnorr.ParseSignature(
+			rawSig[:schnorr.SignatureSize],
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		return sig, nil
+	}
+
+	sig, err := txscript.RawTxInWitnessSignature(
+		tx, signDesc.SigHashes, signDesc.InputIndex,
+		signDesc.Output.Value, signDesc.WitnessScript,
+		signDesc.HashType, privKey,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -138,13 +221,15 @@ func (m *MockSigner) findKey(needleHash160 []byte, singleTweak []byte,
 	doubleTweak *btcec.PrivateKey) *btcec.PrivateKey {
 
 	for _, privkey := range m.Privkeys {
-		// First check whether public key is directly derived from private key.
+		// First check whether public key is directly derived from
+		// private key.
 		hash160 := ltcutil.Hash160(privkey.PubKey().SerializeCompressed())
 		if bytes.Equal(hash160, needleHash160) {
 			return privkey
 		}
 
-		// Otherwise check if public key is derived from tweaked private key.
+		// Otherwise check if public key is derived from tweaked
+		// private key.
 		switch {
 		case singleTweak != nil:
 			privkey = TweakPrivKey(privkey, singleTweak)

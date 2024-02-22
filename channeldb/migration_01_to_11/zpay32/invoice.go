@@ -103,7 +103,7 @@ type MessageSigner struct {
 	// SignCompact signs the passed hash with the node's privkey. The
 	// returned signature should be 65 bytes, where the last 64 are the
 	// compact signature, and the first one is a header byte. This is the
-	// format returned by btcec.SignCompact.
+	// format returned by ecdsa.SignCompact.
 	SignCompact func(hash []byte) ([]byte, error)
 }
 
@@ -266,7 +266,7 @@ func Features(features *lnwire.FeatureVector) func(*Invoice) {
 }
 
 // PaymentAddr is a functional option that allows callers of NewInvoice to set
-// the desired payment address tht is advertised on the invoice.
+// the desired payment address that is advertised on the invoice.
 func PaymentAddr(addr [32]byte) func(*Invoice) {
 	return func(i *Invoice) {
 		i.PaymentAddr = &addr

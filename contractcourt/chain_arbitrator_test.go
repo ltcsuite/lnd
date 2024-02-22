@@ -1,9 +1,7 @@
 package contractcourt
 
 import (
-	"io/ioutil"
 	"net"
-	"os"
 	"testing"
 
 	"github.com/ltcsuite/lnd/chainntnfs"
@@ -13,6 +11,7 @@ import (
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
+	"github.com/stretchr/testify/require"
 )
 
 // TestChainArbitratorRepulishCloses tests that the chain arbitrator will
@@ -21,29 +20,24 @@ import (
 func TestChainArbitratorRepublishCloses(t *testing.T) {
 	t.Parallel()
 
-	tempPath, err := ioutil.TempDir("", "testdb")
+	db, err := channeldb.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(tempPath)
-
-	db, err := channeldb.Open(tempPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
 
 	// Create 10 test channels and sync them to the database.
 	const numChans = 10
 	var channels []*channeldb.OpenChannel
 	for i := 0; i < numChans; i++ {
-		lChannel, _, cleanup, err := lnwallet.CreateTestChannels(
-			channeldb.SingleFunderTweaklessBit,
+		lChannel, _, err := lnwallet.CreateTestChannels(
+			t, channeldb.SingleFunderTweaklessBit,
 		)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer cleanup()
 
 		channel := lChannel.State()
 
@@ -101,11 +95,9 @@ func TestChainArbitratorRepublishCloses(t *testing.T) {
 	if err := chainArb.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		if err := chainArb.Stop(); err != nil {
-			t.Fatal(err)
-		}
-	}()
+	t.Cleanup(func() {
+		require.NoError(t, chainArb.Stop())
+	})
 
 	// Half of the channels should have had their closing tx re-published.
 	if len(published) != numChans/2 {
@@ -142,28 +134,18 @@ func TestChainArbitratorRepublishCloses(t *testing.T) {
 func TestResolveContract(t *testing.T) {
 	t.Parallel()
 
-	// To start with, we'll create a new temp DB for the duration of this
-	// test.
-	tempPath, err := ioutil.TempDir("", "testdb")
-	if err != nil {
-		t.Fatalf("unable to make temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempPath)
-	db, err := channeldb.Open(tempPath)
-	if err != nil {
-		t.Fatalf("unable to open db: %v", err)
-	}
-	defer db.Close()
+	db, err := channeldb.Open(t.TempDir())
+	require.NoError(t, err, "unable to open db")
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
 
 	// With the DB created, we'll make a new channel, and mark it as
 	// pending open within the database.
-	newChannel, _, cleanup, err := lnwallet.CreateTestChannels(
-		channeldb.SingleFunderTweaklessBit,
+	newChannel, _, err := lnwallet.CreateTestChannels(
+		t, channeldb.SingleFunderTweaklessBit,
 	)
-	if err != nil {
-		t.Fatalf("unable to make new test channel: %v", err)
-	}
-	defer cleanup()
+	require.NoError(t, err, "unable to make new test channel")
 	channel := newChannel.State()
 	channel.Db = db.ChannelStateDB()
 	addr := &net.TCPAddr{
@@ -195,28 +177,22 @@ func TestResolveContract(t *testing.T) {
 	if err := chainArb.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		if err := chainArb.Stop(); err != nil {
-			t.Fatal(err)
-		}
-	}()
+	t.Cleanup(func() {
+		require.NoError(t, chainArb.Stop())
+	})
 
 	channelArb := chainArb.activeChannels[channel.FundingOutpoint]
 
 	// While the resolver are active, we'll now remove the channel from the
 	// database (mark is as closed).
 	err = db.ChannelStateDB().AbandonChannel(&channel.FundingOutpoint, 4)
-	if err != nil {
-		t.Fatalf("unable to remove channel: %v", err)
-	}
+	require.NoError(t, err, "unable to remove channel")
 
 	// With the channel removed, we'll now manually call ResolveContract.
 	// This stimulates needing to remove a channel from the chain arb due
 	// to any possible external consistency issues.
 	err = chainArb.ResolveContract(channel.FundingOutpoint)
-	if err != nil {
-		t.Fatalf("unable to resolve contract: %v", err)
-	}
+	require.NoError(t, err, "unable to resolve contract")
 
 	// The shouldn't be an active chain watcher or channel arb for this
 	// channel.
@@ -240,7 +216,5 @@ func TestResolveContract(t *testing.T) {
 	// If we attempt to call this method again, then we should get a nil
 	// error, as there is no more state to be cleaned up.
 	err = chainArb.ResolveContract(channel.FundingOutpoint)
-	if err != nil {
-		t.Fatalf("second resolve call shouldn't fail: %v", err)
-	}
+	require.NoError(t, err, "second resolve call shouldn't fail")
 }

@@ -6,6 +6,7 @@ package lntest
 import (
 	"fmt"
 
+	"github.com/ltcsuite/lnd/lntest/node"
 	"github.com/ltcsuite/ltcd/chaincfg"
 )
 
@@ -17,13 +18,13 @@ type NeutrinoBackendConfig struct {
 
 // A compile time assertion to ensure NeutrinoBackendConfig meets the
 // BackendConfig interface.
-var _ BackendConfig = (*NeutrinoBackendConfig)(nil)
+var _ node.BackendConfig = (*NeutrinoBackendConfig)(nil)
 
 // GenArgs returns the arguments needed to be passed to LND at startup for
 // using this node as a chain backend.
 func (b NeutrinoBackendConfig) GenArgs() []string {
 	var args []string
-	args = append(args, "--bitcoin.node=neutrino")
+	args = append(args, "--litecoin.node=neutrino")
 	args = append(args, "--neutrino.connect="+b.minerAddr)
 	// We enable validating channels so that we can obtain the outpoint for
 	// channels within the graph and make certain assertions based on them.
@@ -40,6 +41,12 @@ func (b NeutrinoBackendConfig) ConnectMiner() error {
 // DisconnectMiner is called to disconnect the miner.
 func (b NeutrinoBackendConfig) DisconnectMiner() error {
 	return fmt.Errorf("unimplemented")
+}
+
+// Credentials returns the rpc username, password and host for the backend.
+// For neutrino, we return an error because there is no rpc client available.
+func (b NeutrinoBackendConfig) Credentials() (string, string, string, error) {
+	return "", "", "", fmt.Errorf("unimplemented")
 }
 
 // Name returns the name of the backend type.

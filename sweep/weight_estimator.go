@@ -77,6 +77,18 @@ func (w *weightEstimator) addP2WKHOutput() {
 	w.estimator.AddP2WKHOutput()
 }
 
+// addP2TROutput updates the weight estimate to account for an additional native
+// SegWit v1 P2TR output.
+func (w *weightEstimator) addP2TROutput() {
+	w.estimator.AddP2TROutput()
+}
+
+// addP2WSHOutput updates the weight estimate to account for an additional
+// segwit v0 P2WSH output.
+func (w *weightEstimator) addP2WSHOutput() {
+	w.estimator.AddP2WSHOutput()
+}
+
 // addOutput updates the weight estimate to account for the known
 // output given.
 func (w *weightEstimator) addOutput(txOut *wire.TxOut) {

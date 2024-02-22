@@ -1,7 +1,7 @@
 // Copyright (c) 2013-2017 The ltcsuite developers
 // Copyright (c) 2015-2016 The Decred developers
-// code derived from https://github .com/ltcsuite/ltcd/blob/master/wire/message.go
-// Copyright (C) 2015-2017 The Lightning Network Developers
+// code derived from https://github .com/btcsuite/btcd/blob/master/wire/message.go
+// Copyright (C) 2015-2022 The Lightning Network Developers
 
 package lnwire
 
@@ -22,7 +22,8 @@ type MessageType uint16
 // The currently defined message types within this current version of the
 // Lightning protocol.
 const (
-	MsgInit                    MessageType = 16
+	MsgWarning                 MessageType = 1
+	MsgInit                                = 16
 	MsgError                               = 17
 	MsgPing                                = 18
 	MsgPong                                = 19
@@ -30,7 +31,7 @@ const (
 	MsgAcceptChannel                       = 33
 	MsgFundingCreated                      = 34
 	MsgFundingSigned                       = 35
-	MsgFundingLocked                       = 36
+	MsgChannelReady                        = 36
 	MsgShutdown                            = 38
 	MsgClosingSigned                       = 39
 	MsgUpdateAddHTLC                       = 128
@@ -70,12 +71,13 @@ func ErrorPayloadTooLarge(size int) error {
 			"but maximum message payload is %d bytes",
 		size, MaxMsgBody,
 	)
-
 }
 
 // String return the string representation of message type.
 func (t MessageType) String() string {
 	switch t {
+	case MsgWarning:
+		return "Warning"
 	case MsgInit:
 		return "Init"
 	case MsgOpenChannel:
@@ -86,8 +88,8 @@ func (t MessageType) String() string {
 		return "MsgFundingCreated"
 	case MsgFundingSigned:
 		return "MsgFundingSigned"
-	case MsgFundingLocked:
-		return "FundingLocked"
+	case MsgChannelReady:
+		return "ChannelReady"
 	case MsgShutdown:
 		return "Shutdown"
 	case MsgClosingSigned:
@@ -176,6 +178,8 @@ func makeEmptyMessage(msgType MessageType) (Message, error) {
 	var msg Message
 
 	switch msgType {
+	case MsgWarning:
+		msg = &Warning{}
 	case MsgInit:
 		msg = &Init{}
 	case MsgOpenChannel:
@@ -186,8 +190,8 @@ func makeEmptyMessage(msgType MessageType) (Message, error) {
 		msg = &FundingCreated{}
 	case MsgFundingSigned:
 		msg = &FundingSigned{}
-	case MsgFundingLocked:
-		msg = &FundingLocked{}
+	case MsgChannelReady:
+		msg = &ChannelReady{}
 	case MsgShutdown:
 		msg = &Shutdown{}
 	case MsgClosingSigned:
@@ -233,9 +237,16 @@ func makeEmptyMessage(msgType MessageType) (Message, error) {
 	case MsgGossipTimestampRange:
 		msg = &GossipTimestampRange{}
 	default:
-		if msgType < CustomTypeStart {
+		// If the message is not within our custom range and has not
+		// specifically been overridden, return an unknown message.
+		//
+		// Note that we do not allow custom message overrides to replace
+		// known message types, only protocol messages that are not yet
+		// known to lnd.
+		if msgType < CustomTypeStart && !IsCustomOverride(msgType) {
 			return nil, &UnknownMessage{msgType}
 		}
+
 		msg = &Custom{
 			Type: msgType,
 		}

@@ -207,6 +207,13 @@ type chainWatcher struct {
 	// the current state number on the commitment transactions.
 	stateHintObfuscator [lnwallet.StateHintSize]byte
 
+	// fundingPkScript is the pkScript of the funding output.
+	fundingPkScript []byte
+
+	// heightHint is the height hint used to checkpoint scans on chain for
+	// conf/spend events.
+	heightHint uint32
+
 	// All the fields below are protected by this mutex.
 	sync.Mutex
 
@@ -266,27 +273,56 @@ func (c *chainWatcher) Start() error {
 
 	// As a height hint, we'll try to use the opening height, but if the
 	// channel isn't yet open, then we'll use the height it was broadcast
-	// at.
-	heightHint := c.cfg.chanState.ShortChanID().BlockHeight
-	if heightHint == 0 {
-		heightHint = chanState.FundingBroadcastHeight
+	// at. This may be an unconfirmed zero-conf channel.
+	c.heightHint = c.cfg.chanState.ShortChanID().BlockHeight
+	if c.heightHint == 0 {
+		c.heightHint = chanState.BroadcastHeight()
 	}
 
-	localKey := chanState.LocalChanCfg.MultiSigKey.PubKey.SerializeCompressed()
-	remoteKey := chanState.RemoteChanCfg.MultiSigKey.PubKey.SerializeCompressed()
-	multiSigScript, err := input.GenMultiSigScript(
-		localKey, remoteKey,
-	)
-	if err != nil {
-		return err
+	// Since no zero-conf state is stored in a channel backup, the below
+	// logic will not be triggered for restored, zero-conf channels. Set
+	// the height hint for zero-conf channels.
+	if chanState.IsZeroConf() {
+		if chanState.ZeroConfConfirmed() {
+			// If the zero-conf channel is confirmed, we'll use the
+			// confirmed SCID's block height.
+			c.heightHint = chanState.ZeroConfRealScid().BlockHeight
+		} else {
+			// The zero-conf channel is unconfirmed. We'll need to
+			// use the FundingBroadcastHeight.
+			c.heightHint = chanState.BroadcastHeight()
+		}
 	}
-	pkScript, err := input.WitnessScriptHash(multiSigScript)
-	if err != nil {
-		return err
+
+	localKey := chanState.LocalChanCfg.MultiSigKey.PubKey
+	remoteKey := chanState.RemoteChanCfg.MultiSigKey.PubKey
+
+	var (
+		err error
+	)
+	if chanState.ChanType.IsTaproot() {
+		c.fundingPkScript, _, err = input.GenTaprootFundingScript(
+			localKey, remoteKey, 0,
+		)
+		if err != nil {
+			return err
+		}
+	} else {
+		multiSigScript, err := input.GenMultiSigScript(
+			localKey.SerializeCompressed(),
+			remoteKey.SerializeCompressed(),
+		)
+		if err != nil {
+			return err
+		}
+		c.fundingPkScript, err = input.WitnessScriptHash(multiSigScript)
+		if err != nil {
+			return err
+		}
 	}
 
 	spendNtfn, err := c.cfg.notifier.RegisterSpendNtfn(
-		fundingOut, pkScript, heightHint,
+		fundingOut, c.fundingPkScript, c.heightHint,
 	)
 	if err != nil {
 		return err
@@ -415,10 +451,10 @@ func (c *chainWatcher) handleUnknownLocalState(
 		pkScript := output.PkScript
 
 		switch {
-		case bytes.Equal(localScript.PkScript, pkScript):
+		case bytes.Equal(localScript.PkScript(), pkScript):
 			ourCommit = true
 
-		case bytes.Equal(remoteScript.PkScript, pkScript):
+		case bytes.Equal(remoteScript.PkScript(), pkScript):
 			ourCommit = true
 		}
 	}
@@ -482,10 +518,10 @@ func newChainSet(chanState *channeldb.OpenChannel) (*chainSet, error) {
 			"chan_point=%v", chanState.FundingOutpoint)
 	}
 
-	log.Debugf("ChannelPoint(%v): local_commit_type=%v, local_commit=%v",
+	log.Tracef("ChannelPoint(%v): local_commit_type=%v, local_commit=%v",
 		chanState.FundingOutpoint, chanState.ChanType,
 		spew.Sdump(localCommit))
-	log.Debugf("ChannelPoint(%v): remote_commit_type=%v, remote_commit=%v",
+	log.Tracef("ChannelPoint(%v): remote_commit_type=%v, remote_commit=%v",
 		chanState.FundingOutpoint, chanState.ChanType,
 		spew.Sdump(remoteCommit))
 
@@ -512,7 +548,7 @@ func newChainSet(chanState *channeldb.OpenChannel) (*chainSet, error) {
 	var remotePendingCommit *channeldb.ChannelCommitment
 	if remoteChainTip != nil {
 		remotePendingCommit = &remoteChainTip.Commitment
-		log.Debugf("ChannelPoint(%v): remote_pending_commit_type=%v, "+
+		log.Tracef("ChannelPoint(%v): remote_pending_commit_type=%v, "+
 			"remote_pending_commit=%v", chanState.FundingOutpoint,
 			chanState.ChanType,
 			spew.Sdump(remoteChainTip.Commitment))
@@ -551,6 +587,33 @@ func (c *chainWatcher) closeObserver(spendNtfn *chainntnfs.SpendEvent) {
 
 	log.Infof("Close observer for ChannelPoint(%v) active",
 		c.cfg.chanState.FundingOutpoint)
+
+	// If this is a taproot channel, before we proceed, we want to ensure
+	// that the expected funding output has confirmed on chain.
+	if c.cfg.chanState.ChanType.IsTaproot() {
+		fundingPoint := c.cfg.chanState.FundingOutpoint
+
+		confNtfn, err := c.cfg.notifier.RegisterConfirmationsNtfn(
+			&fundingPoint.Hash, c.fundingPkScript, 1, c.heightHint,
+		)
+		if err != nil {
+			log.Warnf("unable to register for conf: %v", err)
+		}
+
+		log.Infof("Waiting for taproot ChannelPoint(%v) to confirm...",
+			c.cfg.chanState.FundingOutpoint)
+
+		select {
+		case _, ok := <-confNtfn.Confirmed:
+			// If the channel was closed, then this means that the
+			// notifier exited, so we will as well.
+			if !ok {
+				return
+			}
+		case <-c.quit:
+			return
+		}
+	}
 
 	select {
 	// We've detected a spend of the channel onchain! Depending on the type
@@ -729,7 +792,6 @@ func (c *chainWatcher) handleKnownRemoteState(
 
 	commitTxBroadcast := commitSpend.SpendingTx
 	commitHash := commitTxBroadcast.TxHash()
-	spendHeight := uint32(commitSpend.SpendingHeight)
 
 	switch {
 	// If the spending transaction matches the current latest state, then
@@ -780,14 +842,25 @@ func (c *chainWatcher) handleKnownRemoteState(
 		return true, nil
 	}
 
+	// This is neither a remote force close or a "future" commitment, we
+	// now check whether it's a remote breach and properly handle it.
+	return c.handlePossibleBreach(commitSpend, broadcastStateNum, chainSet)
+}
+
+// handlePossibleBreach checks whether the remote has breached and dispatches a
+// breach resolution to claim funds.
+func (c *chainWatcher) handlePossibleBreach(commitSpend *chainntnfs.SpendDetail,
+	broadcastStateNum uint64, chainSet *chainSet) (bool, error) {
+
 	// We check if we have a revoked state at this state num that matches
 	// the spend transaction.
+	spendHeight := uint32(commitSpend.SpendingHeight)
 	retribution, err := lnwallet.NewBreachRetribution(
 		c.cfg.chanState, broadcastStateNum, spendHeight,
+		commitSpend.SpendingTx,
 	)
 
 	switch {
-
 	// If we had no log entry at this height, this was not a revoked state.
 	case err == channeldb.ErrLogEntryNotFound:
 		return false, nil
@@ -802,13 +875,15 @@ func (c *chainWatcher) handleKnownRemoteState(
 	// We found a revoked state at this height, but it could still be our
 	// own broadcasted state we are looking at. Therefore check that the
 	// commit matches before assuming it was a breach.
-	if retribution.BreachTransaction.TxHash() != commitHash {
+	commitHash := commitSpend.SpendingTx.TxHash()
+	if retribution.BreachTxHash != commitHash {
 		return false, nil
 	}
 
 	// Create an AnchorResolution for the breached state.
 	anchorRes, err := lnwallet.NewAnchorResolution(
-		c.cfg.chanState, commitSpend.SpendingTx,
+		c.cfg.chanState, commitSpend.SpendingTx, retribution.KeyRing,
+		false,
 	)
 	if err != nil {
 		return false, fmt.Errorf("unable to create anchor "+
@@ -869,7 +944,6 @@ func (c *chainWatcher) handleUnknownRemoteState(
 			"sweep our funds...",
 			commitPoint.SerializeCompressed(),
 			c.cfg.chanState.FundingOutpoint)
-
 	} else {
 		log.Infof("ChannelPoint(%v) is tweakless, "+
 			"moving to sweep directly on chain",

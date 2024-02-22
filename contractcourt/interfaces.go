@@ -4,6 +4,7 @@ import (
 	"io"
 
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb/models"
 	"github.com/ltcsuite/lnd/htlcswitch/hop"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/invoices"
@@ -18,7 +19,7 @@ import (
 type Registry interface {
 	// LookupInvoice attempts to look up an invoice according to its 32
 	// byte payment hash.
-	LookupInvoice(lntypes.Hash) (channeldb.Invoice, error)
+	LookupInvoice(lntypes.Hash) (invoices.Invoice, error)
 
 	// NotifyExitHopHtlc attempts to mark an invoice as settled. If the
 	// invoice is a debug invoice, then this method is a noop as debug
@@ -27,7 +28,7 @@ type Registry interface {
 	// the resolution is sent on the passed in hodlChan later.
 	NotifyExitHopHtlc(payHash lntypes.Hash, paidAmount lnwire.MilliSatoshi,
 		expiry uint32, currentHeight int32,
-		circuitKey channeldb.CircuitKey, hodlChan chan<- interface{},
+		circuitKey models.CircuitKey, hodlChan chan<- interface{},
 		payload invoices.Payload) (invoices.HtlcResolution, error)
 
 	// HodlUnsubscribeAll unsubscribes from all htlc resolutions.
@@ -64,4 +65,12 @@ type UtxoSweeper interface {
 	// original sweeping transaction, if any.
 	UpdateParams(input wire.OutPoint, params sweep.ParamsUpdate) (
 		chan sweep.Result, error)
+}
+
+// HtlcNotifier defines the notification functions that contract court requires.
+type HtlcNotifier interface {
+	// NotifyFinalHtlcEvent notifies the HtlcNotifier that the final outcome
+	// for an htlc has been determined.
+	NotifyFinalHtlcEvent(key models.CircuitKey,
+		info channeldb.FinalHtlcInfo)
 }

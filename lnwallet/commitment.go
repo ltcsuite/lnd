@@ -1,6 +1,7 @@
 package lnwallet
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/ltcsuite/lnd/channeldb"
@@ -9,13 +10,14 @@ import (
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/ltcd/blockchain"
 	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
 )
 
 // anchorSize is the constant anchor output size.
-const anchorSize = ltcutil.Amount(330)
+const anchorSize = ltcutil.Amount(3300)
 
 // DefaultAnchorsCommitMaxFeeRateSatPerVByte is the default max fee rate in
 // sat/vbyte the initiator will use for anchor channels. This should be enough
@@ -178,10 +180,11 @@ func DeriveCommitmentKeys(commitPoint *btcec.PublicKey,
 	return keyRing
 }
 
-// ScriptInfo holds a redeem script and hash.
-type ScriptInfo struct {
-	// PkScript is the output's PkScript.
-	PkScript []byte
+// WitnessScriptDesc holds the output script and the witness script for p2wsh
+// outputs.
+type WitnessScriptDesc struct {
+	// OutputScript is the output's PkScript.
+	OutputScript []byte
 
 	// WitnessScript is the full script required to properly redeem the
 	// output. This field should be set to the full script if a p2wsh
@@ -190,55 +193,105 @@ type ScriptInfo struct {
 	WitnessScript []byte
 }
 
+// PkScript is the public key script that commits to the final
+// contract.
+func (w *WitnessScriptDesc) PkScript() []byte {
+	return w.OutputScript
+}
+
+// WitnessScript returns the witness script that we'll use when signing for the
+// remote party, and also verifying signatures on our transactions. As an
+// example, when we create an outgoing HTLC for the remote party, we want to
+// sign their success path.
+func (w *WitnessScriptDesc) WitnessScriptToSign() []byte {
+	return w.WitnessScript
+}
+
+// WitnessScriptForPath returns the witness script for the given spending path.
+// An error is returned if the path is unknown. This is useful as when
+// constructing a contrl block for a given path, one also needs witness script
+// being signed.
+func (w *WitnessScriptDesc) WitnessScriptForPath(_ input.ScriptPath,
+) ([]byte, error) {
+
+	return w.WitnessScript, nil
+}
+
 // CommitScriptToSelf constructs the public key script for the output on the
 // commitment transaction paying to the "owner" of said commitment transaction.
 // The `initiator` argument should correspond to the owner of the commitment
-// tranasction which we are generating the to_local script for. If the other
+// transaction which we are generating the to_local script for. If the other
 // party learns of the preimage to the revocation hash, then they can claim all
 // the settled funds in the channel, plus the unsettled funds.
 func CommitScriptToSelf(chanType channeldb.ChannelType, initiator bool,
-	selfKey, revokeKey *btcec.PublicKey, csvDelay, leaseExpiry uint32) (
-	*ScriptInfo, error) {
+	selfKey, revokeKey *btcec.PublicKey, csvDelay, leaseExpiry uint32,
+) (
+	input.ScriptDescriptor, error) {
 
-	var (
-		toLocalRedeemScript []byte
-		err                 error
-	)
 	switch {
-	// If we are the initiator of a leased channel, then we have an
-	// additional CLTV requirement in addition to the usual CSV requirement.
-	case initiator && chanType.HasLeaseExpiration():
-		toLocalRedeemScript, err = input.LeaseCommitScriptToSelf(
-			selfKey, revokeKey, csvDelay, leaseExpiry,
-		)
-
-	default:
-		toLocalRedeemScript, err = input.CommitScriptToSelf(
+	// For taproot scripts, we'll need to make a slightly modified script
+	// where a NUMS key is used to force a script path reveal of either the
+	// revocation or the CSV timeout.
+	//
+	// Our "redeem" script here is just the taproot witness program.
+	case chanType.IsTaproot():
+		return input.NewLocalCommitScriptTree(
 			csvDelay, selfKey, revokeKey,
 		)
-	}
-	if err != nil {
-		return nil, err
-	}
 
-	toLocalScriptHash, err := input.WitnessScriptHash(toLocalRedeemScript)
-	if err != nil {
-		return nil, err
-	}
+	// If we are the initiator of a leased channel, then we have an
+	// additional CLTV requirement in addition to the usual CSV
+	// requirement.
+	case initiator && chanType.HasLeaseExpiration():
+		toLocalRedeemScript, err := input.LeaseCommitScriptToSelf(
+			selfKey, revokeKey, csvDelay, leaseExpiry,
+		)
+		if err != nil {
+			return nil, err
+		}
 
-	return &ScriptInfo{
-		PkScript:      toLocalScriptHash,
-		WitnessScript: toLocalRedeemScript,
-	}, nil
+		toLocalScriptHash, err := input.WitnessScriptHash(
+			toLocalRedeemScript,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		return &WitnessScriptDesc{
+			OutputScript:  toLocalScriptHash,
+			WitnessScript: toLocalRedeemScript,
+		}, nil
+
+	default:
+		toLocalRedeemScript, err := input.CommitScriptToSelf(
+			csvDelay, selfKey, revokeKey,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		toLocalScriptHash, err := input.WitnessScriptHash(
+			toLocalRedeemScript,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		return &WitnessScriptDesc{
+			OutputScript:  toLocalScriptHash,
+			WitnessScript: toLocalRedeemScript,
+		}, nil
+	}
 }
 
 // CommitScriptToRemote derives the appropriate to_remote script based on the
 // channel's commitment type. The `initiator` argument should correspond to the
-// owner of the commitment tranasction which we are generating the to_remote
+// owner of the commitment transaction which we are generating the to_remote
 // script for. The second return value is the CSV delay of the output script,
 // what must be satisfied in order to spend the output.
 func CommitScriptToRemote(chanType channeldb.ChannelType, initiator bool,
-	key *btcec.PublicKey, leaseExpiry uint32) (*ScriptInfo, uint32, error) {
+	remoteKey *btcec.PublicKey,
+	leaseExpiry uint32) (input.ScriptDescriptor, uint32, error) {
 
 	switch {
 	// If we are not the initiator of a leased channel, then the remote
@@ -246,7 +299,7 @@ func CommitScriptToRemote(chanType channeldb.ChannelType, initiator bool,
 	// CSV requirement.
 	case chanType.HasLeaseExpiration() && !initiator:
 		script, err := input.LeaseCommitScriptToRemoteConfirmed(
-			key, leaseExpiry,
+			remoteKey, leaseExpiry,
 		)
 		if err != nil {
 			return nil, 0, err
@@ -257,15 +310,28 @@ func CommitScriptToRemote(chanType channeldb.ChannelType, initiator bool,
 			return nil, 0, err
 		}
 
-		return &ScriptInfo{
-			PkScript:      p2wsh,
+		return &WitnessScriptDesc{
+			OutputScript:  p2wsh,
 			WitnessScript: script,
 		}, 1, nil
+
+	// For taproot channels, we'll use a slightly different format, where
+	// we use a NUMS key to force the remote party to take a script path,
+	// with the sole tap leaf enforcing the 1 CSV delay.
+	case chanType.IsTaproot():
+		toRemoteScriptTree, err := input.NewRemoteCommitScriptTree(
+			remoteKey,
+		)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		return toRemoteScriptTree, 1, nil
 
 	// If this channel type has anchors, we derive the delayed to_remote
 	// script.
 	case chanType.HasAnchors():
-		script, err := input.CommitScriptToRemoteConfirmed(key)
+		script, err := input.CommitScriptToRemoteConfirmed(remoteKey)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -275,25 +341,24 @@ func CommitScriptToRemote(chanType channeldb.ChannelType, initiator bool,
 			return nil, 0, err
 		}
 
-		return &ScriptInfo{
-			PkScript:      p2wsh,
+		return &WitnessScriptDesc{
+			OutputScript:  p2wsh,
 			WitnessScript: script,
 		}, 1, nil
 
 	default:
 		// Otherwise the to_remote will be a simple p2wkh.
-		p2wkh, err := input.CommitScriptUnencumbered(key)
+		p2wkh, err := input.CommitScriptUnencumbered(remoteKey)
 		if err != nil {
 			return nil, 0, err
 		}
 
 		// Since this is a regular P2WKH, the WitnessScipt and PkScript
 		// should both be set to the script hash.
-		return &ScriptInfo{
+		return &WitnessScriptDesc{
+			OutputScript:  p2wkh,
 			WitnessScript: p2wkh,
-			PkScript:      p2wkh,
 		}, 0, nil
-
 	}
 }
 
@@ -335,57 +400,89 @@ func HtlcSecondLevelInputSequence(chanType channeldb.ChannelType) uint32 {
 	return 0
 }
 
+// sweepSigHash returns the sign descriptor to use when signing a sweep
+// transaction. For taproot channels, we'll use this to always sweep with
+// sighash default.
+func sweepSigHash(chanType channeldb.ChannelType) txscript.SigHashType {
+	if chanType.IsTaproot() {
+		return txscript.SigHashDefault
+	}
+
+	return txscript.SigHashAll
+}
+
 // SecondLevelHtlcScript derives the appropriate second level HTLC script based
 // on the channel's commitment type. It is the uniform script that's used as the
 // output for the second-level HTLC transactions. The second level transaction
 // act as a sort of covenant, ensuring that a 2-of-2 multi-sig output can only
 // be spent in a particular way, and to a particular output. The `initiator`
-// argument should correspond to the owner of the commitment tranasction which
+// argument should correspond to the owner of the commitment transaction which
 // we are generating the to_local script for.
 func SecondLevelHtlcScript(chanType channeldb.ChannelType, initiator bool,
 	revocationKey, delayKey *btcec.PublicKey,
-	csvDelay, leaseExpiry uint32) (*ScriptInfo, error) {
+	csvDelay, leaseExpiry uint32) (input.ScriptDescriptor, error) {
 
-	var (
-		witnessScript []byte
-		err           error
-	)
 	switch {
-	// If we are the initiator of a leased channel, then we have an
-	// additional CLTV requirement in addition to the usual CSV requirement.
-	case initiator && chanType.HasLeaseExpiration():
-		witnessScript, err = input.LeaseSecondLevelHtlcScript(
-			revocationKey, delayKey, csvDelay, leaseExpiry,
-		)
-
-	default:
-		witnessScript, err = input.SecondLevelHtlcScript(
+	// For taproot channels, the pkScript is a segwit v1 p2tr output.
+	case chanType.IsTaproot():
+		return input.TaprootSecondLevelScriptTree(
 			revocationKey, delayKey, csvDelay,
 		)
-	}
-	if err != nil {
-		return nil, err
-	}
 
-	pkScript, err := input.WitnessScriptHash(witnessScript)
-	if err != nil {
-		return nil, err
-	}
+	// If we are the initiator of a leased channel, then we have an
+	// additional CLTV requirement in addition to the usual CSV
+	// requirement.
+	case initiator && chanType.HasLeaseExpiration():
+		witnessScript, err := input.LeaseSecondLevelHtlcScript(
+			revocationKey, delayKey, csvDelay, leaseExpiry,
+		)
+		if err != nil {
+			return nil, err
+		}
 
-	return &ScriptInfo{
-		PkScript:      pkScript,
-		WitnessScript: witnessScript,
-	}, nil
+		pkScript, err := input.WitnessScriptHash(witnessScript)
+		if err != nil {
+			return nil, err
+		}
+
+		return &WitnessScriptDesc{
+			OutputScript:  pkScript,
+			WitnessScript: witnessScript,
+		}, nil
+
+	default:
+		witnessScript, err := input.SecondLevelHtlcScript(
+			revocationKey, delayKey, csvDelay,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		pkScript, err := input.WitnessScriptHash(witnessScript)
+		if err != nil {
+			return nil, err
+		}
+
+		return &WitnessScriptDesc{
+			OutputScript:  pkScript,
+			WitnessScript: witnessScript,
+		}, nil
+	}
 }
 
 // CommitWeight returns the base commitment weight before adding HTLCs.
 func CommitWeight(chanType channeldb.ChannelType) int64 {
-	// If this commitment has anchors, it will be slightly heavier.
-	if chanType.HasAnchors() {
-		return input.AnchorCommitWeight
-	}
+	switch {
+	case chanType.IsTaproot():
+		return input.TaprootCommitWeight
 
-	return input.CommitWeight
+	// If this commitment has anchors, it will be slightly heavier.
+	case chanType.HasAnchors():
+		return input.AnchorCommitWeight
+
+	default:
+		return input.CommitWeight
+	}
 }
 
 // HtlcTimeoutFee returns the fee in satoshis required for an HTLC timeout
@@ -393,17 +490,18 @@ func CommitWeight(chanType channeldb.ChannelType) int64 {
 func HtlcTimeoutFee(chanType channeldb.ChannelType,
 	feePerKw chainfee.SatPerKWeight) ltcutil.Amount {
 
+	switch {
 	// For zero-fee HTLC channels, this will always be zero, regardless of
 	// feerate.
-	if chanType.ZeroHtlcTxFee() {
+	case chanType.ZeroHtlcTxFee() || chanType.IsTaproot():
 		return 0
-	}
 
-	if chanType.HasAnchors() {
+	case chanType.HasAnchors():
 		return feePerKw.FeeForWeight(input.HtlcTimeoutWeightConfirmed)
-	}
 
-	return feePerKw.FeeForWeight(input.HtlcTimeoutWeight)
+	default:
+		return feePerKw.FeeForWeight(input.HtlcTimeoutWeight)
+	}
 }
 
 // HtlcSuccessFee returns the fee in satoshis required for an HTLC success
@@ -411,51 +509,100 @@ func HtlcTimeoutFee(chanType channeldb.ChannelType,
 func HtlcSuccessFee(chanType channeldb.ChannelType,
 	feePerKw chainfee.SatPerKWeight) ltcutil.Amount {
 
+	switch {
 	// For zero-fee HTLC channels, this will always be zero, regardless of
 	// feerate.
-	if chanType.ZeroHtlcTxFee() {
+	case chanType.ZeroHtlcTxFee() || chanType.IsTaproot():
 		return 0
-	}
 
-	if chanType.HasAnchors() {
+	case chanType.HasAnchors():
 		return feePerKw.FeeForWeight(input.HtlcSuccessWeightConfirmed)
+
+	default:
+		return feePerKw.FeeForWeight(input.HtlcSuccessWeight)
 	}
-	return feePerKw.FeeForWeight(input.HtlcSuccessWeight)
 }
 
 // CommitScriptAnchors return the scripts to use for the local and remote
 // anchor.
-func CommitScriptAnchors(localChanCfg,
-	remoteChanCfg *channeldb.ChannelConfig) (*ScriptInfo,
-	*ScriptInfo, error) {
+func CommitScriptAnchors(chanType channeldb.ChannelType,
+	localChanCfg, remoteChanCfg *channeldb.ChannelConfig,
+	keyRing *CommitmentKeyRing) (
+	input.ScriptDescriptor, input.ScriptDescriptor, error) {
 
-	// Helper to create anchor ScriptInfo from key.
-	anchorScript := func(key *btcec.PublicKey) (*ScriptInfo, error) {
-		script, err := input.CommitScriptAnchor(key)
-		if err != nil {
-			return nil, err
+	var (
+		anchorScript func(key *btcec.PublicKey) (
+			input.ScriptDescriptor, error)
+
+		keySelector func(*channeldb.ChannelConfig,
+			bool) *btcec.PublicKey
+	)
+
+	switch {
+	// For taproot channels, the anchor is slightly different: the top
+	// level key is now the (relative) local delay and remote public key,
+	// since these are fully revealed once the commitment hits the chain.
+	case chanType.IsTaproot():
+		anchorScript = func(key *btcec.PublicKey,
+		) (input.ScriptDescriptor, error) {
+
+			return input.NewAnchorScriptTree(
+				key,
+			)
 		}
 
-		scriptHash, err := input.WitnessScriptHash(script)
-		if err != nil {
-			return nil, err
+		keySelector = func(cfg *channeldb.ChannelConfig,
+			local bool) *btcec.PublicKey {
+
+			if local {
+				return keyRing.ToLocalKey
+			}
+
+			return keyRing.ToRemoteKey
 		}
 
-		return &ScriptInfo{
-			PkScript:      scriptHash,
-			WitnessScript: script,
-		}, nil
+	// For normal channels we'll use the multi-sig keys since those are
+	// revealed when the channel closes
+	default:
+		// For normal channels, we'll create a p2wsh script based on
+		// the target key.
+		anchorScript = func(key *btcec.PublicKey,
+		) (input.ScriptDescriptor, error) {
+
+			script, err := input.CommitScriptAnchor(key)
+			if err != nil {
+				return nil, err
+			}
+
+			scriptHash, err := input.WitnessScriptHash(script)
+			if err != nil {
+				return nil, err
+			}
+
+			return &WitnessScriptDesc{
+				OutputScript:  scriptHash,
+				WitnessScript: script,
+			}, nil
+		}
+
+		// For the existing channels, we'll always select the multi-sig
+		// key from the party's channel config.
+		keySelector = func(cfg *channeldb.ChannelConfig,
+			_ bool) *btcec.PublicKey {
+
+			return cfg.MultiSigKey.PubKey
+		}
 	}
 
 	// Get the script used for the anchor output spendable by the local
 	// node.
-	localAnchor, err := anchorScript(localChanCfg.MultiSigKey.PubKey)
+	localAnchor, err := anchorScript(keySelector(localChanCfg, true))
 	if err != nil {
 		return nil, nil, err
 	}
 
 	// And the anchor spendable by the remote node.
-	remoteAnchor, err := anchorScript(remoteChanCfg.MultiSigKey.PubKey)
+	remoteAnchor, err := anchorScript(keySelector(remoteChanCfg, false))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -554,6 +701,7 @@ func (cb *CommitmentBuilder) createUnsignedCommitmentTx(ourBalance,
 			cb.chanState.ChanType, false, isOurs, feePerKw,
 			htlc.Amount.ToSatoshis(), dustLimit,
 		) {
+
 			continue
 		}
 
@@ -564,6 +712,7 @@ func (cb *CommitmentBuilder) createUnsignedCommitmentTx(ourBalance,
 			cb.chanState.ChanType, true, isOurs, feePerKw,
 			htlc.Amount.ToSatoshis(), dustLimit,
 		) {
+
 			continue
 		}
 
@@ -647,6 +796,7 @@ func (cb *CommitmentBuilder) createUnsignedCommitmentTx(ourBalance,
 			cb.chanState.ChanType, false, isOurs, feePerKw,
 			htlc.Amount.ToSatoshis(), dustLimit,
 		) {
+
 			continue
 		}
 
@@ -657,13 +807,14 @@ func (cb *CommitmentBuilder) createUnsignedCommitmentTx(ourBalance,
 		if err != nil {
 			return nil, err
 		}
-		cltvs = append(cltvs, htlc.Timeout)
+		cltvs = append(cltvs, htlc.Timeout) // nolint:makezero
 	}
 	for _, htlc := range filteredHTLCView.theirUpdates {
 		if HtlcIsDust(
 			cb.chanState.ChanType, true, isOurs, feePerKw,
 			htlc.Amount.ToSatoshis(), dustLimit,
 		) {
+
 			continue
 		}
 
@@ -674,7 +825,7 @@ func (cb *CommitmentBuilder) createUnsignedCommitmentTx(ourBalance,
 		if err != nil {
 			return nil, err
 		}
-		cltvs = append(cltvs, htlc.Timeout)
+		cltvs = append(cltvs, htlc.Timeout) // nolint:makezero
 	}
 
 	// Set the state hint of the commitment transaction to facilitate
@@ -725,7 +876,7 @@ func (cb *CommitmentBuilder) createUnsignedCommitmentTx(ourBalance,
 // spent after a relative block delay or revocation event, and a remote output
 // paying the counterparty within the channel, which can be spent immediately
 // or after a delay depending on the commitment type. The `initiator` argument
-// should correspond to the owner of the commitment tranasction we are creating.
+// should correspond to the owner of the commitment transaction we are creating.
 func CreateCommitTx(chanType channeldb.ChannelType,
 	fundingOutput wire.TxIn, keyRing *CommitmentKeyRing,
 	localChanCfg, remoteChanCfg *channeldb.ChannelConfig,
@@ -763,7 +914,7 @@ func CreateCommitTx(chanType channeldb.ChannelType,
 	localOutput := amountToLocal >= localChanCfg.DustLimit
 	if localOutput {
 		commitTx.AddTxOut(&wire.TxOut{
-			PkScript: toLocalScript.PkScript,
+			PkScript: toLocalScript.PkScript(),
 			Value:    int64(amountToLocal),
 		})
 	}
@@ -771,7 +922,7 @@ func CreateCommitTx(chanType channeldb.ChannelType,
 	remoteOutput := amountToRemote >= localChanCfg.DustLimit
 	if remoteOutput {
 		commitTx.AddTxOut(&wire.TxOut{
-			PkScript: toRemoteScript.PkScript,
+			PkScript: toRemoteScript.PkScript(),
 			Value:    int64(amountToRemote),
 		})
 	}
@@ -779,7 +930,7 @@ func CreateCommitTx(chanType channeldb.ChannelType,
 	// If this channel type has anchors, we'll also add those.
 	if chanType.HasAnchors() {
 		localAnchor, remoteAnchor, err := CommitScriptAnchors(
-			localChanCfg, remoteChanCfg,
+			chanType, localChanCfg, remoteChanCfg, keyRing,
 		)
 		if err != nil {
 			return nil, err
@@ -789,7 +940,7 @@ func CreateCommitTx(chanType channeldb.ChannelType,
 		// or there are HTLCs.
 		if localOutput || numHTLCs > 0 {
 			commitTx.AddTxOut(&wire.TxOut{
-				PkScript: localAnchor.PkScript,
+				PkScript: localAnchor.PkScript(),
 				Value:    int64(anchorSize),
 			})
 		}
@@ -798,7 +949,7 @@ func CreateCommitTx(chanType channeldb.ChannelType,
 		// output or there are HTLCs.
 		if remoteOutput || numHTLCs > 0 {
 			commitTx.AddTxOut(&wire.TxOut{
-				PkScript: remoteAnchor.PkScript,
+				PkScript: remoteAnchor.PkScript(),
 				Value:    int64(anchorSize),
 			})
 		}
@@ -848,12 +999,11 @@ func CoopCloseBalance(chanType channeldb.ChannelType, isInitiator bool,
 	return ourBalance, theirBalance, nil
 }
 
-// genHtlcScript generates the proper P2WSH public key scripts for the HTLC
-// output modified by two-bits denoting if this is an incoming HTLC, and if the
-// HTLC is being applied to their commitment transaction or ours.
-func genHtlcScript(chanType channeldb.ChannelType, isIncoming, ourCommit bool,
-	timeout uint32, rHash [32]byte,
-	keyRing *CommitmentKeyRing) ([]byte, []byte, error) {
+// genSegwitV0HtlcScript generates the HTLC scripts for a normal segwit v0
+// channel.
+func genSegwitV0HtlcScript(chanType channeldb.ChannelType,
+	isIncoming, ourCommit bool, timeout uint32, rHash [32]byte,
+	keyRing *CommitmentKeyRing) (*WitnessScriptDesc, error) {
 
 	var (
 		witnessScript []byte
@@ -907,17 +1057,97 @@ func genHtlcScript(chanType channeldb.ChannelType, isIncoming, ourCommit bool,
 		)
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	// Now that we have the redeem scripts, create the P2WSH public key
 	// script for the output itself.
 	htlcP2WSH, err := input.WitnessScriptHash(witnessScript)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	return htlcP2WSH, witnessScript, nil
+	return &WitnessScriptDesc{
+		OutputScript:  htlcP2WSH,
+		WitnessScript: witnessScript,
+	}, nil
+}
+
+// genTaprootHtlcScript generates the HTLC scripts for a taproot+musig2
+// channel.
+func genTaprootHtlcScript(isIncoming, ourCommit bool, timeout uint32,
+	rHash [32]byte,
+	keyRing *CommitmentKeyRing) (*input.HtlcScriptTree, error) {
+
+	var (
+		htlcScriptTree *input.HtlcScriptTree
+		err            error
+	)
+
+	// Generate the proper redeem scripts for the HTLC output modified by
+	// two-bits denoting if this is an incoming HTLC, and if the HTLC is
+	// being applied to their commitment transaction or ours.
+	switch {
+	// The HTLC is paying to us, and being applied to our commitment
+	// transaction. So we need to use the receiver's version of HTLC the
+	// script.
+	case isIncoming && ourCommit:
+		htlcScriptTree, err = input.ReceiverHTLCScriptTaproot(
+			timeout, keyRing.RemoteHtlcKey, keyRing.LocalHtlcKey,
+			keyRing.RevocationKey, rHash[:], ourCommit,
+		)
+
+	// We're being paid via an HTLC by the remote party, and the HTLC is
+	// being added to their commitment transaction, so we use the sender's
+	// version of the HTLC script.
+	case isIncoming && !ourCommit:
+		htlcScriptTree, err = input.SenderHTLCScriptTaproot(
+			keyRing.RemoteHtlcKey, keyRing.LocalHtlcKey,
+			keyRing.RevocationKey, rHash[:], ourCommit,
+		)
+
+	// We're sending an HTLC which is being added to our commitment
+	// transaction. Therefore, we need to use the sender's version of the
+	// HTLC script.
+	case !isIncoming && ourCommit:
+		htlcScriptTree, err = input.SenderHTLCScriptTaproot(
+			keyRing.LocalHtlcKey, keyRing.RemoteHtlcKey,
+			keyRing.RevocationKey, rHash[:], ourCommit,
+		)
+
+	// Finally, we're paying the remote party via an HTLC, which is being
+	// added to their commitment transaction. Therefore, we use the
+	// receiver's version of the HTLC script.
+	case !isIncoming && !ourCommit:
+		htlcScriptTree, err = input.ReceiverHTLCScriptTaproot(
+			timeout, keyRing.LocalHtlcKey, keyRing.RemoteHtlcKey,
+			keyRing.RevocationKey, rHash[:], ourCommit,
+		)
+	}
+
+	return htlcScriptTree, err
+}
+
+// genHtlcScript generates the proper P2WSH public key scripts for the HTLC
+// output modified by two-bits denoting if this is an incoming HTLC, and if the
+// HTLC is being applied to their commitment transaction or ours. A script
+// multiplexer for the various spending paths is returned. The script path that
+// we need to sign for the remote party (2nd level HTLCs) is also returned
+// along side the multiplexer.
+func genHtlcScript(chanType channeldb.ChannelType, isIncoming, ourCommit bool,
+	timeout uint32, rHash [32]byte, keyRing *CommitmentKeyRing,
+) (input.ScriptDescriptor, error) {
+
+	if !chanType.IsTaproot() {
+		return genSegwitV0HtlcScript(
+			chanType, isIncoming, ourCommit, timeout, rHash,
+			keyRing,
+		)
+	}
+
+	return genTaprootHtlcScript(
+		isIncoming, ourCommit, timeout, rHash, keyRing,
+	)
 }
 
 // addHTLC adds a new HTLC to the passed commitment transaction. One of four
@@ -934,26 +1164,104 @@ func addHTLC(commitTx *wire.MsgTx, ourCommit bool,
 	timeout := paymentDesc.Timeout
 	rHash := paymentDesc.RHash
 
-	p2wsh, witnessScript, err := genHtlcScript(
+	scriptInfo, err := genHtlcScript(
 		chanType, isIncoming, ourCommit, timeout, rHash, keyRing,
 	)
 	if err != nil {
 		return err
 	}
 
+	pkScript := scriptInfo.PkScript()
+
 	// Add the new HTLC outputs to the respective commitment transactions.
 	amountPending := int64(paymentDesc.Amount.ToSatoshis())
-	commitTx.AddTxOut(wire.NewTxOut(amountPending, p2wsh))
+	commitTx.AddTxOut(wire.NewTxOut(amountPending, pkScript))
 
 	// Store the pkScript of this particular PaymentDescriptor so we can
 	// quickly locate it within the commitment transaction later.
 	if ourCommit {
-		paymentDesc.ourPkScript = p2wsh
-		paymentDesc.ourWitnessScript = witnessScript
+		paymentDesc.ourPkScript = pkScript
+
+		paymentDesc.ourWitnessScript = scriptInfo.WitnessScriptToSign()
 	} else {
-		paymentDesc.theirPkScript = p2wsh
-		paymentDesc.theirWitnessScript = witnessScript
+		paymentDesc.theirPkScript = pkScript
+
+		//nolint:lll
+		paymentDesc.theirWitnessScript = scriptInfo.WitnessScriptToSign()
 	}
 
 	return nil
+}
+
+// findOutputIndexesFromRemote finds the index of our and their outputs from
+// the remote commitment transaction. It derives the key ring to compute the
+// output scripts and compares them against the outputs inside the commitment
+// to find the match.
+func findOutputIndexesFromRemote(revocationPreimage *chainhash.Hash,
+	chanState *channeldb.OpenChannel) (uint32, uint32, error) {
+
+	// Init the output indexes as empty.
+	ourIndex := uint32(channeldb.OutputIndexEmpty)
+	theirIndex := uint32(channeldb.OutputIndexEmpty)
+
+	chanCommit := chanState.RemoteCommitment
+	_, commitmentPoint := btcec.PrivKeyFromBytes(revocationPreimage[:])
+
+	// With the commitment point generated, we can now derive the king ring
+	// which will be used to generate the output scripts.
+	keyRing := DeriveCommitmentKeys(
+		commitmentPoint, false, chanState.ChanType,
+		&chanState.LocalChanCfg, &chanState.RemoteChanCfg,
+	)
+
+	// Since it's remote commitment chain, we'd used the mirrored values.
+	//
+	// We use the remote's channel config for the csv delay.
+	theirDelay := uint32(chanState.RemoteChanCfg.CsvDelay)
+
+	// If we are the initiator of this channel, then it's be false from the
+	// remote's PoV.
+	isRemoteInitiator := !chanState.IsInitiator
+
+	var leaseExpiry uint32
+	if chanState.ChanType.HasLeaseExpiration() {
+		leaseExpiry = chanState.ThawHeight
+	}
+
+	// Map the scripts from our PoV. When facing a local commitment, the to
+	// local output belongs to us and the to remote output belongs to them.
+	// When facing a remote commitment, the to local output belongs to them
+	// and the to remote output belongs to us.
+
+	// Compute the to local script. From our PoV, when facing a remote
+	// commitment, the to local output belongs to them.
+	theirScript, err := CommitScriptToSelf(
+		chanState.ChanType, isRemoteInitiator, keyRing.ToLocalKey,
+		keyRing.RevocationKey, theirDelay, leaseExpiry,
+	)
+	if err != nil {
+		return ourIndex, theirIndex, err
+	}
+
+	// Compute the to remote script. From our PoV, when facing a remote
+	// commitment, the to remote output belongs to us.
+	ourScript, _, err := CommitScriptToRemote(
+		chanState.ChanType, isRemoteInitiator, keyRing.ToRemoteKey,
+		leaseExpiry,
+	)
+	if err != nil {
+		return ourIndex, theirIndex, err
+	}
+
+	// Now compare the scripts to find our/their output index.
+	for i, txOut := range chanCommit.CommitTx.TxOut {
+		switch {
+		case bytes.Equal(txOut.PkScript, ourScript.PkScript()):
+			ourIndex = uint32(i)
+		case bytes.Equal(txOut.PkScript, theirScript.PkScript()):
+			theirIndex = uint32(i)
+		}
+	}
+
+	return ourIndex, theirIndex, nil
 }

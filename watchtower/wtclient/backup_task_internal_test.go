@@ -2,12 +2,8 @@ package wtclient
 
 import (
 	"bytes"
-	"crypto/rand"
-	"io"
-	"reflect"
 	"testing"
 
-	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/keychain"
@@ -23,6 +19,7 @@ import (
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
+	"github.com/stretchr/testify/require"
 )
 
 const csvDelay uint32 = 144
@@ -52,14 +49,6 @@ var (
 		0xe2, 0x2e, 0x68, 0x08, 0x4c, 0xb4, 0x0f, 0x4f,
 	}
 )
-
-func makeAddrSlice(size int) []byte {
-	addr := make([]byte, size)
-	if _, err := io.ReadFull(rand.Reader, addr); err != nil {
-		panic("cannot make addr")
-	}
-	return addr
-}
 
 type backupTaskTest struct {
 	name             string
@@ -124,8 +113,8 @@ func genTaskTest(
 	// the breach transaction, which we will continue to modify.
 	breachTxn := wire.NewMsgTx(2)
 	breachInfo := &lnwallet.BreachRetribution{
-		RevokedStateNum:   stateNum,
-		BreachTransaction: breachTxn,
+		RevokedStateNum: stateNum,
+		BreachTxHash:    breachTxn.TxHash(),
 		KeyRing: &lnwallet.CommitmentKeyRing{
 			RevocationKey: revPK,
 			ToLocalKey:    toLocalPK,
@@ -246,7 +235,7 @@ func genTaskTest(
 			RewardPkScript: rewardScript,
 		},
 		bindErr:        bindErr,
-		expSweepScript: makeAddrSlice(22),
+		expSweepScript: sweepAddr,
 		signer:         signer,
 		chanType:       chanType,
 	}
@@ -258,10 +247,18 @@ var (
 	blobTypeCommitReward = (blob.FlagCommitOutputs | blob.FlagReward).Type()
 
 	addr, _ = ltcutil.DecodeAddress(
-		"mrX9vMRYLfVy1BnZbc5gZjuyaqH3ZW2ZHz", &chaincfg.TestNet4Params,
+		"tltc1pw8gzj8clt3v5lxykpgacpju5n8xteskt7gxhmudu6pa70nwfhe6swl03mf",
+		&chaincfg.TestNet4Params,
 	)
 
 	addrScript, _ = txscript.PayToAddrScript(addr)
+
+	sweepAddrScript, _ = ltcutil.DecodeAddress(
+		"tltc1qs3jyc9sf5kak3x0w99cav9u605aeu3t6k8yckx",
+		&chaincfg.TestNet4Params,
+	)
+
+	sweepAddr, _ = txscript.PayToAddrScript(sweepAddrScript)
 )
 
 // TestBackupTaskBind tests the initialization and binding of a backupTask to a
@@ -296,9 +293,9 @@ func TestBackupTask(t *testing.T) {
 			expSweepCommitNoRewardBoth     int64                  = 299241
 			expSweepCommitNoRewardLocal    int64                  = 199514
 			expSweepCommitNoRewardRemote   int64                  = 99561
-			expSweepCommitRewardBoth       int64                  = 296117
-			expSweepCommitRewardLocal      int64                  = 197390
-			expSweepCommitRewardRemote     int64                  = 98437
+			expSweepCommitRewardBoth       int64                  = 296069
+			expSweepCommitRewardLocal      int64                  = 197342
+			expSweepCommitRewardRemote     int64                  = 98389
 			sweepFeeRateNoRewardRemoteDust chainfee.SatPerKWeight = 227500
 			sweepFeeRateRewardRemoteDust   chainfee.SatPerKWeight = 175350
 		)
@@ -306,9 +303,9 @@ func TestBackupTask(t *testing.T) {
 			expSweepCommitNoRewardBoth = 299236
 			expSweepCommitNoRewardLocal = 199513
 			expSweepCommitNoRewardRemote = 99557
-			expSweepCommitRewardBoth = 296112
-			expSweepCommitRewardLocal = 197389
-			expSweepCommitRewardRemote = 98433
+			expSweepCommitRewardBoth = 296064
+			expSweepCommitRewardLocal = 197341
+			expSweepCommitRewardRemote = 98385
 			sweepFeeRateNoRewardRemoteDust = 225400
 			sweepFeeRateRewardRemoteDust = 174100
 		}
@@ -435,7 +432,7 @@ func TestBackupTask(t *testing.T) {
 				"commit reward, to-remote output only, creates dust",
 				1,                            // stateNum
 				0,                            // toLocalAmt
-				100000,                       // toRemoteAmt
+				108221,                       // toRemoteAmt
 				blobTypeCommitReward,         // blobType
 				sweepFeeRateRewardRemoteDust, // sweepFeeRate
 				addrScript,                   // rewardScript
@@ -486,41 +483,18 @@ func TestBackupTask(t *testing.T) {
 
 func testBackupTask(t *testing.T, test backupTaskTest) {
 	// Create a new backupTask from the channel id and breach info.
-	task := newBackupTask(
-		&test.chanID, test.breachInfo, test.expSweepScript,
-		test.chanType,
-	)
-
-	// Assert that all parameters set during initialization are properly
-	// populated.
-	if task.id.ChanID != test.chanID {
-		t.Fatalf("channel id mismatch, want: %s, got: %s",
-			test.chanID, task.id.ChanID)
+	id := wtdb.BackupID{
+		ChanID:       test.chanID,
+		CommitHeight: test.breachInfo.RevokedStateNum,
 	}
+	task := newBackupTask(id, test.expSweepScript)
 
-	if task.id.CommitHeight != test.breachInfo.RevokedStateNum {
-		t.Fatalf("commit height mismatch, want: %d, got: %d",
-			test.breachInfo.RevokedStateNum, task.id.CommitHeight)
-	}
+	// getBreachInfo is a helper closure that returns the breach retribution
+	// info and channel type for the given channel and commit height.
+	getBreachInfo := func(id lnwire.ChannelID, commitHeight uint64) (
+		*lnwallet.BreachRetribution, channeldb.ChannelType, error) {
 
-	if task.totalAmt != test.expTotalAmt {
-		t.Fatalf("total amount mismatch, want: %d, got: %v",
-			test.expTotalAmt, task.totalAmt)
-	}
-
-	if !reflect.DeepEqual(task.breachInfo, test.breachInfo) {
-		t.Fatalf("breach info mismatch, want: %v, got: %v",
-			test.breachInfo, task.breachInfo)
-	}
-
-	if !reflect.DeepEqual(task.toLocalInput, test.expToLocalInput) {
-		t.Fatalf("to-local input mismatch, want: %v, got: %v",
-			test.expToLocalInput, task.toLocalInput)
-	}
-
-	if !reflect.DeepEqual(task.toRemoteInput, test.expToRemoteInput) {
-		t.Fatalf("to-local input mismatch, want: %v, got: %v",
-			test.expToRemoteInput, task.toRemoteInput)
+		return test.breachInfo, test.chanType, nil
 	}
 
 	// Reconstruct the expected input.Inputs that will be returned by the
@@ -536,34 +510,33 @@ func testBackupTask(t *testing.T, test backupTaskTest) {
 	// Assert that the inputs method returns the correct slice of
 	// input.Inputs.
 	inputs := task.inputs()
-	if !reflect.DeepEqual(expInputs, inputs) {
-		t.Fatalf("inputs mismatch, want: %v, got: %v",
-			expInputs, inputs)
-	}
+	require.Equal(t, expInputs, inputs)
 
 	// Now, bind the session to the task. If successful, this locks in the
 	// session's negotiated parameters and allows the backup task to derive
 	// the final free variables in the justice transaction.
-	err := task.bindSession(test.session)
-	if err != test.bindErr {
-		t.Fatalf("expected: %v when binding session, got: %v",
-			test.bindErr, err)
-	}
+	err := task.bindSession(test.session, getBreachInfo)
+	require.ErrorIs(t, err, test.bindErr)
+
+	// Assert that all parameters set during after binding the backup task
+	// are properly populated.
+	require.Equal(t, test.chanID, task.id.ChanID)
+	require.Equal(t, test.breachInfo.RevokedStateNum, task.id.CommitHeight)
+	require.Equal(t, test.expTotalAmt, task.totalAmt)
+	require.Equal(t, test.breachInfo, task.breachInfo)
+	require.Equal(t, test.expToLocalInput, task.toLocalInput)
+	require.Equal(t, test.expToRemoteInput, task.toRemoteInput)
 
 	// Exit early if the bind was supposed to fail. But first, we check that
 	// all fields set during a bind are still unset. This ensure that a
 	// failed bind doesn't have side-effects if the task is retried with a
 	// different session.
 	if test.bindErr != nil {
-		if task.blobType != 0 {
-			t.Fatalf("blob type should not be set on failed bind, "+
-				"found: %s", task.blobType)
-		}
+		require.Zerof(t, task.blobType, "blob type should not be set "+
+			"on failed bind, found: %s", task.blobType)
 
-		if task.outputs != nil {
-			t.Fatalf("justice outputs should not be set on failed bind, "+
-				"found: %v", task.outputs)
-		}
+		require.Nilf(t, task.outputs, "justice outputs should not be "+
+			" set on failed bind, found: %v", task.outputs)
 
 		return
 	}
@@ -571,10 +544,7 @@ func testBackupTask(t *testing.T, test backupTaskTest) {
 	// Otherwise, the binding succeeded. Assert that all values set during
 	// the bind are properly populated.
 	policy := test.session.Policy
-	if task.blobType != policy.BlobType {
-		t.Fatalf("blob type mismatch, want: %s, got %s",
-			policy.BlobType, task.blobType)
-	}
+	require.Equal(t, policy.BlobType, task.blobType)
 
 	// Compute the expected outputs on the justice transaction.
 	var expOutputs = []*wire.TxOut{
@@ -594,33 +564,23 @@ func testBackupTask(t *testing.T, test backupTaskTest) {
 	}
 
 	// Assert that the computed outputs match our expected outputs.
-	if !reflect.DeepEqual(expOutputs, task.outputs) {
-		t.Fatalf("justice txn output mismatch, want: %v,\ngot: %v",
-			spew.Sdump(expOutputs), spew.Sdump(task.outputs))
-	}
+	require.Equal(t, expOutputs, task.outputs)
 
 	// Now, we'll construct, sign, and encrypt the blob containing the parts
 	// needed to reconstruct the justice transaction.
 	hint, encBlob, err := task.craftSessionPayload(test.signer)
-	if err != nil {
-		t.Fatalf("unable to craft session payload: %v", err)
-	}
+	require.NoError(t, err, "unable to craft session payload")
 
 	// Verify that the breach hint matches the breach txid's prefix.
-	breachTxID := test.breachInfo.BreachTransaction.TxHash()
+	breachTxID := test.breachInfo.BreachTxHash
 	expHint := blob.NewBreachHintFromHash(&breachTxID)
-	if hint != expHint {
-		t.Fatalf("breach hint mismatch, want: %x, got: %v",
-			expHint, hint)
-	}
+	require.Equal(t, expHint, hint)
 
 	// Decrypt the return blob to obtain the JusticeKit containing its
 	// contents.
 	key := blob.NewBreachKeyFromHash(&breachTxID)
 	jKit, err := blob.Decrypt(key, encBlob, policy.BlobType)
-	if err != nil {
-		t.Fatalf("unable to decrypt blob: %v", err)
-	}
+	require.NoError(t, err, "unable to decrypt blob")
 
 	keyRing := test.breachInfo.KeyRing
 	expToLocalPK := keyRing.ToLocalKey.SerializeCompressed()
@@ -629,14 +589,8 @@ func testBackupTask(t *testing.T, test backupTaskTest) {
 
 	// Assert that the blob contained the serialized revocation and to-local
 	// pubkeys.
-	if !bytes.Equal(jKit.RevocationPubKey[:], expRevPK) {
-		t.Fatalf("revocation pk mismatch, want: %x, got: %x",
-			expRevPK, jKit.RevocationPubKey[:])
-	}
-	if !bytes.Equal(jKit.LocalDelayPubKey[:], expToLocalPK) {
-		t.Fatalf("revocation pk mismatch, want: %x, got: %x",
-			expToLocalPK, jKit.LocalDelayPubKey[:])
-	}
+	require.Equal(t, expRevPK, jKit.RevocationPubKey[:])
+	require.Equal(t, expToLocalPK, jKit.LocalDelayPubKey[:])
 
 	// Determine if the breach transaction has a to-remote output and/or
 	// to-local output to spend from. Note the seemingly-reversed
@@ -645,52 +599,44 @@ func testBackupTask(t *testing.T, test backupTaskTest) {
 	hasToLocal := test.breachInfo.RemoteOutputSignDesc != nil
 
 	// If the to-remote output is present, assert that the to-remote public
-	// key was included in the blob.
-	if hasToRemote &&
-		!bytes.Equal(jKit.CommitToRemotePubKey[:], expToRemotePK) {
-		t.Fatalf("mismatch to-remote pubkey, want: %x, got: %x",
-			expToRemotePK, jKit.CommitToRemotePubKey)
-	}
-
-	// Otherwise if the to-local output is not present, assert that a blank
-	// public key was inserted.
-	if !hasToRemote &&
-		!bytes.Equal(jKit.CommitToRemotePubKey[:], zeroPK[:]) {
-		t.Fatalf("mismatch to-remote pubkey, want: %x, got: %x",
-			zeroPK, jKit.CommitToRemotePubKey)
+	// key was included in the blob. Otherwise assert that a blank public
+	// key was inserted.
+	if hasToRemote {
+		require.Equal(t, expToRemotePK, jKit.CommitToRemotePubKey[:])
+	} else {
+		require.Equal(t, zeroPK[:], jKit.CommitToRemotePubKey[:])
 	}
 
 	// Assert that the CSV is encoded in the blob.
-	if jKit.CSVDelay != test.breachInfo.RemoteDelay {
-		t.Fatalf("mismatch remote delay, want: %d, got: %v",
-			test.breachInfo.RemoteDelay, jKit.CSVDelay)
-	}
+	require.Equal(t, test.breachInfo.RemoteDelay, jKit.CSVDelay)
 
 	// Assert that the sweep pkscript is included.
-	if !bytes.Equal(jKit.SweepAddress, test.expSweepScript) {
-		t.Fatalf("sweep pkscript mismatch, want: %x, got: %x",
-			test.expSweepScript, jKit.SweepAddress)
-	}
+	require.Equal(t, test.expSweepScript, jKit.SweepAddress)
 
 	// Finally, verify that the signatures are encoded in the justice kit.
 	// We don't validate the actual signatures produced here, since at the
 	// moment, it is tested indirectly by other packages and integration
 	// tests.
 	// TODO(conner): include signature validation checks
-
-	emptyToLocalSig := bytes.Equal(jKit.CommitToLocalSig[:], zeroSig[:])
-	switch {
-	case hasToLocal && emptyToLocalSig:
-		t.Fatalf("to-local signature should not be empty")
-	case !hasToLocal && !emptyToLocalSig:
-		t.Fatalf("to-local signature should be empty")
+	emptyToLocalSig := bytes.Equal(
+		jKit.CommitToLocalSig.RawBytes(), zeroSig[:],
+	)
+	if hasToLocal {
+		require.False(t, emptyToLocalSig, "to-local signature should "+
+			"not be empty")
+	} else {
+		require.True(t, emptyToLocalSig, "to-local signature should "+
+			"be empty")
 	}
 
-	emptyToRemoteSig := bytes.Equal(jKit.CommitToRemoteSig[:], zeroSig[:])
-	switch {
-	case hasToRemote && emptyToRemoteSig:
-		t.Fatalf("to-remote signature should not be empty")
-	case !hasToRemote && !emptyToRemoteSig:
-		t.Fatalf("to-remote signature should be empty")
+	emptyToRemoteSig := bytes.Equal(
+		jKit.CommitToRemoteSig.RawBytes(), zeroSig[:],
+	)
+	if hasToRemote {
+		require.False(t, emptyToRemoteSig, "to-remote signature "+
+			"should not be empty")
+	} else {
+		require.True(t, emptyToRemoteSig, "to-remote signature "+
+			"should be empty")
 	}
 }

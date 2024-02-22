@@ -28,8 +28,10 @@ func makePubKey(i uint64) blob.PubKey {
 }
 
 func makeSig(i int) lnwire.Sig {
-	var sig lnwire.Sig
-	binary.BigEndian.PutUint64(sig[:8], uint64(i))
+	var sigBytes [64]byte
+	binary.BigEndian.PutUint64(sigBytes[:8], uint64(i))
+
+	sig, _ := lnwire.NewSigFromWireECDSA(sigBytes[:])
 	return sig
 }
 
@@ -166,9 +168,7 @@ func testBlobJusticeKitEncryptDecrypt(t *testing.T, test descriptorTest) {
 	// party's commitment txid as the key.
 	var key blob.BreachKey
 	_, err := rand.Read(key[:])
-	if err != nil {
-		t.Fatalf("unable to generate blob encryption key: %v", err)
-	}
+	require.NoError(t, err, "unable to generate blob encryption key")
 
 	// Encrypt the blob plaintext using the generated key and
 	// target version for this test.

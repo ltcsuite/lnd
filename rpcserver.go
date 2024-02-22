@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"runtime"
 	"sort"
@@ -59,6 +60,7 @@ import (
 	"github.com/ltcsuite/lnd/rpcperms"
 	"github.com/ltcsuite/lnd/signal"
 	"github.com/ltcsuite/lnd/sweep"
+	"github.com/ltcsuite/lnd/tlv"
 	"github.com/ltcsuite/lnd/watchtower"
 	"github.com/ltcsuite/lnd/zpay32"
 	"github.com/ltcsuite/ltcd/blockchain"
@@ -220,45 +222,6 @@ func stringInSlice(a string, slice []string) bool {
 	return false
 }
 
-// calculateFeeRate uses either satPerByte or satPerVByte, but not both, from a
-// request to calculate the fee rate. It provides compatibility for the
-// deprecated field, satPerByte. Once the field is safe to be removed, the
-// check can then be deleted.
-func calculateFeeRate(satPerByte, satPerVByte uint64, targetConf uint32,
-	estimator chainfee.Estimator) (chainfee.SatPerKWeight, error) {
-
-	var feeRate chainfee.SatPerKWeight
-
-	// We only allow using either the deprecated field or the new field.
-	if satPerByte != 0 && satPerVByte != 0 {
-		return feeRate, fmt.Errorf("either SatPerByte or " +
-			"SatPerVByte should be set, but not both")
-	}
-
-	// Default to satPerVByte, and overwrite it if satPerByte is set.
-	satPerKw := chainfee.SatPerKVByte(satPerVByte * 1000).FeePerKWeight()
-	if satPerByte != 0 {
-		satPerKw = chainfee.SatPerKVByte(
-			satPerByte * 1000,
-		).FeePerKWeight()
-	}
-
-	// Based on the passed fee related parameters, we'll determine an
-	// appropriate fee rate for this transaction.
-	feeRate, err := sweep.DetermineFeePerKw(
-		estimator, sweep.FeePreference{
-			ConfTarget: targetConf,
-			FeeRate:    satPerKw,
-		},
-	)
-	if err != nil {
-		return feeRate, err
-	}
-
-	return feeRate, nil
-
-}
-
 // GetAllPermissions returns all the permissions required to interact with lnd.
 func GetAllPermissions() []bakery.Op {
 	allPerms := make([]bakery.Op, 0)
@@ -283,7 +246,6 @@ func GetAllPermissions() []bakery.Op {
 						allPerms, perm,
 					)
 				}
-
 			} else {
 				allPermsMap[entity] = make(map[string]struct{})
 				allPermsMap[entity][action] = struct{}{}
@@ -577,6 +539,14 @@ func MainRPCServerPermissions() map[string][]bakery.Op {
 			Entity: "offchain",
 			Action: "read",
 		}},
+		"/lnrpc.Lightning/LookupHtlcResolution": {{
+			Entity: "offchain",
+			Action: "read",
+		}},
+		"/lnrpc.Lightning/ListAliases": {{
+			Entity: "offchain",
+			Action: "read",
+		}},
 	}
 }
 
@@ -609,7 +579,7 @@ type rpcServer struct {
 
 	// chanPredicate is used in the bidirectional ChannelAcceptor streaming
 	// method.
-	chanPredicate *chanacceptor.ChainedAcceptor
+	chanPredicate chanacceptor.MultiplexAcceptor
 
 	quit chan struct{}
 
@@ -673,7 +643,7 @@ func newRPCServer(cfg *Config, interceptorChain *rpcperms.InterceptorChain,
 func (r *rpcServer) addDeps(s *server, macService *macaroons.Service,
 	subServerCgs *subRPCServerConfigs, atpl *autopilot.Manager,
 	invoiceRegistry *invoices.InvoiceRegistry, tower *watchtower.Standalone,
-	chanPredicate *chanacceptor.ChainedAcceptor) error {
+	chanPredicate chanacceptor.MultiplexAcceptor) error {
 
 	// Set up router rpc backend.
 	selfNode, err := s.graphDB.SourceNode()
@@ -681,6 +651,7 @@ func (r *rpcServer) addDeps(s *server, macService *macaroons.Service,
 		return err
 	}
 	graph := s.graphDB
+
 	routerBackend := &routerrpc.RouterBackend{
 		SelfNode: selfNode.PubKeyBytes,
 		FetchChannelCapacity: func(chanID uint64) (ltcutil.Amount,
@@ -691,6 +662,28 @@ func (r *rpcServer) addDeps(s *server, macService *macaroons.Service,
 				return 0, err
 			}
 			return info.Capacity, nil
+		},
+		FetchAmountPairCapacity: func(nodeFrom, nodeTo route.Vertex,
+			amount lnwire.MilliSatoshi) (ltcutil.Amount, error) {
+
+			routingGraph, err := routing.NewCachedGraph(
+				selfNode, graph,
+			)
+			if err != nil {
+				return 0, err
+			}
+			defer func() {
+				closeErr := routingGraph.Close()
+				if closeErr != nil {
+					rpcsLog.Errorf("not able to close "+
+						"routing graph tx: %v",
+						closeErr)
+				}
+			}()
+
+			return routingGraph.FetchAmountPairCapacity(
+				nodeFrom, nodeTo, amount,
+			)
 		},
 		FetchChannelEndpoints: func(chanID uint64) (route.Vertex,
 			route.Vertex, error) {
@@ -731,6 +724,10 @@ func (r *rpcServer) addDeps(s *server, macService *macaroons.Service,
 		return s.featureMgr.Get(feature.SetInvoiceAmp)
 	}
 
+	parseAddr := func(addr string) (net.Addr, error) {
+		return parseAddr(addr, r.cfg.net)
+	}
+
 	var (
 		subServers     []lnrpc.SubServer
 		subServerPerms []lnrpc.MacaroonPerms
@@ -747,7 +744,9 @@ func (r *rpcServer) addDeps(s *server, macService *macaroons.Service,
 		routerBackend, s.nodeSigner, s.graphDB, s.chanStateDB,
 		s.sweeper, tower, s.towerClient, s.anchorTowerClient,
 		r.cfg.net.ResolveTCPAddr, genInvoiceFeatures,
-		genAmpInvoiceFeatures, rpcsLog,
+		genAmpInvoiceFeatures, s.getNodeAnnouncement,
+		s.updateAndBrodcastSelfNode, parseAddr, rpcsLog,
+		s.aliasMgr.GetPeerAlias,
 	)
 	if err != nil {
 		return err
@@ -907,6 +906,15 @@ func (r *rpcServer) RegisterWithRestProxy(restCtx context.Context,
 		return err
 	}
 
+	// Register our State service with the REST proxy.
+	err = lnrpc.RegisterStateHandlerFromEndpoint(
+		restCtx, restMux, restProxyDest, restDialOpts,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Register all the subservers with the REST proxy.
 	for _, subServer := range r.subGrpcHandlers {
 		err := subServer.RegisterWithRestServer(
 			restCtx, restMux, restProxyDest, restDialOpts,
@@ -969,6 +977,11 @@ func addrPairsToOutputs(addrPairs map[string]int64,
 		addr, err := ltcutil.DecodeAddress(addr, params)
 		if err != nil {
 			return nil, err
+		}
+
+		if !addr.IsForNet(params) {
+			return nil, fmt.Errorf("address is not for %s",
+				params.Name)
 		}
 
 		pkscript, err := txscript.PayToAddrScript(addr)
@@ -1080,13 +1093,13 @@ func (r *rpcServer) sendCoinsOnChain(paymentMap map[string]int64,
 	return &txHash, nil
 }
 
-// ListUnspent returns useful information about each unspent output owned by the
-// wallet, as reported by the underlying `ListUnspentWitness`; the information
-// returned is: outpoint, amount in satoshis, address, address type,
-// scriptPubKey in hex and number of confirmations.  The result is filtered to
-// contain outputs whose number of confirmations is between a minimum and
-// maximum number of confirmations specified by the user, with 0 meaning
-// unconfirmed.
+// ListUnspent returns useful information about each unspent output owned by
+// the wallet, as reported by the underlying `ListUnspentWitness`; the
+// information returned is: outpoint, amount in satoshis, address, address
+// type, scriptPubKey in hex and number of confirmations.  The result is
+// filtered to contain outputs whose number of confirmations is between a
+// minimum and maximum number of confirmations specified by the user, with
+// 0 meaning unconfirmed.
 func (r *rpcServer) ListUnspent(ctx context.Context,
 	in *lnrpc.ListUnspentRequest) (*lnrpc.ListUnspentResponse, error) {
 
@@ -1202,7 +1215,7 @@ func (r *rpcServer) SendCoins(ctx context.Context,
 	in *lnrpc.SendCoinsRequest) (*lnrpc.SendCoinsResponse, error) {
 
 	// Calculate an appropriate fee rate for this transaction.
-	feePerKw, err := calculateFeeRate(
+	feePerKw, err := lnrpc.CalculateFeeRate(
 		uint64(in.SatPerByte), in.SatPerVbyte, // nolint:staticcheck
 		uint32(in.TargetConf), r.server.cc.FeeEstimator,
 	)
@@ -1317,7 +1330,7 @@ func (r *rpcServer) SendCoins(ctx context.Context,
 			// ensures this is an address the wallet knows about,
 			// allowing us to pass the reserved value check.
 			changeAddr, err := r.server.cc.Wallet.NewAddress(
-				lnwallet.WitnessPubKey, true,
+				lnwallet.TaprootPubkey, true,
 				lnwallet.DefaultAccountName,
 			)
 			if err != nil {
@@ -1415,7 +1428,7 @@ func (r *rpcServer) SendMany(ctx context.Context,
 	in *lnrpc.SendManyRequest) (*lnrpc.SendManyResponse, error) {
 
 	// Calculate an appropriate fee rate for this transaction.
-	feePerKw, err := calculateFeeRate(
+	feePerKw, err := lnrpc.CalculateFeeRate(
 		uint64(in.SatPerByte), in.SatPerVbyte, // nolint:staticcheck
 		uint32(in.TargetConf), r.server.cc.FeeEstimator,
 	)
@@ -1498,6 +1511,14 @@ func (r *rpcServer) NewAddress(ctx context.Context,
 			return nil, err
 		}
 
+	case lnrpc.AddressType_TAPROOT_PUBKEY:
+		addr, err = r.server.cc.Wallet.NewAddress(
+			lnwallet.TaprootPubkey, false, account,
+		)
+		if err != nil {
+			return nil, err
+		}
+
 	case lnrpc.AddressType_UNUSED_WITNESS_PUBKEY_HASH:
 		addr, err = r.server.cc.Wallet.LastUnusedAddress(
 			lnwallet.WitnessPubKey, account,
@@ -1513,6 +1534,17 @@ func (r *rpcServer) NewAddress(ctx context.Context,
 		if err != nil {
 			return nil, err
 		}
+
+	case lnrpc.AddressType_UNUSED_TAPROOT_PUBKEY:
+		addr, err = r.server.cc.Wallet.LastUnusedAddress(
+			lnwallet.TaprootPubkey, account,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+	default:
+		return nil, fmt.Errorf("unknown address type: %v", in.Type)
 	}
 
 	rpcsLog.Debugf("[newaddress] account=%v type=%v addr=%v", account,
@@ -1653,9 +1685,9 @@ func (r *rpcServer) ConnectPeer(ctx context.Context,
 		)
 	}
 
-	if err := r.server.ConnectToPeer(peerAddr,
-		in.Perm, timeout); err != nil {
-
+	if err := r.server.ConnectToPeer(
+		peerAddr, in.Perm, timeout,
+	); err != nil {
 		rpcsLog.Errorf(
 			"[connectpeer]: error connecting to peer: %v", err,
 		)
@@ -1787,10 +1819,12 @@ func newFundingShimAssembler(chanPointShim *lnrpc.ChanPointShim, initiator bool,
 
 	// With all the parts assembled, we can now make the canned assembler
 	// to pass into the wallet.
+	//
+	// TODO(roasbeef): update to support musig2
 	return chanfunding.NewCannedAssembler(
 		chanPointShim.ThawHeight, *chanPoint,
 		ltcutil.Amount(chanPointShim.Amt), &localKeyDesc,
-		remoteKey, initiator,
+		remoteKey, initiator, chanPointShim.Musig2,
 	), nil
 }
 
@@ -1874,38 +1908,109 @@ func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 
 	localFundingAmt := ltcutil.Amount(in.LocalFundingAmount)
 	remoteInitialBalance := ltcutil.Amount(in.PushSat)
+
+	// If we are not committing the maximum viable balance towards a channel
+	// then the local funding amount must be specified. In case FundMax is
+	// set the funding amount is specified as the interval between minimum
+	// funding amount and by the configured maximum channel size.
+	if !in.FundMax && localFundingAmt == 0 {
+		return nil, fmt.Errorf("local funding amount must be non-zero")
+	}
+
+	// Ensure that the initial balance of the remote party (if pushing
+	// satoshis) does not exceed the amount the local party has requested
+	// for funding. This is only checked if we are not committing the
+	// maximum viable amount towards the channel balance. If we do commit
+	// the maximum then the remote balance is checked in a dedicated FundMax
+	// check.
+	if !in.FundMax && remoteInitialBalance >= localFundingAmt {
+		return nil, fmt.Errorf("amount pushed to remote peer for " +
+			"initial state must be below the local funding amount")
+	}
+
+	// We either allow the fundmax or the psbt flow hence we return an error
+	// if both are set.
+	if in.FundingShim != nil && in.FundMax {
+		return nil, fmt.Errorf("cannot provide a psbt funding shim " +
+			"while committing the maxium wallet balance towards " +
+			"the channel opening")
+	}
+
+	// If the FundMax flag is set, ensure that the acceptable minimum local
+	// amount adheres to the amount to be pushed to the remote, and to
+	// current rules, while also respecting the settings for the maximum
+	// channel size.
+	var minFundAmt, fundUpToMaxAmt ltcutil.Amount
+	if in.FundMax {
+		// We assume the configured maximum channel size to be the upper
+		// bound of our "maxed" out funding attempt.
+		fundUpToMaxAmt = ltcutil.Amount(r.cfg.MaxChanSize)
+
+		// Since the standard non-fundmax flow requires the minimum
+		// funding amount to be at least in the amount of the initial
+		// remote balance(push amount) we need to adjust the minimum
+		// funding amount accordingly. We initially assume the minimum
+		// allowed channel size as minimum funding amount.
+		minFundAmt = funding.MinChanFundingSize
+
+		// If minFundAmt is less than the initial remote balance we
+		// simply assign the initial remote balance to minFundAmt in
+		// order to fullfil the criterion. Whether or not this so
+		// determined minimum amount is actually available is
+		// ascertained downstream in the lnwallet's reservation
+		// workflow.
+		if remoteInitialBalance >= minFundAmt {
+			minFundAmt = remoteInitialBalance
+		}
+	}
+
 	minHtlcIn := lnwire.MilliSatoshi(in.MinHtlcMsat)
 	remoteCsvDelay := uint16(in.RemoteCsvDelay)
 	maxValue := lnwire.MilliSatoshi(in.RemoteMaxValueInFlightMsat)
 	maxHtlcs := uint16(in.RemoteMaxHtlcs)
+	remoteChanReserve := ltcutil.Amount(in.RemoteChanReserveSat)
 
 	globalFeatureSet := r.server.featureMgr.Get(feature.SetNodeAnn)
 
-	// Ensure that the initial balance of the remote party (if pushing
-	// satoshis) does not exceed the amount the local party has requested
-	// for funding.
-	//
-	// TODO(roasbeef): incorporate base fee?
-	if remoteInitialBalance >= localFundingAmt {
-		return nil, fmt.Errorf("amount pushed to remote peer for " +
-			"initial state must be below the local funding amount")
+	// Determine if the user provided channel fees
+	// and if so pass them on to the funding workflow.
+	var channelBaseFee, channelFeeRate *uint64
+	if in.UseBaseFee {
+		channelBaseFee = &in.BaseFee
+	}
+	if in.UseFeeRate {
+		channelFeeRate = &in.FeeRate
+	}
+
+	// Ensure that the remote channel reserve does not exceed 20% of the
+	// channel capacity.
+	if !in.FundMax && remoteChanReserve >= localFundingAmt/5 {
+		return nil, fmt.Errorf("remote channel reserve must be less " +
+			"than the %%20 of the channel capacity")
 	}
 
 	// Ensure that the user doesn't exceed the current soft-limit for
 	// channel size. If the funding amount is above the soft-limit, then
 	// we'll reject the request.
+	// If the FundMax flag is set the local amount is determined downstream
+	// in the wallet hence we do not check it here against the maximum
+	// funding amount. Only if the localFundingAmt is specified we can check
+	// if it exceeds the maximum funding amount.
 	wumboEnabled := globalFeatureSet.HasFeature(
 		lnwire.WumboChannelsOptional,
 	)
-	if !wumboEnabled && localFundingAmt > MaxFundingAmount {
+	if !in.FundMax && !wumboEnabled && localFundingAmt > MaxFundingAmount {
 		return nil, fmt.Errorf("funding amount is too large, the max "+
 			"channel size is: %v", MaxFundingAmount)
 	}
 
 	// Restrict the size of the channel we'll actually open. At a later
-	// level, we'll ensure that the output we create after accounting for
-	// fees that a dust output isn't created.
-	if localFundingAmt < funding.MinChanFundingSize {
+	// level, we'll ensure that the output we create, after accounting for
+	// fees, does not leave a dust output. In case of the FundMax flow
+	// dedicated checks ensure that the lower boundary of the channel size
+	// is at least in the amount of MinChanFundingSize or potentially higher
+	// if a remote balance is specified.
+	if !in.FundMax && localFundingAmt < funding.MinChanFundingSize {
 		return nil, fmt.Errorf("channel is too small, the minimum "+
 			"channel size is: %v SAT", int64(funding.MinChanFundingSize))
 	}
@@ -1933,7 +2038,6 @@ func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 	// not present, we'll fallback to the deprecated version that parses the
 	// key from a hex string if this is for REST for backwards compatibility.
 	switch {
-
 	// Parse the raw bytes of the node key into a pubkey object so we can
 	// easily manipulate it.
 	case len(in.NodePubkey) > 0:
@@ -1967,7 +2071,7 @@ func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 	}
 
 	// Calculate an appropriate fee rate for this transaction.
-	feeRate, err := calculateFeeRate(
+	feeRate, err := lnrpc.CalculateFeeRate(
 		uint64(in.SatPerByte), in.SatPerVbyte, // nolint:staticcheck
 		uint32(in.TargetConf), r.server.cc.FeeEstimator,
 	)
@@ -1989,7 +2093,9 @@ func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 	var channelType *lnwire.ChannelType
 	switch in.CommitmentType {
 	case lnrpc.CommitmentType_UNKNOWN_COMMITMENT_TYPE:
-		break
+		if in.ZeroConf {
+			return nil, fmt.Errorf("use anchors for zero-conf")
+		}
 
 	case lnrpc.CommitmentType_LEGACY:
 		channelType = new(lnwire.ChannelType)
@@ -2003,43 +2109,135 @@ func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 
 	case lnrpc.CommitmentType_ANCHORS:
 		channelType = new(lnwire.ChannelType)
-		*channelType = lnwire.ChannelType(*lnwire.NewRawFeatureVector(
+		fv := lnwire.NewRawFeatureVector(
 			lnwire.StaticRemoteKeyRequired,
 			lnwire.AnchorsZeroFeeHtlcTxRequired,
-		))
+		)
+
+		if in.ZeroConf {
+			fv.Set(lnwire.ZeroConfRequired)
+		}
+
+		if in.ScidAlias {
+			fv.Set(lnwire.ScidAliasRequired)
+		}
+
+		*channelType = lnwire.ChannelType(*fv)
 
 	case lnrpc.CommitmentType_SCRIPT_ENFORCED_LEASE:
 		channelType = new(lnwire.ChannelType)
-		*channelType = lnwire.ChannelType(*lnwire.NewRawFeatureVector(
+		fv := lnwire.NewRawFeatureVector(
 			lnwire.StaticRemoteKeyRequired,
 			lnwire.AnchorsZeroFeeHtlcTxRequired,
 			lnwire.ScriptEnforcedLeaseRequired,
-		))
+		)
+
+		if in.ZeroConf {
+			fv.Set(lnwire.ZeroConfRequired)
+		}
+
+		if in.ScidAlias {
+			fv.Set(lnwire.ScidAliasRequired)
+		}
+
+		*channelType = lnwire.ChannelType(*fv)
+
+	case lnrpc.CommitmentType_SIMPLE_TAPROOT:
+		// If the taproot channel type is being set, then the channel
+		// MUST be private (unadvertised) for now.
+		if !in.Private {
+			return nil, fmt.Errorf("taproot channels must be " +
+				"private")
+		}
+
+		channelType = new(lnwire.ChannelType)
+		fv := lnwire.NewRawFeatureVector(
+			lnwire.SimpleTaprootChannelsRequiredStaging,
+		)
+
+		// TODO(roasbeef): no need for the rest as they're now
+		// implicit?
+
+		if in.ZeroConf {
+			fv.Set(lnwire.ZeroConfRequired)
+		}
+
+		if in.ScidAlias {
+			fv.Set(lnwire.ScidAliasRequired)
+		}
+
+		*channelType = lnwire.ChannelType(*fv)
 
 	default:
 		return nil, fmt.Errorf("unhandled request channel type %v",
 			in.CommitmentType)
 	}
 
+	// We limit the channel memo to be 500 characters long. This enforces
+	// a reasonable upper bound on storage consumption. This also mimics
+	// the length limit for the label of a TX.
+	const maxMemoLength = 500
+	if len(in.Memo) > maxMemoLength {
+		return nil, fmt.Errorf("provided memo (%s) is of length %d, "+
+			"exceeds %d", in.Memo, len(in.Memo), maxMemoLength)
+	}
+
+	// Check, if manually selected outpoints are present to fund a channel.
+	var outpoints []wire.OutPoint
+	if len(in.Outpoints) > 0 {
+		outpoints, err = toWireOutpoints(in.Outpoints)
+		if err != nil {
+			return nil, fmt.Errorf("can't create outpoints %w", err)
+		}
+	}
+
 	// Instruct the server to trigger the necessary events to attempt to
 	// open a new channel. A stream is returned in place, this stream will
 	// be used to consume updates of the state of the pending channel.
 	return &funding.InitFundingMsg{
-		TargetPubkey:     nodePubKey,
-		ChainHash:        *r.cfg.ActiveNetParams.GenesisHash,
-		LocalFundingAmt:  localFundingAmt,
-		PushAmt:          lnwire.NewMSatFromSatoshis(remoteInitialBalance),
-		MinHtlcIn:        minHtlcIn,
-		FundingFeePerKw:  feeRate,
-		Private:          in.Private,
-		RemoteCsvDelay:   remoteCsvDelay,
-		MinConfs:         minConfs,
-		ShutdownScript:   script,
-		MaxValueInFlight: maxValue,
-		MaxHtlcs:         maxHtlcs,
-		MaxLocalCsv:      uint16(in.MaxLocalCsv),
-		ChannelType:      channelType,
+		TargetPubkey:    nodePubKey,
+		ChainHash:       *r.cfg.ActiveNetParams.GenesisHash,
+		LocalFundingAmt: localFundingAmt,
+		BaseFee:         channelBaseFee,
+		FeeRate:         channelFeeRate,
+		PushAmt: lnwire.NewMSatFromSatoshis(
+			remoteInitialBalance,
+		),
+		MinHtlcIn:         minHtlcIn,
+		FundingFeePerKw:   feeRate,
+		Private:           in.Private,
+		RemoteCsvDelay:    remoteCsvDelay,
+		RemoteChanReserve: remoteChanReserve,
+		MinConfs:          minConfs,
+		ShutdownScript:    script,
+		MaxValueInFlight:  maxValue,
+		MaxHtlcs:          maxHtlcs,
+		MaxLocalCsv:       uint16(in.MaxLocalCsv),
+		ChannelType:       channelType,
+		FundUpToMaxAmt:    fundUpToMaxAmt,
+		MinFundAmt:        minFundAmt,
+		Memo:              []byte(in.Memo),
+		Outpoints:         outpoints,
 	}, nil
+}
+
+// toWireOutpoints converts a list of outpoints from the rpc format to the wire
+// format.
+func toWireOutpoints(outpoints []*lnrpc.OutPoint) ([]wire.OutPoint, error) {
+	var wireOutpoints []wire.OutPoint
+	for _, outpoint := range outpoints {
+		hash, err := chainhash.NewHashFromStr(outpoint.TxidStr)
+		if err != nil {
+			return nil, fmt.Errorf("cannot create chainhash")
+		}
+
+		wireOutpoint := wire.NewOutPoint(
+			hash, outpoint.OutputIndex,
+		)
+		wireOutpoints = append(wireOutpoints, *wireOutpoint)
+	}
+
+	return wireOutpoints, nil
 }
 
 // OpenChannel attempts to open a singly funded channel specified in the
@@ -2419,7 +2617,7 @@ func (r *rpcServer) CloseChannel(in *lnrpc.CloseChannelRequest,
 		// Based on the passed fee related parameters, we'll determine
 		// an appropriate fee rate for the cooperative closure
 		// transaction.
-		feeRate, err := calculateFeeRate(
+		feeRate, err := lnrpc.CalculateFeeRate(
 			uint64(in.SatPerByte), in.SatPerVbyte, // nolint:staticcheck
 			uint32(in.TargetConf), r.server.cc.FeeEstimator,
 		)
@@ -2452,7 +2650,14 @@ func (r *rpcServer) CloseChannel(in *lnrpc.CloseChannelRequest,
 				in.DeliveryAddress, r.cfg.ActiveNetParams.Params,
 			)
 			if err != nil {
-				return fmt.Errorf("invalid delivery address: %v", err)
+				return fmt.Errorf("invalid delivery address: "+
+					"%v", err)
+			}
+
+			if !addr.IsForNet(r.cfg.ActiveNetParams.Params) {
+				return fmt.Errorf("delivery address is not "+
+					"for %s",
+					r.cfg.ActiveNetParams.Params.Name)
 			}
 
 			// Create a script to pay out to the address provided.
@@ -2462,9 +2667,12 @@ func (r *rpcServer) CloseChannel(in *lnrpc.CloseChannelRequest,
 			}
 		}
 
+		maxFee := chainfee.SatPerKVByte(
+			in.MaxFeePerVbyte * 1000,
+		).FeePerKWeight()
 		updateChan, errChan = r.server.htlcSwitch.CloseLink(
 			chanPoint, contractcourt.CloseRegular, feeRate,
-			deliveryScript,
+			maxFee, deliveryScript,
 		)
 	}
 out:
@@ -2516,6 +2724,7 @@ func createRPCCloseUpdate(update interface{}) (
 			Update: &lnrpc.CloseStatusUpdate_ChanClose{
 				ChanClose: &lnrpc.ChannelCloseUpdate{
 					ClosingTxid: u.ClosingTxid,
+					Success:     u.Success,
 				},
 			},
 		}, nil
@@ -2552,19 +2761,28 @@ func abandonChanFromGraph(chanGraph *channeldb.ChannelGraph,
 
 	// If the channel ID is still in the graph, then that means the channel
 	// is still open, so we'll now move to purge it from the graph.
-	return chanGraph.DeleteChannelEdges(false, chanID)
+	return chanGraph.DeleteChannelEdges(false, true, chanID)
 }
 
 // abandonChan removes a channel from the database, graph and contract court.
 func (r *rpcServer) abandonChan(chanPoint *wire.OutPoint,
 	bestHeight uint32) error {
 
+	// Before we remove the channel we cancel the rebroadcasting of the
+	// transaction. If this transaction does not exist in the rebroadcast
+	// queue anymore it is a noop.
+	txid, err := chainhash.NewHash(chanPoint.Hash[:])
+	if err != nil {
+		return err
+	}
+	r.server.cc.Wallet.CancelRebroadcast(*txid)
+
 	// Abandoning a channel is a three-step process: remove from the open
 	// channel state, remove from the graph, remove from the contract
 	// court. Between any step it's possible that the users restarts the
 	// process all over again. As a result, each of the steps below are
 	// intended to be idempotent.
-	err := r.server.chanStateDB.AbandonChannel(chanPoint, bestHeight)
+	err = r.server.chanStateDB.AbandonChannel(chanPoint, bestHeight)
 	if err != nil {
 		return err
 	}
@@ -2747,11 +2965,8 @@ func (r *rpcServer) GetInfo(_ context.Context,
 
 	// Check if external IP addresses were provided to lnd and use them
 	// to set the URIs.
-	nodeAnn, err := r.server.genNodeAnnouncement(false)
-	if err != nil {
-		return nil, fmt.Errorf("unable to retrieve current fully signed "+
-			"node announcement: %v", err)
-	}
+	nodeAnn := r.server.getNodeAnnouncement()
+
 	addrs := nodeAnn.Addresses
 	uris := make([]string, len(addrs))
 	for i, addr := range addrs {
@@ -2777,25 +2992,32 @@ func (r *rpcServer) GetInfo(_ context.Context,
 	}
 
 	// TODO(roasbeef): add synced height n stuff
+
+	isTestNet := chainreg.IsTestnet(&r.cfg.ActiveNetParams)
+	nodeColor := routing.EncodeHexColor(nodeAnn.RGBColor)
+	version := build.Version() + " commit=" + build.Commit
+
 	return &lnrpc.GetInfoResponse{
-		IdentityPubkey:      encodedIDPub,
-		NumPendingChannels:  nPendingChannels,
-		NumActiveChannels:   activeChannels,
-		NumInactiveChannels: inactiveChannels,
-		NumPeers:            uint32(len(serverPeers)),
-		BlockHeight:         uint32(bestHeight),
-		BlockHash:           bestHash.String(),
-		SyncedToChain:       isSynced,
-		Testnet:             chainreg.IsTestnet(&r.cfg.ActiveNetParams),
-		Chains:              activeChains,
-		Uris:                uris,
-		Alias:               nodeAnn.Alias.String(),
-		Color:               routing.EncodeHexColor(nodeAnn.RGBColor),
-		BestHeaderTimestamp: int64(bestHeaderTimestamp),
-		Version:             build.Version() + " commit=" + build.Commit,
-		CommitHash:          build.CommitHash,
-		SyncedToGraph:       isGraphSynced,
-		Features:            features,
+		IdentityPubkey:            encodedIDPub,
+		NumPendingChannels:        nPendingChannels,
+		NumActiveChannels:         activeChannels,
+		NumInactiveChannels:       inactiveChannels,
+		NumPeers:                  uint32(len(serverPeers)),
+		BlockHeight:               uint32(bestHeight),
+		BlockHash:                 bestHash.String(),
+		SyncedToChain:             isSynced,
+		Testnet:                   isTestNet,
+		Chains:                    activeChains,
+		Uris:                      uris,
+		Alias:                     nodeAnn.Alias.String(),
+		Color:                     nodeColor,
+		BestHeaderTimestamp:       bestHeaderTimestamp,
+		Version:                   version,
+		CommitHash:                build.CommitHash,
+		SyncedToGraph:             isGraphSynced,
+		Features:                  features,
+		RequireHtlcInterceptor:    r.cfg.RequireInterceptor,
+		StoreFinalHtlcResolutions: r.cfg.StoreFinalHtlcResolutions,
 	}, nil
 }
 
@@ -2823,8 +3045,6 @@ func (r *rpcServer) GetRecoveryInfo(ctx context.Context,
 // ListPeers returns a verbose listing of all currently active peers.
 func (r *rpcServer) ListPeers(ctx context.Context,
 	in *lnrpc.ListPeersRequest) (*lnrpc.ListPeersResponse, error) {
-
-	rpcsLog.Tracef("[listpeers] request")
 
 	serverPeers := r.server.Peers()
 	resp := &lnrpc.ListPeersResponse{
@@ -3014,13 +3234,13 @@ func (r *rpcServer) SubscribePeerEvents(req *lnrpc.PeerEventSubscription,
 // confirmed unspent outputs and all unconfirmed unspent outputs under control
 // by the wallet. This method can be modified by having the request specify
 // only witness outputs should be factored into the final output sum.
-// TODO(roasbeef): add async hooks into wallet balance changes
+// TODO(roasbeef): add async hooks into wallet balance changes.
 func (r *rpcServer) WalletBalance(ctx context.Context,
 	in *lnrpc.WalletBalanceRequest) (*lnrpc.WalletBalanceResponse, error) {
 
 	// Retrieve all existing wallet accounts. We'll compute the confirmed
 	// and unconfirmed balance for each and tally them up.
-	accounts, err := r.server.cc.Wallet.ListAccounts("", nil)
+	accounts, err := r.server.cc.Wallet.ListAccounts(in.Account, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -3090,15 +3310,49 @@ func (r *rpcServer) WalletBalance(ctx context.Context,
 		}
 	}
 
+	// Now that we have the base balance accounted for with each account,
+	// we'll look at the set of locked UTXOs to tally that as well. If we
+	// don't display this, then anytime we attempt a funding reservation,
+	// the outputs will chose as being "gone" until they're confirmed on
+	// chain.
+	var lockedBalance ltcutil.Amount
+	leases, err := r.server.cc.Wallet.ListLeasedOutputs()
+	if err != nil {
+		return nil, err
+	}
+	for _, leasedOutput := range leases {
+		utxoInfo, err := r.server.cc.Wallet.FetchInputInfo(
+			&leasedOutput.Outpoint,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		lockedBalance += utxoInfo.Value
+	}
+
+	// Get the current number of non-private anchor channels.
+	currentNumAnchorChans, err := r.server.cc.Wallet.CurrentNumAnchorChans()
+	if err != nil {
+		return nil, err
+	}
+
+	// Get the required reserve for the wallet.
+	requiredReserve := r.server.cc.Wallet.RequiredReserve(
+		uint32(currentNumAnchorChans),
+	)
+
 	rpcsLog.Debugf("[walletbalance] Total balance=%v (confirmed=%v, "+
 		"unconfirmed=%v)", totalBalance, confirmedBalance,
 		unconfirmedBalance)
 
 	return &lnrpc.WalletBalanceResponse{
-		TotalBalance:       int64(totalBalance),
-		ConfirmedBalance:   int64(confirmedBalance),
-		UnconfirmedBalance: int64(unconfirmedBalance),
-		AccountBalance:     rpcAccountBalances,
+		TotalBalance:              int64(totalBalance),
+		ConfirmedBalance:          int64(confirmedBalance),
+		UnconfirmedBalance:        int64(unconfirmedBalance),
+		LockedBalance:             int64(lockedBalance),
+		ReservedBalanceAnchorChan: int64(requiredReserve),
+		AccountBalance:            rpcAccountBalances,
 	}, nil
 }
 
@@ -3206,6 +3460,11 @@ func (r *rpcServer) fetchPendingOpenChannels() (pendingOpenChannels, error) {
 		return nil, err
 	}
 
+	_, currentHeight, err := r.server.cc.ChainIO.GetBestBlock()
+	if err != nil {
+		return nil, err
+	}
+
 	result := make(pendingOpenChannels, len(channels))
 	for i, pendingChan := range channels {
 		pub := pendingChan.IdentityPub.SerializeCompressed()
@@ -3217,10 +3476,23 @@ func (r *rpcServer) fetchPendingOpenChannels() (pendingOpenChannels, error) {
 		// broadcast.
 		// TODO(roasbeef): query for funding tx from wallet, display
 		// that also?
+		var witnessWeight int64
+		if pendingChan.ChanType.IsTaproot() {
+			witnessWeight = input.TaprootKeyPathWitnessSize
+		} else {
+			witnessWeight = input.WitnessCommitmentTxWeight
+		}
+
 		localCommitment := pendingChan.LocalCommitment
 		utx := ltcutil.NewTx(localCommitment.CommitTx)
 		commitBaseWeight := blockchain.GetTransactionWeight(utx)
-		commitWeight := commitBaseWeight + input.WitnessCommitmentTxWeight
+		commitWeight := commitBaseWeight + witnessWeight
+
+		// FundingExpiryBlocks is the distance from the current block
+		// height to the broadcast height + MaxWaitNumBlocksFundingConf.
+		maxFundingHeight := funding.MaxWaitNumBlocksFundingConf +
+			pendingChan.BroadcastHeight()
+		fundingExpiryBlocks := int32(maxFundingHeight) - currentHeight
 
 		result[i] = &lnrpc.PendingChannelsResponse_PendingOpenChannel{
 			Channel: &lnrpc.PendingChannelsResponse_PendingChannel{
@@ -3233,10 +3505,13 @@ func (r *rpcServer) fetchPendingOpenChannels() (pendingOpenChannels, error) {
 				RemoteChanReserveSat: int64(pendingChan.RemoteChanCfg.ChanReserve),
 				Initiator:            rpcInitiator(pendingChan.IsInitiator),
 				CommitmentType:       rpcCommitmentType(pendingChan.ChanType),
+				Private:              isPrivate(pendingChan),
+				Memo:                 string(pendingChan.Memo),
 			},
-			CommitWeight: commitWeight,
-			CommitFee:    int64(localCommitment.CommitFee),
-			FeePerKw:     int64(localCommitment.FeePerKw),
+			CommitWeight:        commitWeight,
+			CommitFee:           int64(localCommitment.CommitFee),
+			FeePerKw:            int64(localCommitment.FeePerKw),
+			FundingExpiryBlocks: fundingExpiryBlocks,
 			// TODO(roasbeef): need to track confirmation height
 		}
 	}
@@ -3316,6 +3591,13 @@ func (r *rpcServer) fetchPendingForceCloseChannels() (pendingForceClose,
 			}
 			channel.NumForwardingPackages = int64(len(fwdPkgs))
 
+			channel.RemoteBalance = int64(
+				historical.LocalCommitment.RemoteBalance.ToSatoshis(),
+			)
+
+			channel.Private = isPrivate(historical)
+			channel.Memo = string(historical.Memo)
+
 		// If the error is non-nil, and not due to older versions of lnd
 		// not persisting historical channels, return it.
 		default:
@@ -3354,6 +3636,9 @@ func (r *rpcServer) fetchPendingForceCloseChannels() (pendingForceClose,
 				&chanPoint, currentHeight, forceClose,
 			)
 			if err != nil {
+				rpcsLog.Errorf("unable to populate nursery "+
+					"force close resp:%s, %v",
+					chanPoint, err)
 				return nil, 0, err
 			}
 
@@ -3361,9 +3646,11 @@ func (r *rpcServer) fetchPendingForceCloseChannels() (pendingForceClose,
 				&chanPoint, currentHeight, forceClose,
 			)
 			if err != nil {
+				rpcsLog.Errorf("unable to populate arbitrator "+
+					"force close resp:%s, %v",
+					chanPoint, err)
 				return nil, 0, err
 			}
-
 			limboBalance += forceClose.LimboBalance
 			result = append(result, forceClose)
 		}
@@ -3462,7 +3749,6 @@ func (r *rpcServer) fetchWaitingCloseChannels() (waitingCloseChannels,
 		remoteCommitDiff, err := waitingClose.RemoteCommitChainTip()
 
 		switch {
-
 		// Don't set hash if there is no pending remote commit.
 		case err == channeldb.ErrNoPendingCommit:
 
@@ -3511,6 +3797,8 @@ func (r *rpcServer) fetchWaitingCloseChannels() (waitingCloseChannels,
 			CommitmentType:        rpcCommitmentType(waitingClose.ChanType),
 			NumForwardingPackages: int64(len(fwdPkgs)),
 			ChanStatusFlags:       waitingClose.ChanStatus().String(),
+			Private:               isPrivate(waitingClose),
+			Memo:                  string(waitingClose.Memo),
 		}
 
 		waitingCloseResp := &lnrpc.PendingChannelsResponse_WaitingCloseChannel{
@@ -3536,8 +3824,6 @@ func (r *rpcServer) fetchWaitingCloseChannels() (waitingCloseChannels,
 func (r *rpcServer) PendingChannels(ctx context.Context,
 	in *lnrpc.PendingChannelsRequest) (
 	*lnrpc.PendingChannelsResponse, error) {
-
-	rpcsLog.Debugf("[pendingchannels]")
 
 	resp := &lnrpc.PendingChannelsResponse{}
 
@@ -3587,7 +3873,6 @@ func (r *rpcServer) arbitratorPopulateForceCloseResp(chanPoint *wire.OutPoint,
 
 	for _, report := range reports {
 		switch report.Type {
-
 		// For a direct output, populate/update the top level
 		// response properties.
 		case contractcourt.ReportOutputUnencumbered:
@@ -3634,7 +3919,6 @@ func (r *rpcServer) arbitratorPopulateForceCloseResp(chanPoint *wire.OutPoint,
 			// limbo, lost and recovered. Derive the current state
 			// from the limbo and recovered balances.
 			switch {
-
 			case report.RecoveredBalance != 0:
 				forceClose.Anchor = lnrpc.PendingChannelsResponse_ForceClosedChannel_RECOVERED
 
@@ -3775,6 +4059,35 @@ func (r *rpcServer) ClosedChannels(ctx context.Context,
 	return resp, nil
 }
 
+// LookupHtlcResolution retrieves a final htlc resolution from the database. If
+// the htlc has no final resolution yet, a NotFound grpc status code is
+// returned.
+func (r *rpcServer) LookupHtlcResolution(
+	_ context.Context, in *lnrpc.LookupHtlcResolutionRequest) (
+	*lnrpc.LookupHtlcResolutionResponse, error) {
+
+	if !r.cfg.StoreFinalHtlcResolutions {
+		return nil, status.Error(codes.Unavailable, "cannot lookup "+
+			"with flag --store-final-htlc-resolutions=false")
+	}
+
+	chanID := lnwire.NewShortChanIDFromInt(in.ChanId)
+
+	info, err := r.server.chanStateDB.LookupFinalHtlc(chanID, in.HtlcIndex)
+	switch {
+	case errors.Is(err, channeldb.ErrHtlcUnknown):
+		return nil, status.Error(codes.NotFound, err.Error())
+
+	case err != nil:
+		return nil, err
+	}
+
+	return &lnrpc.LookupHtlcResolutionResponse{
+		Settled:  info.Settled,
+		Offchain: info.Offchain,
+	}, nil
+}
+
 // ListChannels returns a description of all the open channels that this node
 // is a participant in.
 func (r *rpcServer) ListChannels(ctx context.Context,
@@ -3796,8 +4109,6 @@ func (r *rpcServer) ListChannels(ctx context.Context,
 	}
 
 	resp := &lnrpc.ListChannelsResponse{}
-
-	graph := r.server.graphDB
 
 	dbChannels, err := r.server.chanStateDB.FetchAllOpenChannels()
 	if err != nil {
@@ -3835,7 +4146,9 @@ func (r *rpcServer) ListChannels(ctx context.Context,
 		// Next, we'll determine whether we should add this channel to
 		// our list depending on the type of channels requested to us.
 		isActive := peerOnline && linkActive
-		channel, err := createRPCOpenChannel(r, graph, dbChannel, isActive)
+		channel, err := createRPCOpenChannel(
+			r, dbChannel, isActive, in.PeerAliasLookup,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -3865,26 +4178,28 @@ func rpcCommitmentType(chanType channeldb.ChannelType) lnrpc.CommitmentType {
 	// Extract the commitment type from the channel type flags. We must
 	// first check whether it has anchors, since in that case it would also
 	// be tweakless.
-	if chanType.HasLeaseExpiration() {
+	switch {
+	case chanType.IsTaproot():
+		return lnrpc.CommitmentType_SIMPLE_TAPROOT
+
+	case chanType.HasLeaseExpiration():
 		return lnrpc.CommitmentType_SCRIPT_ENFORCED_LEASE
-	}
 
-	if chanType.HasAnchors() {
+	case chanType.HasAnchors():
 		return lnrpc.CommitmentType_ANCHORS
-	}
 
-	if chanType.IsTweakless() {
+	case chanType.IsTweakless():
 		return lnrpc.CommitmentType_STATIC_REMOTE_KEY
-	}
+	default:
 
-	return lnrpc.CommitmentType_LEGACY
+		return lnrpc.CommitmentType_LEGACY
+	}
 }
 
 // createChannelConstraint creates a *lnrpc.ChannelConstraints using the
 // *Channeldb.ChannelConfig.
 func createChannelConstraint(
 	chanCfg *channeldb.ChannelConfig) *lnrpc.ChannelConstraints {
-
 	return &lnrpc.ChannelConstraints{
 		CsvDelay:          uint32(chanCfg.CsvDelay),
 		ChanReserveSat:    uint64(chanCfg.ChanReserve),
@@ -3895,26 +4210,40 @@ func createChannelConstraint(
 	}
 }
 
+// isPrivate evaluates the ChannelFlags of the db channel to determine if the
+// channel is private or not.
+func isPrivate(dbChannel *channeldb.OpenChannel) bool {
+	if dbChannel == nil {
+		return false
+	}
+	return dbChannel.ChannelFlags&lnwire.FFAnnounceChannel != 1
+}
+
 // createRPCOpenChannel creates an *lnrpc.Channel from the *channeldb.Channel.
-func createRPCOpenChannel(r *rpcServer, graph *channeldb.ChannelGraph,
-	dbChannel *channeldb.OpenChannel, isActive bool) (*lnrpc.Channel, error) {
+func createRPCOpenChannel(r *rpcServer, dbChannel *channeldb.OpenChannel,
+	isActive, peerAliasLookup bool) (*lnrpc.Channel, error) {
 
 	nodePub := dbChannel.IdentityPub
 	nodeID := hex.EncodeToString(nodePub.SerializeCompressed())
 	chanPoint := dbChannel.FundingOutpoint
-
-	// Next, we'll determine whether the channel is public or not.
-	isPublic := dbChannel.ChannelFlags&lnwire.FFAnnounceChannel != 0
+	chanID := lnwire.NewChanIDFromOutPoint(&chanPoint)
 
 	// As this is required for display purposes, we'll calculate
 	// the weight of the commitment transaction. We also add on the
 	// estimated weight of the witness to calculate the weight of
 	// the transaction if it were to be immediately unilaterally
 	// broadcast.
+	var witnessWeight int64
+	if dbChannel.ChanType.IsTaproot() {
+		witnessWeight = input.TaprootKeyPathWitnessSize
+	} else {
+		witnessWeight = input.WitnessCommitmentTxWeight
+	}
+
 	localCommit := dbChannel.LocalCommitment
 	utx := ltcutil.NewTx(localCommit.CommitTx)
 	commitBaseWeight := blockchain.GetTransactionWeight(utx)
-	commitWeight := commitBaseWeight + input.WitnessCommitmentTxWeight
+	commitWeight := commitBaseWeight + witnessWeight
 
 	localBalance := localCommit.LocalBalance
 	remoteBalance := localCommit.RemoteBalance
@@ -3935,12 +4264,21 @@ func createRPCOpenChannel(r *rpcServer, graph *channeldb.ChannelGraph,
 	// Extract the commitment type from the channel type flags.
 	commitmentType := rpcCommitmentType(dbChannel.ChanType)
 
+	dbScid := dbChannel.ShortChannelID
+
+	// Fetch the set of aliases for the channel.
+	channelAliases := r.server.aliasMgr.GetAliases(dbScid)
+
+	// Fetch the peer alias. If one does not exist, errNoPeerAlias
+	// is returned and peerScidAlias will be an empty ShortChannelID.
+	peerScidAlias, _ := r.server.aliasMgr.GetPeerAlias(chanID)
+
 	channel := &lnrpc.Channel{
 		Active:                isActive,
-		Private:               !isPublic,
+		Private:               isPrivate(dbChannel),
 		RemotePubkey:          nodeID,
 		ChannelPoint:          chanPoint.String(),
-		ChanId:                dbChannel.ShortChannelID.ToUint64(),
+		ChanId:                dbScid.ToUint64(),
 		Capacity:              int64(dbChannel.Capacity),
 		LocalBalance:          int64(localBalance.ToSatoshis()),
 		RemoteBalance:         int64(remoteBalance.ToSatoshis()),
@@ -3962,10 +4300,32 @@ func createRPCOpenChannel(r *rpcServer, graph *channeldb.ChannelGraph,
 		RemoteConstraints: createChannelConstraint(
 			&dbChannel.RemoteChanCfg,
 		),
+		AliasScids:            make([]uint64, 0, len(channelAliases)),
+		PeerScidAlias:         peerScidAlias.ToUint64(),
+		ZeroConf:              dbChannel.IsZeroConf(),
+		ZeroConfConfirmedScid: dbChannel.ZeroConfRealScid().ToUint64(),
+		Memo:                  string(dbChannel.Memo),
 		// TODO: remove the following deprecated fields
 		CsvDelay:             uint32(dbChannel.LocalChanCfg.CsvDelay),
 		LocalChanReserveSat:  int64(dbChannel.LocalChanCfg.ChanReserve),
 		RemoteChanReserveSat: int64(dbChannel.RemoteChanCfg.ChanReserve),
+	}
+
+	// Look up our channel peer's node alias if the caller requests it.
+	if peerAliasLookup {
+		peerAlias, err := r.server.graphDB.LookupAlias(nodePub)
+		if err != nil {
+			peerAlias = fmt.Sprintf("unable to lookup "+
+				"peer alias: %v", err)
+		}
+		channel.PeerAlias = peerAlias
+	}
+
+	// Populate the set of aliases.
+	for _, chanAlias := range channelAliases {
+		channel.AliasScids = append(
+			channel.AliasScids, chanAlias.ToUint64(),
+		)
 	}
 
 	for i, htlc := range localCommit.Htlcs {
@@ -4025,21 +4385,15 @@ func createRPCOpenChannel(r *rpcServer, graph *channeldb.ChannelGraph,
 		channel.UnsettledBalance += channel.PendingHtlcs[i].Amount
 	}
 
-	// Lookup our balances at height 0, because they will reflect any
-	// push amounts that may have been present when this channel was
-	// created.
-	localBalance, remoteBalance, err := dbChannel.BalancesAtHeight(0)
-	if err != nil {
-		return nil, err
-	}
-
 	// If we initiated opening the channel, the zero height remote balance
 	// is the push amount. Otherwise, our starting balance is the push
 	// amount. If there is no push amount, these values will simply be zero.
 	if dbChannel.IsInitiator {
-		channel.PushAmountSat = uint64(remoteBalance.ToSatoshis())
+		amt := dbChannel.InitialRemoteBalance.ToSatoshis()
+		channel.PushAmountSat = uint64(amt)
 	} else {
-		channel.PushAmountSat = uint64(localBalance.ToSatoshis())
+		amt := dbChannel.InitialLocalBalance.ToSatoshis()
+		channel.PushAmountSat = uint64(amt)
 	}
 
 	if len(dbChannel.LocalShutdownScript) > 0 {
@@ -4139,6 +4493,11 @@ func (r *rpcServer) createRPCClosedChannel(
 		closeType = lnrpc.ChannelCloseSummary_ABANDONED
 	}
 
+	dbScid := dbChannel.ShortChanID
+
+	// Fetch the set of aliases for this channel.
+	channelAliases := r.server.aliasMgr.GetAliases(dbScid)
+
 	channel := &lnrpc.ChannelCloseSummary{
 		Capacity:          int64(dbChannel.Capacity),
 		RemotePubkey:      nodeID,
@@ -4152,6 +4511,37 @@ func (r *rpcServer) createRPCClosedChannel(
 		ClosingTxHash:     dbChannel.ClosingTXID.String(),
 		OpenInitiator:     openInit,
 		CloseInitiator:    closeInitiator,
+		AliasScids:        make([]uint64, 0, len(channelAliases)),
+	}
+
+	// Populate the set of aliases.
+	for _, chanAlias := range channelAliases {
+		channel.AliasScids = append(
+			channel.AliasScids, chanAlias.ToUint64(),
+		)
+	}
+
+	// Populate any historical data that the summary needs.
+	histChan, err := r.server.chanStateDB.FetchHistoricalChannel(
+		&dbChannel.ChanPoint,
+	)
+	switch err {
+	// The channel was closed in a pre-historic version of lnd. Ignore the
+	// error.
+	case channeldb.ErrNoHistoricalBucket:
+	case channeldb.ErrChannelNotFound:
+
+	case nil:
+		if histChan.IsZeroConf() && histChan.ZeroConfConfirmed() {
+			// If the channel was zero-conf, it may have confirmed.
+			// Populate the confirmed SCID if so.
+			confirmedScid := histChan.ZeroConfRealScid().ToUint64()
+			channel.ZeroConfConfirmedScid = confirmedScid
+		}
+
+	// Non-nil error not due to older versions of lnd.
+	default:
+		return nil, err
 	}
 
 	reports, err := r.server.miscDB.FetchChannelReports(
@@ -4190,11 +4580,7 @@ func rpcChannelResolution(report *channeldb.ResolverReport) (*lnrpc.Resolution,
 
 	res := &lnrpc.Resolution{
 		AmountSat: uint64(report.Amount),
-		Outpoint: &lnrpc.OutPoint{
-			OutputIndex: report.OutPoint.Index,
-			TxidStr:     report.OutPoint.Hash.String(),
-			TxidBytes:   report.OutPoint.Hash[:],
-		},
+		Outpoint:  lnrpc.MarshalOutPoint(&report.OutPoint),
 	}
 
 	if report.SpendTxID != nil {
@@ -4323,8 +4709,6 @@ func (r *rpcServer) SubscribeChannelEvents(req *lnrpc.ChannelEventSubscription,
 	// the server, or client exits.
 	defer channelEventSub.Cancel()
 
-	graph := r.server.graphDB
-
 	for {
 		select {
 		// A new update has been sent by the channel router, we'll
@@ -4344,8 +4728,9 @@ func (r *rpcServer) SubscribeChannelEvents(req *lnrpc.ChannelEventSubscription,
 					},
 				}
 			case channelnotifier.OpenChannelEvent:
-				channel, err := createRPCOpenChannel(r, graph,
-					event.Channel, true)
+				channel, err := createRPCOpenChannel(
+					r, event.Channel, true, false,
+				)
 				if err != nil {
 					return err
 				}
@@ -4398,9 +4783,12 @@ func (r *rpcServer) SubscribeChannelEvents(req *lnrpc.ChannelEventSubscription,
 					},
 				}
 
-			// Completely ignore ActiveLinkEvent as this is explicitly not
-			// exposed to the RPC.
-			case channelnotifier.ActiveLinkEvent:
+			// Completely ignore ActiveLinkEvent and
+			// InactiveLinkEvent as this is explicitly not exposed
+			// to the RPC.
+			case channelnotifier.ActiveLinkEvent,
+				channelnotifier.InactiveLinkEvent:
+
 				continue
 
 			case channelnotifier.FullyResolvedChannelEvent:
@@ -4548,6 +4936,7 @@ type rpcPaymentIntent struct {
 	destFeatures       *lnwire.FeatureVector
 	paymentAddr        *[32]byte
 	payReq             []byte
+	metadata           []byte
 
 	destCustomRecords record.CustomSet
 
@@ -4647,7 +5036,7 @@ func (r *rpcServer) extractPaymentIntent(rpcPayReq *rpcPaymentRequest) (rpcPayme
 		}
 
 		// If the amount was not included in the invoice, then we let
-		// the payee specify the amount of satoshis they wish to send.
+		// the payer specify the amount of satoshis they wish to send.
 		// We override the amount to pay with the amount provided from
 		// the payment request.
 		if payReq.MilliSat == nil {
@@ -4681,6 +5070,7 @@ func (r *rpcServer) extractPaymentIntent(rpcPayReq *rpcPaymentRequest) (rpcPayme
 		payIntent.payReq = []byte(rpcPayReq.PaymentRequest)
 		payIntent.destFeatures = payReq.Features
 		payIntent.paymentAddr = payReq.PaymentAddr
+		payIntent.metadata = payReq.Metadata
 
 		if err := validateDest(payIntent.dest); err != nil {
 			return payIntent, err
@@ -4835,6 +5225,7 @@ func (r *rpcServer) dispatchPaymentIntent(
 			DestCustomRecords:  payIntent.destCustomRecords,
 			DestFeatures:       payIntent.destFeatures,
 			PaymentAddr:        payIntent.paymentAddr,
+			Metadata:           payIntent.metadata,
 
 			// Don't enable multi-part payments on the main rpc.
 			// Users need to use routerrpc for that.
@@ -5008,7 +5399,7 @@ sendLoop:
 			// payment so we can continue to serve requests while
 			// this payment is being dispatched.
 			wg.Add(1)
-			go func() {
+			go func(payIntent *rpcPaymentIntent) {
 				defer wg.Done()
 
 				// Attempt to grab a free semaphore slot, using
@@ -5086,7 +5477,7 @@ sendLoop:
 					}
 					return
 				}
-			}()
+			}(payIntent)
 		}
 	}
 
@@ -5196,6 +5587,7 @@ func (r *rpcServer) AddInvoice(ctx context.Context,
 		GenAmpInvoiceFeatures: func() *lnwire.FeatureVector {
 			return r.server.featureMgr.Get(feature.SetInvoiceAmp)
 		},
+		GetAlias: r.server.aliasMgr.GetPeerAlias,
 	}
 
 	value, err := lnrpc.UnmarshallAmt(invoice.Value, invoice.ValueMsat)
@@ -5277,7 +5669,7 @@ func (r *rpcServer) LookupInvoice(ctx context.Context,
 
 	invoice, err := r.server.invoices.LookupInvoice(payHash)
 	switch {
-	case err == channeldb.ErrInvoiceNotFound:
+	case errors.Is(err, invoices.ErrInvoiceNotFound):
 		return nil, status.Error(codes.NotFound, err.Error())
 	case err != nil:
 		return nil, err
@@ -5309,14 +5701,35 @@ func (r *rpcServer) ListInvoices(ctx context.Context,
 		req.NumMaxInvoices = 100
 	}
 
+	// If both dates are set, we check that the start date is less than the
+	// end date, otherwise we'll get an empty result.
+	if req.CreationDateStart != 0 && req.CreationDateEnd != 0 {
+		if req.CreationDateStart >= req.CreationDateEnd {
+			return nil, fmt.Errorf("start date(%v) must be before "+
+				"end date(%v)", req.CreationDateStart,
+				req.CreationDateEnd)
+		}
+	}
+
 	// Next, we'll map the proto request into a format that is understood by
 	// the database.
-	q := channeldb.InvoiceQuery{
+	q := invoices.InvoiceQuery{
 		IndexOffset:    req.IndexOffset,
 		NumMaxInvoices: req.NumMaxInvoices,
 		PendingOnly:    req.PendingOnly,
 		Reversed:       req.Reversed,
 	}
+
+	// Attach the start date if set.
+	if req.CreationDateStart != 0 {
+		q.CreationDateStart = time.Unix(int64(req.CreationDateStart), 0)
+	}
+
+	// Attach the end date if set.
+	if req.CreationDateEnd != 0 {
+		q.CreationDateEnd = time.Unix(int64(req.CreationDateEnd), 0)
+	}
+
 	invoiceSlice, err := r.server.miscDB.QueryInvoices(q)
 	if err != nil {
 		return nil, fmt.Errorf("unable to query invoices: %v", err)
@@ -5499,23 +5912,7 @@ func (r *rpcServer) DescribeGraph(ctx context.Context,
 	// within the graph), collating their current state into the RPC
 	// response.
 	err := graph.ForEachNode(func(_ kvdb.RTx, node *channeldb.LightningNode) error {
-		nodeAddrs := make([]*lnrpc.NodeAddress, 0)
-		for _, addr := range node.Addresses {
-			nodeAddr := &lnrpc.NodeAddress{
-				Network: addr.Network(),
-				Addr:    addr.String(),
-			}
-			nodeAddrs = append(nodeAddrs, nodeAddr)
-		}
-
-		lnNode := &lnrpc.LightningNode{
-			LastUpdate: uint32(node.LastUpdate.Unix()),
-			PubKey:     hex.EncodeToString(node.PubKeyBytes[:]),
-			Addresses:  nodeAddrs,
-			Alias:      node.Alias,
-			Color:      routing.EncodeHexColor(node.Color),
-			Features:   invoicesrpc.CreateRPCFeatures(node.Features),
-		}
+		lnNode := marshalNode(node)
 
 		resp.Nodes = append(resp.Nodes, lnNode)
 
@@ -5558,6 +5955,32 @@ func (r *rpcServer) DescribeGraph(ctx context.Context,
 	return resp, nil
 }
 
+// marshalExtraOpaqueData marshals the given tlv data. If the tlv stream is
+// malformed or empty, an empty map is returned. This makes the method safe to
+// use on unvalidated data.
+func marshalExtraOpaqueData(data []byte) map[uint64][]byte {
+	r := bytes.NewReader(data)
+
+	tlvStream, err := tlv.NewStream()
+	if err != nil {
+		return nil
+	}
+
+	// Since ExtraOpaqueData is provided by a potentially malicious peer,
+	// pass it into the P2P decoding variant.
+	parsedTypes, err := tlvStream.DecodeWithParsedTypesP2P(r)
+	if err != nil || len(parsedTypes) == 0 {
+		return nil
+	}
+
+	records := make(map[uint64][]byte)
+	for k, v := range parsedTypes {
+		records[uint64(k)] = v
+	}
+
+	return records
+}
+
 func marshalDbEdge(edgeInfo *channeldb.ChannelEdgeInfo,
 	c1, c2 *channeldb.ChannelEdgePolicy) *lnrpc.ChannelEdge {
 
@@ -5577,41 +6000,47 @@ func marshalDbEdge(edgeInfo *channeldb.ChannelEdgeInfo,
 		lastUpdate = c2.LastUpdate.Unix()
 	}
 
+	customRecords := marshalExtraOpaqueData(edgeInfo.ExtraOpaqueData)
+
 	edge := &lnrpc.ChannelEdge{
 		ChannelId: edgeInfo.ChannelID,
 		ChanPoint: edgeInfo.ChannelPoint.String(),
 		// TODO(roasbeef): update should be on edge info itself
-		LastUpdate: uint32(lastUpdate),
-		Node1Pub:   hex.EncodeToString(edgeInfo.NodeKey1Bytes[:]),
-		Node2Pub:   hex.EncodeToString(edgeInfo.NodeKey2Bytes[:]),
-		Capacity:   int64(edgeInfo.Capacity),
+		LastUpdate:    uint32(lastUpdate),
+		Node1Pub:      hex.EncodeToString(edgeInfo.NodeKey1Bytes[:]),
+		Node2Pub:      hex.EncodeToString(edgeInfo.NodeKey2Bytes[:]),
+		Capacity:      int64(edgeInfo.Capacity),
+		CustomRecords: customRecords,
 	}
 
 	if c1 != nil {
-		edge.Node1Policy = &lnrpc.RoutingPolicy{
-			TimeLockDelta:    uint32(c1.TimeLockDelta),
-			MinHtlc:          int64(c1.MinHTLC),
-			MaxHtlcMsat:      uint64(c1.MaxHTLC),
-			FeeBaseMsat:      int64(c1.FeeBaseMSat),
-			FeeRateMilliMsat: int64(c1.FeeProportionalMillionths),
-			Disabled:         c1.ChannelFlags&lnwire.ChanUpdateDisabled != 0,
-			LastUpdate:       uint32(c1.LastUpdate.Unix()),
-		}
+		edge.Node1Policy = marshalDBRoutingPolicy(c1)
 	}
 
 	if c2 != nil {
-		edge.Node2Policy = &lnrpc.RoutingPolicy{
-			TimeLockDelta:    uint32(c2.TimeLockDelta),
-			MinHtlc:          int64(c2.MinHTLC),
-			MaxHtlcMsat:      uint64(c2.MaxHTLC),
-			FeeBaseMsat:      int64(c2.FeeBaseMSat),
-			FeeRateMilliMsat: int64(c2.FeeProportionalMillionths),
-			Disabled:         c2.ChannelFlags&lnwire.ChanUpdateDisabled != 0,
-			LastUpdate:       uint32(c2.LastUpdate.Unix()),
-		}
+		edge.Node2Policy = marshalDBRoutingPolicy(c2)
 	}
 
 	return edge
+}
+
+func marshalDBRoutingPolicy(
+	policy *channeldb.ChannelEdgePolicy) *lnrpc.RoutingPolicy {
+
+	disabled := policy.ChannelFlags&lnwire.ChanUpdateDisabled != 0
+
+	customRecords := marshalExtraOpaqueData(policy.ExtraOpaqueData)
+
+	return &lnrpc.RoutingPolicy{
+		TimeLockDelta:    uint32(policy.TimeLockDelta),
+		MinHtlc:          int64(policy.MinHTLC),
+		MaxHtlcMsat:      uint64(policy.MaxHTLC),
+		FeeBaseMsat:      int64(policy.FeeBaseMSat),
+		FeeRateMilliMsat: int64(policy.FeeProportionalMillionths),
+		Disabled:         disabled,
+		LastUpdate:       uint32(policy.LastUpdate.Unix()),
+		CustomRecords:    customRecords,
+	}
 }
 
 // GetNodeMetrics returns all available node metrics calculated from the
@@ -5753,41 +6182,48 @@ func (r *rpcServer) GetNodeInfo(ctx context.Context,
 		return nil, err
 	}
 
-	nodeAddrs := make([]*lnrpc.NodeAddress, 0)
-	for _, addr := range node.Addresses {
-		nodeAddr := &lnrpc.NodeAddress{
-			Network: addr.Network(),
-			Addr:    addr.String(),
-		}
-		nodeAddrs = append(nodeAddrs, nodeAddr)
-	}
-
-	features := invoicesrpc.CreateRPCFeatures(node.Features)
-
 	return &lnrpc.NodeInfo{
-		Node: &lnrpc.LightningNode{
-			LastUpdate: uint32(node.LastUpdate.Unix()),
-			PubKey:     in.PubKey,
-			Addresses:  nodeAddrs,
-			Alias:      node.Alias,
-			Color:      routing.EncodeHexColor(node.Color),
-			Features:   features,
-		},
+		Node:          marshalNode(node),
 		NumChannels:   numChannels,
 		TotalCapacity: int64(totalCapacity),
 		Channels:      channels,
 	}, nil
 }
 
+func marshalNode(node *channeldb.LightningNode) *lnrpc.LightningNode {
+	nodeAddrs := make([]*lnrpc.NodeAddress, len(node.Addresses))
+	for i, addr := range node.Addresses {
+		nodeAddr := &lnrpc.NodeAddress{
+			Network: addr.Network(),
+			Addr:    addr.String(),
+		}
+		nodeAddrs[i] = nodeAddr
+	}
+
+	features := invoicesrpc.CreateRPCFeatures(node.Features)
+
+	customRecords := marshalExtraOpaqueData(node.ExtraOpaqueData)
+
+	return &lnrpc.LightningNode{
+		LastUpdate:    uint32(node.LastUpdate.Unix()),
+		PubKey:        hex.EncodeToString(node.PubKeyBytes[:]),
+		Addresses:     nodeAddrs,
+		Alias:         node.Alias,
+		Color:         routing.EncodeHexColor(node.Color),
+		Features:      features,
+		CustomRecords: customRecords,
+	}
+}
+
 // QueryRoutes attempts to query the daemons' Channel Router for a possible
 // route to a target destination capable of carrying a specific amount of
-// satoshis within the route's flow. The retuned route contains the full
+// satoshis within the route's flow. The returned route contains the full
 // details required to craft and send an HTLC, also including the necessary
 // information that should be present within the Sphinx packet encapsulated
 // within the HTLC.
 //
 // TODO(roasbeef): should return a slice of routes in reality
-//  * create separate PR to send based on well formatted route
+//   - create separate PR to send based on well formatted route
 func (r *rpcServer) QueryRoutes(ctx context.Context,
 	in *lnrpc.QueryRoutesRequest) (*lnrpc.QueryRoutesResponse, error) {
 
@@ -5896,10 +6332,20 @@ func (r *rpcServer) GetNetworkInfo(ctx context.Context,
 		minChannelSize = 0
 	}
 
-	// TODO(roasbeef): graph diameter
+	// Graph diameter.
+	channelGraph := autopilot.ChannelGraphFromCachedDatabase(graph)
+	simpleGraph, err := autopilot.NewSimpleGraph(channelGraph)
+	if err != nil {
+		return nil, err
+	}
+	start := time.Now()
+	diameter := simpleGraph.DiameterRadialCutoff()
+	rpcsLog.Infof("elapsed time for diameter (%d) calculation: %v", diameter,
+		time.Since(start))
 
 	// TODO(roasbeef): also add oldest channel?
 	netInfo := &lnrpc.NetworkInfo{
+		GraphDiameter:        diameter,
 		MaxOutDegree:         maxChanOut,
 		AvgOutDegree:         float64(2*numChannels) / float64(numNodes),
 		NumNodes:             numNodes,
@@ -6098,13 +6544,36 @@ func marshallTopologyChange(topChange *routing.TopologyChange) *lnrpc.GraphTopol
 func (r *rpcServer) ListPayments(ctx context.Context,
 	req *lnrpc.ListPaymentsRequest) (*lnrpc.ListPaymentsResponse, error) {
 
-	rpcsLog.Debugf("[ListPayments]")
+	// If both dates are set, we check that the start date is less than the
+	// end date, otherwise we'll get an empty result.
+	if req.CreationDateStart != 0 && req.CreationDateEnd != 0 {
+		if req.CreationDateStart >= req.CreationDateEnd {
+			return nil, fmt.Errorf("start date(%v) must be before "+
+				"end date(%v)", req.CreationDateStart,
+				req.CreationDateEnd)
+		}
+	}
 
 	query := channeldb.PaymentsQuery{
 		IndexOffset:       req.IndexOffset,
 		MaxPayments:       req.MaxPayments,
 		Reversed:          req.Reversed,
 		IncludeIncomplete: req.IncludeIncomplete,
+		CountTotal:        req.CountTotalPayments,
+	}
+
+	// Attach the start date if set.
+	if req.CreationDateStart != 0 {
+		query.CreationDateStart = time.Unix(
+			int64(req.CreationDateStart), 0,
+		)
+	}
+
+	// Attach the end date if set.
+	if req.CreationDateEnd != 0 {
+		query.CreationDateEnd = time.Unix(
+			int64(req.CreationDateEnd), 0,
+		)
 	}
 
 	// If the maximum number of payments wasn't specified, then we'll
@@ -6121,6 +6590,7 @@ func (r *rpcServer) ListPayments(ctx context.Context,
 	paymentsResp := &lnrpc.ListPaymentsResponse{
 		LastIndexOffset:  paymentsQuerySlice.LastIndexOffset,
 		FirstIndexOffset: paymentsQuerySlice.FirstIndexOffset,
+		TotalNumPayments: paymentsQuerySlice.TotalCount,
 	}
 
 	for _, payment := range paymentsQuerySlice.Payments {
@@ -6289,10 +6759,6 @@ const feeBase float64 = 1000000
 // schedule enforced by the node globally for each channel.
 func (r *rpcServer) FeeReport(ctx context.Context,
 	_ *lnrpc.FeeReportRequest) (*lnrpc.FeeReportResponse, error) {
-
-	// TODO(roasbeef): use UnaryInterceptor to add automated logging
-
-	rpcsLog.Debugf("[feereport]")
 
 	channelGraph := r.server.graphDB
 	selfNode, err := channelGraph.SourceNode()
@@ -6500,6 +6966,10 @@ func (r *rpcServer) UpdateChannelPolicy(ctx context.Context,
 		return nil, fmt.Errorf("time lock delta of %v is too small, "+
 			"minimum supported is %v", req.TimeLockDelta,
 			minTimeLockDelta)
+	} else if req.TimeLockDelta > uint32(MaxTimeLockDelta) {
+		return nil, fmt.Errorf("time lock delta of %v is too big, "+
+			"maximum supported is %v", req.TimeLockDelta,
+			MaxTimeLockDelta)
 	}
 
 	baseFeeMsat := lnwire.MilliSatoshi(req.BaseFeeMsat)
@@ -6522,8 +6992,8 @@ func (r *rpcServer) UpdateChannelPolicy(ctx context.Context,
 		MinHTLC:       minHtlc,
 	}
 
-	rpcsLog.Debugf("[updatechanpolicy] updating channel policy base_fee=%v, "+
-		"rate_fixed=%v, time_lock_delta: %v, "+
+	rpcsLog.Debugf("[updatechanpolicy] updating channel policy "+
+		"base_fee=%v, rate_fixed=%v, time_lock_delta: %v, "+
 		"min_htlc=%v, max_htlc=%v, targets=%v",
 		req.BaseFeeMsat, feeRateFixed, req.TimeLockDelta,
 		minHtlc, maxHtlc,
@@ -6554,9 +7024,8 @@ func (r *rpcServer) UpdateChannelPolicy(ctx context.Context,
 // offset can be provided to the request to allow the caller to skip a series
 // of records.
 func (r *rpcServer) ForwardingHistory(ctx context.Context,
-	req *lnrpc.ForwardingHistoryRequest) (*lnrpc.ForwardingHistoryResponse, error) {
-
-	rpcsLog.Debugf("[forwardinghistory]")
+	req *lnrpc.ForwardingHistoryRequest) (*lnrpc.ForwardingHistoryResponse,
+	error) {
 
 	// Before we perform the queries below, we'll instruct the switch to
 	// flush any pending events to disk. This ensure we get a complete
@@ -6572,7 +7041,8 @@ func (r *rpcServer) ForwardingHistory(ctx context.Context,
 		numEvents uint32
 	)
 
-	// startTime defaults to the Unix epoch (0 unixtime, or midnight 01-01-1970).
+	// startTime defaults to the Unix epoch (0 unixtime, or
+	// midnight 01-01-1970).
 	startTime = time.Unix(int64(req.StartTime), 0)
 
 	// If the end time wasn't specified, assume a default end time of now.
@@ -6600,7 +7070,48 @@ func (r *rpcServer) ForwardingHistory(ctx context.Context,
 	}
 	timeSlice, err := r.server.miscDB.ForwardingLog().Query(eventQuery)
 	if err != nil {
-		return nil, fmt.Errorf("unable to query forwarding log: %v", err)
+		return nil, fmt.Errorf("unable to query forwarding log: %v",
+			err)
+	}
+
+	// chanToPeerAlias caches previously looked up channel information.
+	chanToPeerAlias := make(map[lnwire.ShortChannelID]string)
+
+	// Helper function to extract a peer's node alias given its SCID.
+	getRemoteAlias := func(chanID lnwire.ShortChannelID) (string, error) {
+		// If we'd previously seen this chanID then return the cached
+		// peer alias.
+		if peerAlias, ok := chanToPeerAlias[chanID]; ok {
+			return peerAlias, nil
+		}
+
+		// Else call the server to look up the peer alias.
+		edge, err := r.GetChanInfo(ctx, &lnrpc.ChanInfoRequest{
+			ChanId: chanID.ToUint64(),
+		})
+		if err != nil {
+			return "", err
+		}
+
+		remotePub := edge.Node1Pub
+		if r.selfNode.String() == edge.Node1Pub {
+			remotePub = edge.Node2Pub
+		}
+
+		vertex, err := route.NewVertexFromStr(remotePub)
+		if err != nil {
+			return "", err
+		}
+
+		peer, err := r.server.graphDB.FetchLightningNode(vertex)
+		if err != nil {
+			return "", err
+		}
+
+		// Cache the peer alias.
+		chanToPeerAlias[chanID] = peer.Alias
+
+		return peer.Alias, nil
 	}
 
 	// TODO(roasbeef): add settlement latency?
@@ -6610,8 +7121,11 @@ func (r *rpcServer) ForwardingHistory(ctx context.Context,
 	// response.
 	//
 	// TODO(roasbeef): show in ns for the outside?
+	fwdingEvents := make(
+		[]*lnrpc.ForwardingEvent, len(timeSlice.ForwardingEvents),
+	)
 	resp := &lnrpc.ForwardingHistoryResponse{
-		ForwardingEvents: make([]*lnrpc.ForwardingEvent, len(timeSlice.ForwardingEvents)),
+		ForwardingEvents: fwdingEvents,
 		LastOffsetIndex:  timeSlice.LastIndexOffset,
 	}
 	for i, event := range timeSlice.ForwardingEvents {
@@ -6630,6 +7144,21 @@ func (r *rpcServer) ForwardingHistory(ctx context.Context,
 			FeeMsat:     uint64(feeMsat),
 			AmtInMsat:   uint64(amtInMsat),
 			AmtOutMsat:  uint64(amtOutMsat),
+		}
+
+		if req.PeerAliasLookup {
+			aliasIn, err := getRemoteAlias(event.IncomingChanID)
+			if err != nil {
+				aliasIn = fmt.Sprintf("unable to lookup peer "+
+					"alias: %v", err)
+			}
+			aliasOut, err := getRemoteAlias(event.OutgoingChanID)
+			if err != nil {
+				aliasOut = fmt.Sprintf("unable to lookup peer"+
+					"alias: %v", err)
+			}
+			resp.ForwardingEvents[i].PeerAliasIn = aliasIn
+			resp.ForwardingEvents[i].PeerAliasOut = aliasOut
 		}
 	}
 
@@ -6951,6 +7480,8 @@ func (r *rpcServer) SubscribeChannelBackups(req *lnrpc.ChannelBackupSubscription
 				continue
 			case channelnotifier.ActiveLinkEvent:
 				continue
+			case channelnotifier.InactiveLinkEvent:
+				continue
 			}
 
 			// Now that we know the channel state has changed,
@@ -7026,8 +7557,6 @@ func (r *rpcServer) ChannelAcceptor(stream lnrpc.Lightning_ChannelAcceptorServer
 func (r *rpcServer) BakeMacaroon(ctx context.Context,
 	req *lnrpc.BakeMacaroonRequest) (*lnrpc.BakeMacaroonResponse, error) {
 
-	rpcsLog.Debugf("[bakemacaroon]")
-
 	// If the --no-macaroons flag is used to start lnd, the macaroon service
 	// is not initialized. Therefore we can't bake new macaroons.
 	if r.macService == nil {
@@ -7076,7 +7605,6 @@ func (r *rpcServer) BakeMacaroon(ctx context.Context,
 		} else if !stringInSlice(op.Action, validActions) {
 			return nil, fmt.Errorf("invalid permission action. %s",
 				helpMsg)
-
 		}
 
 		requestedPermissions[idx] = bakery.Op{
@@ -7115,8 +7643,6 @@ func (r *rpcServer) ListMacaroonIDs(ctx context.Context,
 	req *lnrpc.ListMacaroonIDsRequest) (
 	*lnrpc.ListMacaroonIDsResponse, error) {
 
-	rpcsLog.Debugf("[listmacaroonids]")
-
 	// If the --no-macaroons flag is used to start lnd, the macaroon service
 	// is not initialized. Therefore we can't show any IDs.
 	if r.macService == nil {
@@ -7147,8 +7673,6 @@ func (r *rpcServer) DeleteMacaroonID(ctx context.Context,
 	req *lnrpc.DeleteMacaroonIDRequest) (
 	*lnrpc.DeleteMacaroonIDResponse, error) {
 
-	rpcsLog.Debugf("[deletemacaroonid]")
-
 	// If the --no-macaroons flag is used to start lnd, the macaroon service
 	// is not initialized. Therefore we can't delete any IDs.
 	if r.macService == nil {
@@ -7177,8 +7701,6 @@ func (r *rpcServer) DeleteMacaroonID(ctx context.Context,
 func (r *rpcServer) ListPermissions(_ context.Context,
 	_ *lnrpc.ListPermissionsRequest) (*lnrpc.ListPermissionsResponse,
 	error) {
-
-	rpcsLog.Debugf("[listpermissions]")
 
 	permissionMap := make(map[string]*lnrpc.MacaroonPermissionList)
 	for uri, perms := range r.interceptorChain.Permissions() {
@@ -7238,7 +7760,6 @@ func (r *rpcServer) FundingStateStep(ctx context.Context,
 
 	var pendingChanID [32]byte
 	switch {
-
 	// If this is a message to register a new shim that is an external
 	// channel point, then we'll contact the wallet to register this new
 	// shim. A user will use this method to register a new channel funding
@@ -7406,8 +7927,9 @@ func (r *rpcServer) RegisterRPCMiddleware(
 	// middleware must be a registration message containing its name and the
 	// custom caveat it wants to register for.
 	var (
-		registerChan = make(chan *lnrpc.MiddlewareRegistration, 1)
-		errChan      = make(chan error, 1)
+		registerChan     = make(chan *lnrpc.MiddlewareRegistration, 1)
+		registerDoneChan = make(chan struct{})
+		errChan          = make(chan error, 1)
 	)
 	ctxc, cancel := context.WithTimeout(
 		stream.Context(), r.cfg.RPCMiddleware.InterceptTimeout,
@@ -7482,6 +8004,40 @@ func (r *rpcServer) RegisterRPCMiddleware(
 	}
 	defer r.interceptorChain.RemoveMiddleware(registerMsg.MiddlewareName)
 
+	// Send a message to the client to indicate that the registration has
+	// successfully completed.
+	regCompleteMsg := &lnrpc.RPCMiddlewareRequest{
+		InterceptType: &lnrpc.RPCMiddlewareRequest_RegComplete{
+			RegComplete: true,
+		},
+	}
+
+	// Send the message in a goroutine because the Send method blocks until
+	// the message is read by the client.
+	go func() {
+		err := stream.Send(regCompleteMsg)
+		if err != nil {
+			errChan <- err
+			return
+		}
+
+		close(registerDoneChan)
+	}()
+
+	select {
+	case err := <-errChan:
+		return fmt.Errorf("error sending middleware registration "+
+			"complete message: %v", err)
+
+	case <-ctxc.Done():
+		return ctxc.Err()
+
+	case <-r.quit:
+		return ErrServerShuttingDown
+
+	case <-registerDoneChan:
+	}
+
 	return middleware.Run()
 }
 
@@ -7539,6 +8095,37 @@ func (r *rpcServer) SubscribeCustomMessages(req *lnrpc.SubscribeCustomMessagesRe
 			}
 		}
 	}
+}
+
+// ListAliases returns the set of all aliases we have ever allocated along with
+// their base SCID's and possibly a separate confirmed SCID in the case of
+// zero-conf.
+func (r *rpcServer) ListAliases(ctx context.Context,
+	in *lnrpc.ListAliasesRequest) (*lnrpc.ListAliasesResponse, error) {
+
+	// Fetch the map of all aliases.
+	mapAliases := r.server.aliasMgr.ListAliases()
+
+	// Fill out the response. This does not include the zero-conf confirmed
+	// SCID. Doing so would require more database lookups and it can be
+	// cross-referenced with the output of listchannels/closedchannels.
+	resp := &lnrpc.ListAliasesResponse{
+		AliasMaps: make([]*lnrpc.AliasMap, 0),
+	}
+
+	for base, set := range mapAliases {
+		rpcMap := &lnrpc.AliasMap{
+			BaseScid: base.ToUint64(),
+		}
+		for _, alias := range set {
+			rpcMap.Aliases = append(
+				rpcMap.Aliases, alias.ToUint64(),
+			)
+		}
+		resp.AliasMaps = append(resp.AliasMaps, rpcMap)
+	}
+
+	return resp, nil
 }
 
 // rpcInitiator returns the correct lnrpc initiator for channels where we have

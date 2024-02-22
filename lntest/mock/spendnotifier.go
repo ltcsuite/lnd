@@ -3,9 +3,8 @@ package mock
 import (
 	"sync"
 
-	"github.com/ltcsuite/ltcd/wire"
-
 	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // SpendNotifier extends the mock.ChainNotifier so that spend

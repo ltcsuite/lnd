@@ -52,12 +52,44 @@ type OutpointLocker interface {
 // Assembler.
 type Request struct {
 	// LocalAmt is the amount of coins we're placing into the funding
-	// output.
+	// output. LocalAmt must not be set if FundUpToMaxAmt is set.
 	LocalAmt ltcutil.Amount
 
 	// RemoteAmt is the amount of coins the remote party is contributing to
 	// the funding output.
 	RemoteAmt ltcutil.Amount
+
+	// FundUpToMaxAmt should be set to a non-zero amount if the channel
+	// funding should try to add as many funds to LocalAmt as possible
+	// until at most this amount is reached.
+	FundUpToMaxAmt ltcutil.Amount
+
+	// MinFundAmt should be set iff the FundUpToMaxAmt field is set. It
+	// either carries the configured minimum channel capacity or, if an
+	// initial remote balance is specified, enough to cover the initial
+	// remote balance.
+	MinFundAmt ltcutil.Amount
+
+	// RemoteChanReserve is the channel reserve we required for the remote
+	// peer.
+	RemoteChanReserve ltcutil.Amount
+
+	// PushAmt is the number of satoshis that should be pushed over the
+	// responder as part of the initial channel creation.
+	PushAmt ltcutil.Amount
+
+	// WalletReserve is a reserved amount that is not used to fund the
+	// channel when a maximum amount defined by FundUpToMaxAmt is set. This
+	// is useful when a reserved wallet balance must stay available due to
+	// e.g. anchor channels.
+	WalletReserve ltcutil.Amount
+
+	// Outpoints is a list of client-selected outpoints that should be used
+	// for funding a channel. If LocalAmt is specified then this amount is
+	// allocated from the sum of outpoints towards funding. If the
+	// FundUpToMaxAmt is specified the entirety of selected funds is
+	// allocated towards channel funding.
+	Outpoints []wire.OutPoint
 
 	// MinConfs controls how many confirmations a coin need to be eligible
 	// to be used as an input to the funding transaction. If this value is
@@ -78,6 +110,11 @@ type Request struct {
 	// ChangeAddr is a closure that will provide the Assembler with a
 	// change address for the funding transaction if needed.
 	ChangeAddr func() (ltcutil.Address, error)
+
+	// Musig2 if true, then musig2 will be used to generate the funding
+	// output. By definition, this'll also use segwit v1 (taproot) for the
+	// funding output.
+	Musig2 bool
 }
 
 // Intent is returned by an Assembler and represents the base functionality the

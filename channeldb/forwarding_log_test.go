@@ -9,6 +9,7 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestForwardingLogBasicStorageAndQuery tests that we're able to store and
@@ -19,11 +20,8 @@ func TestForwardingLogBasicStorageAndQuery(t *testing.T) {
 	// First, we'll set up a test database, and use that to instantiate the
 	// forwarding event log that we'll be using for the duration of the
 	// test.
-	db, cleanUp, err := MakeTestDB()
-	if err != nil {
-		t.Fatalf("unable to make test db: %v", err)
-	}
-	defer cleanUp()
+	db, err := MakeTestDB(t)
+	require.NoError(t, err, "unable to make test db")
 
 	log := ForwardingLog{
 		db: db,
@@ -63,9 +61,7 @@ func TestForwardingLogBasicStorageAndQuery(t *testing.T) {
 		NumMaxEvents: 1000,
 	}
 	timeSlice, err := log.Query(eventQuery)
-	if err != nil {
-		t.Fatalf("unable to query for events: %v", err)
-	}
+	require.NoError(t, err, "unable to query for events")
 
 	// The set of returned events should match identically, as they should
 	// be returned in sorted order.
@@ -92,11 +88,8 @@ func TestForwardingLogQueryOptions(t *testing.T) {
 	// First, we'll set up a test database, and use that to instantiate the
 	// forwarding event log that we'll be using for the duration of the
 	// test.
-	db, cleanUp, err := MakeTestDB()
-	if err != nil {
-		t.Fatalf("unable to make test db: %v", err)
-	}
-	defer cleanUp()
+	db, err := MakeTestDB(t)
+	require.NoError(t, err, "unable to make test db")
 
 	log := ForwardingLog{
 		db: db,
@@ -136,9 +129,7 @@ func TestForwardingLogQueryOptions(t *testing.T) {
 		NumMaxEvents: 10,
 	}
 	timeSlice, err := log.Query(eventQuery)
-	if err != nil {
-		t.Fatalf("unable to query for events: %v", err)
-	}
+	require.NoError(t, err, "unable to query for events")
 
 	// We should get exactly 10 events back.
 	if len(timeSlice.ForwardingEvents) != 10 {
@@ -164,9 +155,7 @@ func TestForwardingLogQueryOptions(t *testing.T) {
 	// more events, that are the last 10 events we wrote.
 	eventQuery.IndexOffset = 10
 	timeSlice, err = log.Query(eventQuery)
-	if err != nil {
-		t.Fatalf("unable to query for events: %v", err)
-	}
+	require.NoError(t, err, "unable to query for events")
 
 	// We should get exactly 10 events back once again.
 	if len(timeSlice.ForwardingEvents) != 10 {
@@ -198,11 +187,8 @@ func TestForwardingLogQueryLimit(t *testing.T) {
 	// First, we'll set up a test database, and use that to instantiate the
 	// forwarding event log that we'll be using for the duration of the
 	// test.
-	db, cleanUp, err := MakeTestDB()
-	if err != nil {
-		t.Fatalf("unable to make test db: %v", err)
-	}
-	defer cleanUp()
+	db, err := MakeTestDB(t)
+	require.NoError(t, err, "unable to make test db")
 
 	log := ForwardingLog{
 		db: db,
@@ -242,9 +228,7 @@ func TestForwardingLogQueryLimit(t *testing.T) {
 		NumMaxEvents: 100,
 	}
 	timeSlice, err := log.Query(eventQuery)
-	if err != nil {
-		t.Fatalf("unable to query for events: %v", err)
-	}
+	require.NoError(t, err, "unable to query for events")
 
 	// We should get exactly 100 events back.
 	if len(timeSlice.ForwardingEvents) != 100 {
@@ -314,11 +298,8 @@ func TestForwardingLogStoreEvent(t *testing.T) {
 	// First, we'll set up a test database, and use that to instantiate the
 	// forwarding event log that we'll be using for the duration of the
 	// test.
-	db, cleanUp, err := MakeTestDB()
-	if err != nil {
-		t.Fatalf("unable to make test db: %v", err)
-	}
-	defer cleanUp()
+	db, err := MakeTestDB(t)
+	require.NoError(t, err, "unable to make test db")
 
 	log := ForwardingLog{
 		db: db,
@@ -362,9 +343,7 @@ func TestForwardingLogStoreEvent(t *testing.T) {
 		NumMaxEvents: uint32(numEvents * 3),
 	}
 	timeSlice, err := log.Query(eventQuery)
-	if err != nil {
-		t.Fatalf("unable to query for events: %v", err)
-	}
+	require.NoError(t, err, "unable to query for events")
 
 	// We should get exactly 40 events back.
 	if len(timeSlice.ForwardingEvents) != numEvents*2 {

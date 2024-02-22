@@ -4,8 +4,8 @@ import (
 	"encoding/binary"
 	"io"
 
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/go-errors/errors"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 )
 
 // Store is an interface which serves as an abstraction over data structure

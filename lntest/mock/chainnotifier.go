@@ -1,10 +1,9 @@
 package mock
 
 import (
+	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
-
-	"github.com/ltcsuite/lnd/chainntnfs"
 )
 
 // ChainNotifier is a mock implementation of the ChainNotifier interface.
@@ -17,8 +16,8 @@ type ChainNotifier struct {
 // RegisterConfirmationsNtfn returns a ConfirmationEvent that contains a channel
 // that the tx confirmation will go over.
 func (c *ChainNotifier) RegisterConfirmationsNtfn(txid *chainhash.Hash,
-	pkScript []byte, numConfs, heightHint uint32) (*chainntnfs.ConfirmationEvent,
-	error) {
+	pkScript []byte, numConfs, heightHint uint32,
+	opts ...chainntnfs.NotifierOption) (*chainntnfs.ConfirmationEvent, error) {
 
 	return &chainntnfs.ConfirmationEvent{
 		Confirmed: c.ConfChan,

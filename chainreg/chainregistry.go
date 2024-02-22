@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -16,10 +17,10 @@ import (
 	"github.com/ltcsuite/lnd/blockcache"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/chainntnfs/bitcoindnotify"
-	ltcdnotify "github.com/ltcsuite/lnd/chainntnfs/btcdnotify"
+	"github.com/ltcsuite/lnd/chainntnfs/btcdnotify"
 	"github.com/ltcsuite/lnd/chainntnfs/neutrinonotify"
 	"github.com/ltcsuite/lnd/channeldb"
-	"github.com/ltcsuite/lnd/htlcswitch"
+	"github.com/ltcsuite/lnd/channeldb/models"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/kvdb"
@@ -127,7 +128,7 @@ const (
 
 	// DefaultBitcoinTimeLockDelta is the default forwarding time lock
 	// delta.
-	DefaultBitcoinTimeLockDelta = 40
+	DefaultBitcoinTimeLockDelta = 80
 
 	DefaultLitecoinMinHTLCInMSat  = lnwire.MilliSatoshi(1)
 	DefaultLitecoinMinHTLCOutMSat = lnwire.MilliSatoshi(1000)
@@ -181,6 +182,10 @@ type PartialChainControl struct {
 	// interested in.
 	ChainNotifier chainntnfs.ChainNotifier
 
+	// MempoolNotifier is used to watch for spending events happened in
+	// mempool.
+	MempoolNotifier chainntnfs.MempoolWatcher
+
 	// ChainView is used in the router for maintaining an up-to-date graph.
 	ChainView chainview.FilteredChainView
 
@@ -190,7 +195,7 @@ type PartialChainControl struct {
 	ChainSource chain.Interface
 
 	// RoutingPolicy is the routing policy we have decided to use.
-	RoutingPolicy htlcswitch.ForwardingPolicy
+	RoutingPolicy models.ForwardingPolicy
 
 	// MinHtlcIn is the minimum HTLC we will accept.
 	MinHtlcIn lnwire.MilliSatoshi
@@ -248,6 +253,8 @@ func GenDefaultBtcConstraints() channeldb.ChannelConstraints {
 // NewPartialChainControl creates a new partial chain control that contains all
 // the parts that can be purely constructed from the passed in global
 // configuration and doesn't need any wallet instance yet.
+//
+//nolint:lll
 func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 	// Set the RPC config from the "home" chain. Multi-chain isn't yet
 	// active, so we'll restrict usage to a particular chain for now.
@@ -263,7 +270,7 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 
 	switch cfg.PrimaryChain() {
 	case BitcoinChain:
-		cc.RoutingPolicy = htlcswitch.ForwardingPolicy{
+		cc.RoutingPolicy = models.ForwardingPolicy{
 			MinHTLCOut:    cfg.Bitcoin.MinHTLCOut,
 			BaseFee:       cfg.Bitcoin.BaseFee,
 			FeeRate:       cfg.Bitcoin.FeeRate,
@@ -275,7 +282,7 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 			DefaultBitcoinStaticMinRelayFeeRate,
 		)
 	case LitecoinChain:
-		cc.RoutingPolicy = htlcswitch.ForwardingPolicy{
+		cc.RoutingPolicy = models.ForwardingPolicy{
 			MinHTLCOut:    cfg.Litecoin.MinHTLCOut,
 			BaseFee:       cfg.Litecoin.BaseFee,
 			FeeRate:       cfg.Litecoin.FeeRate,
@@ -291,7 +298,7 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 	}
 
 	var err error
-	heightHintCacheConfig := chainntnfs.CacheConfig{
+	heightHintCacheConfig := channeldb.CacheConfig{
 		QueryDisable: cfg.HeightHintCacheQueryDisable,
 	}
 	if cfg.HeightHintCacheQueryDisable {
@@ -299,7 +306,7 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 	}
 
 	// Initialize the height hint cache within the chain directory.
-	hintCache, err := chainntnfs.NewHeightHintCache(
+	hintCache, err := channeldb.NewHeightHintCache(
 		heightHintCacheConfig, cfg.HeightHintDB,
 	)
 	if err != nil {
@@ -398,19 +405,34 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 			}
 		}
 
-		// Establish the connection to bitcoind and create the clients
-		// required for our relevant subsystems.
-		bitcoindConn, err := chain.NewBitcoindConn(&chain.BitcoindConfig{
+		bitcoindCfg := &chain.BitcoindConfig{
 			ChainParams:        cfg.ActiveNetParams.Params,
 			Host:               bitcoindHost,
 			User:               bitcoindMode.RPCUser,
 			Pass:               bitcoindMode.RPCPass,
-			ZMQBlockHost:       bitcoindMode.ZMQPubRawBlock,
-			ZMQTxHost:          bitcoindMode.ZMQPubRawTx,
-			ZMQReadDeadline:    5 * time.Second,
 			Dialer:             cfg.Dialer,
 			PrunedModeMaxPeers: bitcoindMode.PrunedNodeMaxPeers,
-		})
+		}
+
+		if bitcoindMode.RPCPolling {
+			bitcoindCfg.PollingConfig = &chain.PollingConfig{
+				BlockPollingInterval:    bitcoindMode.BlockPollingInterval,
+				TxPollingInterval:       bitcoindMode.TxPollingInterval,
+				TxPollingIntervalJitter: lncfg.DefaultTxPollingJitter,
+			}
+		} else {
+			bitcoindCfg.ZMQConfig = &chain.ZMQConfig{
+				ZMQBlockHost:           bitcoindMode.ZMQPubRawBlock,
+				ZMQTxHost:              bitcoindMode.ZMQPubRawTx,
+				ZMQReadDeadline:        bitcoindMode.ZMQReadDeadline,
+				MempoolPollingInterval: bitcoindMode.TxPollingInterval,
+				PollingIntervalJitter:  lncfg.DefaultTxPollingJitter,
+			}
+		}
+
+		// Establish the connection to bitcoind and create the clients
+		// required for our relevant subsystems.
+		bitcoindConn, err := chain.NewBitcoindConn(bitcoindCfg)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -420,10 +442,14 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 				"bitcoind: %v", err)
 		}
 
-		cc.ChainNotifier = bitcoindnotify.New(
+		chainNotifier := bitcoindnotify.New(
 			bitcoindConn, cfg.ActiveNetParams.Params, hintCache,
 			hintCache, cfg.BlockCache,
 		)
+
+		cc.ChainNotifier = chainNotifier
+		cc.MempoolNotifier = chainNotifier
+
 		cc.ChainView = chainview.NewBitcoindFilteredChainView(
 			bitcoindConn, cfg.BlockCache,
 		)
@@ -483,11 +509,100 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 			return nil, nil, err
 		}
 
+		// Before we continue any further, we'll ensure that the
+		// backend understands Taproot. If not, then all the default
+		// features can't be used.
+		if !backendSupportsTaproot(chainConn) {
+			return nil, nil, fmt.Errorf("node backend does not " +
+				"support taproot")
+		}
+
 		// The api we will use for our health check depends on the
 		// bitcoind version.
-		cmd, err := getBitcoindHealthCheckCmd(chainConn)
+		cmd, ver, err := getBitcoindHealthCheckCmd(chainConn)
 		if err != nil {
 			return nil, nil, err
+		}
+
+		// If the getzmqnotifications api is available (was added in
+		// version 0.17.0) we make sure lnd subscribes to the correct
+		// zmq events. We do this to avoid a situation in which we are
+		// not notified of new transactions or blocks.
+		if ver >= 170000 && !bitcoindMode.RPCPolling {
+			zmqPubRawBlockURL, err := url.Parse(bitcoindMode.ZMQPubRawBlock)
+			if err != nil {
+				return nil, nil, err
+			}
+			zmqPubRawTxURL, err := url.Parse(bitcoindMode.ZMQPubRawTx)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			// Fetch all active zmq notifications from the bitcoind client.
+			resp, err := chainConn.RawRequest("getzmqnotifications", nil)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			zmq := []struct {
+				Type    string `json:"type"`
+				Address string `json:"address"`
+			}{}
+
+			if err = json.Unmarshal([]byte(resp), &zmq); err != nil {
+				return nil, nil, err
+			}
+
+			pubRawBlockActive := false
+			pubRawTxActive := false
+
+			for i := range zmq {
+				if zmq[i].Type == "pubrawblock" {
+					url, err := url.Parse(zmq[i].Address)
+					if err != nil {
+						return nil, nil, err
+					}
+					if url.Port() != zmqPubRawBlockURL.Port() {
+						log.Warnf(
+							"unable to subscribe to zmq block events on "+
+								"%s (bitcoind is running on %s)",
+							zmqPubRawBlockURL.Host,
+							url.Host,
+						)
+					}
+					pubRawBlockActive = true
+				}
+				if zmq[i].Type == "pubrawtx" {
+					url, err := url.Parse(zmq[i].Address)
+					if err != nil {
+						return nil, nil, err
+					}
+					if url.Port() != zmqPubRawTxURL.Port() {
+						log.Warnf(
+							"unable to subscribe to zmq tx events on "+
+								"%s (bitcoind is running on %s)",
+							zmqPubRawTxURL.Host,
+							url.Host,
+						)
+					}
+					pubRawTxActive = true
+				}
+			}
+
+			// Return an error if raw tx or raw block notification over
+			// zmq is inactive.
+			if !pubRawBlockActive {
+				return nil, nil, errors.New(
+					"block notification over zmq is inactive on " +
+						"bitcoind",
+				)
+			}
+			if !pubRawTxActive {
+				return nil, nil, errors.New(
+					"tx notification over zmq is inactive on " +
+						"bitcoind",
+				)
+			}
 		}
 
 		cc.HealthCheck = func() error {
@@ -495,7 +610,7 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 			return err
 		}
 
-	case "btcd", "ltcd":
+	case "ltcd":
 		// Otherwise, we'll be speaking directly via RPC to a node.
 		//
 		// So first we'll load btcd/ltcd's TLS cert for the RPC
@@ -553,13 +668,17 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 			DisableConnectOnNew:  true,
 			DisableAutoReconnect: false,
 		}
-		cc.ChainNotifier, err = ltcdnotify.New(
+
+		chainNotifier, err := btcdnotify.New(
 			rpcConfig, cfg.ActiveNetParams.Params, hintCache,
 			hintCache, cfg.BlockCache,
 		)
 		if err != nil {
 			return nil, nil, err
 		}
+
+		cc.ChainNotifier = chainNotifier
+		cc.MempoolNotifier = chainNotifier
 
 		// Finally, we'll create an instance of the default chain view
 		// to be used within the routing layer.
@@ -579,6 +698,21 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 		)
 		if err != nil {
 			return nil, nil, err
+		}
+
+		// Before we continue any further, we'll ensure that the
+		// backend understands Taproot. If not, then all the default
+		// features can't be used.
+		restConfCopy := *rpcConfig
+		restConfCopy.Endpoint = ""
+		restConfCopy.HTTPPostMode = true
+		chainConn, err := rpcclient.New(&restConfCopy, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !backendSupportsTaproot(chainConn) {
+			return nil, nil, fmt.Errorf("node backend does not " +
+				"support taproot")
 		}
 
 		cc.ChainSource = chainRPC
@@ -727,11 +861,11 @@ func NewChainControl(walletConfig lnwallet.Config,
 // command, because it has no locking and is an inexpensive call, which was
 // added in version 0.15. If we are on an earlier version, we fallback to using
 // getblockchaininfo.
-func getBitcoindHealthCheckCmd(client *rpcclient.Client) (string, error) {
+func getBitcoindHealthCheckCmd(client *rpcclient.Client) (string, int64, error) {
 	// Query bitcoind to get our current version.
 	resp, err := client.RawRequest("getnetworkinfo", nil)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 
 	// Parse the response to retrieve bitcoind's version.
@@ -739,7 +873,7 @@ func getBitcoindHealthCheckCmd(client *rpcclient.Client) (string, error) {
 		Version int64 `json:"version"`
 	}{}
 	if err := json.Unmarshal(resp, &info); err != nil {
-		return "", err
+		return "", 0, err
 	}
 
 	// Bitcoind returns a single value representing the semantic version:
@@ -749,10 +883,10 @@ func getBitcoindHealthCheckCmd(client *rpcclient.Client) (string, error) {
 	// The uptime call was added in version 0.15.0, so we return it for
 	// any version value >= 150000, as per the above calculation.
 	if info.Version >= 150000 {
-		return "uptime", nil
+		return "uptime", info.Version, nil
 	}
 
-	return "getblockchaininfo", nil
+	return "getblockchaininfo", info.Version, nil
 }
 
 var (
@@ -819,12 +953,11 @@ var (
 	// the network seed.
 	//
 	// TODO(roasbeef): extend and collapse these and chainparams.go into
-	// struct like chaincfg.Params
-	ChainDNSSeeds = map[chainhash.Hash][][3]string{
+	// struct like chaincfg.Params.
+	ChainDNSSeeds = map[chainhash.Hash][][2]string{
 		LitecoinMainnetGenesis: {
 			{
 				"ltc.lightning.loshan.co.uk",
-				"ltc.getplasma.org",
 				"soa.lightning.loshan.co.uk",
 			},
 		},
@@ -832,14 +965,13 @@ var (
 		LitecoinTestnetGenesis: {
 			{
 				"tltc.lightning.loshan.co.uk",
-				"tltc.getplasma.org",
 				"soa.lightning.loshan.co.uk",
 			},
 		},
 	}
 )
 
-// ChainRegistry keeps track of the current chains
+// ChainRegistry keeps track of the current chains.
 type ChainRegistry struct {
 	sync.RWMutex
 

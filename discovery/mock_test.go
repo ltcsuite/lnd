@@ -5,7 +5,6 @@ import (
 	"net"
 	"sync"
 
-	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/lnpeer"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/ltcd/btcec/v2"
@@ -42,7 +41,9 @@ func (p *mockPeer) SendMessageLazy(sync bool, msgs ...lnwire.Message) error {
 	return p.SendMessage(sync, msgs...)
 }
 
-func (p *mockPeer) AddNewChannel(_ *channeldb.OpenChannel, _ <-chan struct{}) error {
+func (p *mockPeer) AddNewChannel(_ *lnpeer.NewChannel,
+	_ <-chan struct{}) error {
+
 	return nil
 }
 func (p *mockPeer) WipeChannel(_ *wire.OutPoint)  {}
@@ -60,6 +61,16 @@ func (p *mockPeer) LocalFeatures() *lnwire.FeatureVector {
 	return nil
 }
 func (p *mockPeer) RemoteFeatures() *lnwire.FeatureVector {
+	return nil
+}
+
+func (p *mockPeer) AddPendingChannel(_ lnwire.ChannelID,
+	_ <-chan struct{}) error {
+
+	return nil
+}
+
+func (p *mockPeer) RemovePendingChannel(_ lnwire.ChannelID) error {
 	return nil
 }
 

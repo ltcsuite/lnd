@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb/models"
 	"github.com/ltcsuite/lnd/htlcswitch/hop"
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwire"
@@ -28,26 +29,26 @@ import (
 // - Present for htlc forwards through our node and local sends.
 //
 // Link Failure Event:
-// - Indicates that a htlc has failed on our incoming or outgoing link,
-//   with an incoming boolean which indicates where the failure occurred.
-// - Incoming link failures are present for failed attempts to pay one of
-//   our invoices (insufficient amount or mpp timeout, for example) and for
-//   forwards that we cannot decode to forward onwards.
-// - Outgoing link failures are present for forwards or local payments that
-//   do not meet our outgoing link's policy (insufficient fees, for example)
-//   and when we fail to forward the payment on (insufficient outgoing
-//   capacity, or an unknown outgoing link).
+//   - Indicates that a htlc has failed on our incoming or outgoing link,
+//     with an incoming boolean which indicates where the failure occurred.
+//   - Incoming link failures are present for failed attempts to pay one of
+//     our invoices (insufficient amount or mpp timeout, for example) and for
+//     forwards that we cannot decode to forward onwards.
+//   - Outgoing link failures are present for forwards or local payments that
+//     do not meet our outgoing link's policy (insufficient fees, for example)
+//     and when we fail to forward the payment on (insufficient outgoing
+//     capacity, or an unknown outgoing link).
 //
 // Forwarding Failure Event:
-// - Forwarding failures indicate that a htlc we forwarded has failed at
-//   another node down the route.
-// - Present for local sends and htlc forwards which fail after they left
-//   our node.
+//   - Forwarding failures indicate that a htlc we forwarded has failed at
+//     another node down the route.
+//   - Present for local sends and htlc forwards which fail after they left
+//     our node.
 //
 // Settle event:
-// - Settle events are present when a htlc which we added is settled through
-//   the release of a preimage.
-// - Present for local receives, and successful local sends or forwards.
+//   - Settle events are present when a htlc which we added is settled through
+//     the release of a preimage.
+//   - Present for local receives, and successful local sends or forwards.
 //
 // Each htlc is identified by its incoming and outgoing circuit key. Htlcs,
 // and their subsequent settles or fails, can be identified by the combination
@@ -81,7 +82,7 @@ func NewHtlcNotifier(now func() time.Time) *HtlcNotifier {
 func (h *HtlcNotifier) Start() error {
 	var err error
 	h.started.Do(func() {
-		log.Trace("HtlcNotifier starting")
+		log.Info("HtlcNotifier starting")
 		err = h.ntfnServer.Start()
 	})
 	return err
@@ -108,10 +109,10 @@ func (h *HtlcNotifier) SubscribeHtlcEvents() (*subscribe.Client, error) {
 // HtlcKey uniquely identifies the htlc.
 type HtlcKey struct {
 	// IncomingCircuit is the channel an htlc id of the incoming htlc.
-	IncomingCircuit channeldb.CircuitKey
+	IncomingCircuit models.CircuitKey
 
 	// OutgoingCircuit is the channel and htlc id of the outgoing htlc.
-	OutgoingCircuit channeldb.CircuitKey
+	OutgoingCircuit models.CircuitKey
 }
 
 // String returns a string representation of a htlc key.
@@ -294,6 +295,18 @@ type SettleEvent struct {
 	Timestamp time.Time
 }
 
+type FinalHtlcEvent struct {
+	CircuitKey
+
+	Settled bool
+
+	// Offchain is indicating whether the htlc was resolved off-chain.
+	Offchain bool
+
+	// Timestamp is the time when this htlc was settled.
+	Timestamp time.Time
+}
+
 // NotifyForwardingEvent notifies the HtlcNotifier than a htlc has been
 // forwarded.
 //
@@ -382,6 +395,27 @@ func (h *HtlcNotifier) NotifySettleEvent(key HtlcKey,
 	}
 }
 
+// NotifyFinalHtlcEvent notifies the HtlcNotifier that the final outcome for an
+// htlc has been determined.
+//
+// Note this is part of the htlcNotifier interface.
+func (h *HtlcNotifier) NotifyFinalHtlcEvent(key models.CircuitKey,
+	info channeldb.FinalHtlcInfo) {
+
+	event := &FinalHtlcEvent{
+		CircuitKey: key,
+		Settled:    info.Settled,
+		Offchain:   info.Offchain,
+		Timestamp:  h.now(),
+	}
+
+	log.Tracef("Notifying final settle event: %v", key)
+
+	if err := h.ntfnServer.SendUpdate(event); err != nil {
+		log.Warnf("Unable to send settle event: %v", err)
+	}
+}
+
 // newHtlc key returns a htlc key for the packet provided. If the packet
 // has a zero incoming channel ID, the packet is for one of our own sends,
 // which has the payment id stashed in the incoming htlc id. If this is the
@@ -390,7 +424,7 @@ func (h *HtlcNotifier) NotifySettleEvent(key HtlcKey,
 // originate at our node.
 func newHtlcKey(pkt *htlcPacket) HtlcKey {
 	htlcKey := HtlcKey{
-		IncomingCircuit: channeldb.CircuitKey{
+		IncomingCircuit: models.CircuitKey{
 			ChanID: pkt.incomingChanID,
 			HtlcID: pkt.incomingHTLCID,
 		},

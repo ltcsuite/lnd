@@ -3,19 +3,17 @@ package localchans
 import (
 	"testing"
 
+	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb/models"
+	"github.com/ltcsuite/lnd/discovery"
 	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/lnrpc"
 	"github.com/ltcsuite/lnd/lnwire"
-	"github.com/stretchr/testify/require"
-
+	"github.com/ltcsuite/lnd/routing"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
-
-	"github.com/ltcsuite/lnd/channeldb"
-	"github.com/ltcsuite/lnd/discovery"
-	"github.com/ltcsuite/lnd/htlcswitch"
-	"github.com/ltcsuite/lnd/routing"
 	"github.com/ltcsuite/ltcd/wire"
+	"github.com/stretchr/testify/require"
 )
 
 // TestManager tests that the local channel manager properly propagates fee
@@ -48,11 +46,11 @@ func TestManager(t *testing.T) {
 
 	currentPolicy := channeldb.ChannelEdgePolicy{
 		MinHTLC:      minHTLC,
-		MessageFlags: lnwire.ChanUpdateOptionMaxHtlc,
+		MessageFlags: lnwire.ChanUpdateRequiredMaxHtlc,
 	}
 
 	updateForwardingPolicies := func(
-		chanPolicies map[wire.OutPoint]htlcswitch.ForwardingPolicy) {
+		chanPolicies map[wire.OutPoint]models.ForwardingPolicy) {
 
 		if len(chanPolicies) == 0 {
 			return

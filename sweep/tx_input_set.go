@@ -3,6 +3,7 @@ package sweep
 import (
 	"fmt"
 	"math"
+	"sort"
 
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/lnwallet"
@@ -139,7 +140,7 @@ func newTxInputSet(wallet Wallet, feePerKW chainfee.SatPerKWeight,
 func (t *txInputSet) enoughInput() bool {
 	// If we have a change output above dust, then we certainly have enough
 	// inputs to the transaction.
-	if t.changeOutput >= lnwallet.DustLimitForSize(input.P2WPKHSize) {
+	if t.changeOutput >= lnwallet.DustLimitForSize(input.P2TRSize) {
 		return true
 	}
 
@@ -166,7 +167,9 @@ func (t *txInputSet) enoughInput() bool {
 // add adds a new input to the set. It returns a bool indicating whether the
 // input was added to the set. An input is rejected if it decreases the tx
 // output value after paying fees.
-func (t *txInputSet) addToState(inp input.Input, constraints addConstraints) *txInputSetState {
+func (t *txInputSet) addToState(inp input.Input,
+	constraints addConstraints) *txInputSetState {
+
 	// Stop if max inputs is reached. Do not count additional wallet inputs,
 	// because we don't know in advance how many we may need.
 	if constraints != constraintsWallet &&
@@ -177,65 +180,97 @@ func (t *txInputSet) addToState(inp input.Input, constraints addConstraints) *tx
 
 	// If the input comes with a required tx out that is below dust, we
 	// won't add it.
+	//
+	// NOTE: only HtlcSecondLevelAnchorInput returns non-nil RequiredTxOut.
 	reqOut := inp.RequiredTxOut()
 	if reqOut != nil {
 		// Fetch the dust limit for this output.
 		dustLimit := lnwallet.DustLimitForSize(len(reqOut.PkScript))
 		if ltcutil.Amount(reqOut.Value) < dustLimit {
+			log.Errorf("Rejected input=%v due to dust required "+
+				"output=%v, limit=%v", inp, reqOut.Value,
+				dustLimit)
+
+			// TODO(yy): we should not return here for force
+			// sweeps. This means when sending sweeping request,
+			// one must be careful to not create dust outputs. In
+			// an extreme rare case, where the
+			// minRelayTxFee/discardfee is increased when sending
+			// the request, what's considered non-dust at the
+			// caller side will be dust here, causing a force sweep
+			// to fail.
 			return nil
 		}
 	}
 
 	// Clone the current set state.
-	s := t.clone()
+	newSet := t.clone()
 
 	// Add the new input.
-	s.inputs = append(s.inputs, inp)
+	newSet.inputs = append(newSet.inputs, inp)
 
 	// Add the value of the new input.
 	value := ltcutil.Amount(inp.SignDesc().Output.Value)
-	s.inputTotal += value
+	newSet.inputTotal += value
 
 	// Recalculate the tx fee.
-	fee := s.weightEstimate(true).fee()
+	fee := newSet.weightEstimate(true).fee()
 
 	// Calculate the new output value.
 	if reqOut != nil {
-		s.requiredOutput += ltcutil.Amount(reqOut.Value)
+		newSet.requiredOutput += ltcutil.Amount(reqOut.Value)
 	}
-	s.changeOutput = s.inputTotal - s.requiredOutput - fee
+
+	// NOTE: `changeOutput` could be negative here if this input is using
+	// constraintsForce.
+	newSet.changeOutput = newSet.inputTotal - newSet.requiredOutput - fee
 
 	// Calculate the yield of this input from the change in total tx output
 	// value.
-	inputYield := s.totalOutput() - t.totalOutput()
+	inputYield := newSet.totalOutput() - t.totalOutput()
 
 	switch constraints {
-
 	// Don't sweep inputs that cost us more to sweep than they give us.
 	case constraintsRegular:
 		if inputYield <= 0 {
+			log.Debugf("Rejected regular input=%v due to negative "+
+				"yield=%v", value, inputYield)
+
 			return nil
 		}
 
 	// For force adds, no further constraints apply.
+	//
+	// NOTE: because the inputs are sorted with force sweeps being placed
+	// at the start of the list, we should never see an input with
+	// constraintsForce come after an input with constraintsRegular. In
+	// other words, though we may have negative `changeOutput` from
+	// including force sweeps, `inputYield` should always increase when
+	// adding regular inputs.
 	case constraintsForce:
-		s.force = true
+		newSet.force = true
 
 	// We are attaching a wallet input to raise the tx output value above
 	// the dust limit.
 	case constraintsWallet:
 		// Skip this wallet input if adding it would lower the output
 		// value.
+		//
+		// TODO(yy): change to inputYield < 0 to allow sweeping for
+		// UTXO aggregation only?
 		if inputYield <= 0 {
+			log.Debugf("Rejected wallet input=%v due to negative "+
+				"yield=%v", value, inputYield)
+
 			return nil
 		}
 
 		// Calculate the total value that we spend in this tx from the
 		// wallet if we'd add this wallet input.
-		s.walletInputTotal += value
+		newSet.walletInputTotal += value
 
 		// In any case, we don't want to lose money by sweeping. If we
-		// don't get more out of the tx then we put in ourselves, do not
+		// don't get more out of the tx than we put in ourselves, do not
 		// add this wallet input. If there is at least one force sweep
 		// in the set, this does no longer apply.
 		//
@@ -247,17 +282,27 @@ func (t *txInputSet) addToState(inp input.Input, constraints addConstraints) *tx
 		// value of the wallet input and what we get out of this
 		// transaction. To prevent attaching and locking a big utxo for
 		// very little benefit.
-		if !s.force && s.walletInputTotal >= s.totalOutput() {
+		if newSet.force {
+			break
+		}
+
+		// TODO(yy): change from `>=` to `>` to allow non-negative
+		// sweeping - we won't gain more coins from this sweep, but
+		// aggregating small UTXOs.
+		if newSet.walletInputTotal >= newSet.totalOutput() {
+			// TODO(yy): further check this case as it seems we can
+			// never reach here because it'd mean `inputYield` is
+			// already <= 0?
 			log.Debugf("Rejecting wallet input of %v, because it "+
 				"would make a negative yielding transaction "+
-				"(%v)",
-				value, s.totalOutput()-s.walletInputTotal)
+				"(%v)", value,
+				newSet.totalOutput()-newSet.walletInputTotal)
 
 			return nil
 		}
 	}
 
-	return &s
+	return &newSet
 }
 
 // add adds a new input to the set. It returns a bool indicating whether the
@@ -331,6 +376,15 @@ func (t *txInputSet) tryAddWalletInputsIfNeeded() error {
 		return err
 	}
 
+	// Sort the UTXOs by putting smaller values at the start of the slice
+	// to avoid locking large UTXO for sweeping.
+	//
+	// TODO(yy): add more choices to CoinSelectionStrategy and use the
+	// configured value here.
+	sort.Slice(utxos, func(i, j int) bool {
+		return utxos[i].Value < utxos[j].Value
+	})
+
 	for _, utxo := range utxos {
 		input, err := createWalletTxInput(utxo)
 		if err != nil {
@@ -356,23 +410,26 @@ func (t *txInputSet) tryAddWalletInputsIfNeeded() error {
 // createWalletTxInput converts a wallet utxo into an object that can be added
 // to the other inputs to sweep.
 func createWalletTxInput(utxo *lnwallet.Utxo) (input.Input, error) {
-	var witnessType input.WitnessType
-	switch utxo.AddressType {
-	case lnwallet.WitnessPubKey:
-		witnessType = input.WitnessKeyHash
-	case lnwallet.NestedWitnessPubKey:
-		witnessType = input.NestedWitnessKeyHash
-	default:
-		return nil, fmt.Errorf("unknown address type %v",
-			utxo.AddressType)
-	}
-
 	signDesc := &input.SignDescriptor{
 		Output: &wire.TxOut{
 			PkScript: utxo.PkScript,
 			Value:    int64(utxo.Value),
 		},
 		HashType: txscript.SigHashAll,
+	}
+
+	var witnessType input.WitnessType
+	switch utxo.AddressType {
+	case lnwallet.WitnessPubKey:
+		witnessType = input.WitnessKeyHash
+	case lnwallet.NestedWitnessPubKey:
+		witnessType = input.NestedWitnessKeyHash
+	case lnwallet.TaprootPubkey:
+		witnessType = input.TaprootPubKeySpend
+		signDesc.HashType = txscript.SigHashDefault
+	default:
+		return nil, fmt.Errorf("unknown address type %v",
+			utxo.AddressType)
 	}
 
 	// A height hint doesn't need to be set, because we don't monitor these

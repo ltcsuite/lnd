@@ -6,21 +6,24 @@ import (
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/neutrino"
 	"github.com/ltcsuite/neutrino/cache"
 	"github.com/ltcsuite/neutrino/cache/lru"
 )
 
 // BlockCache is an lru cache for blocks.
 type BlockCache struct {
-	Cache     *lru.Cache
-	HashMutex *multimutex.HashMutex
+	Cache     *lru.Cache[wire.InvVect, *neutrino.CacheableBlock]
+	HashMutex *multimutex.Mutex[lntypes.Hash]
 }
 
 // NewBlockCache creates a new BlockCache with the given maximum capacity.
 func NewBlockCache(capacity uint64) *BlockCache {
 	return &BlockCache{
-		Cache:     lru.NewCache(capacity),
-		HashMutex: multimutex.NewHashMutex(),
+		Cache: lru.NewCache[wire.InvVect, *neutrino.CacheableBlock](
+			capacity,
+		),
+		HashMutex: multimutex.NewMutex[lntypes.Hash](),
 	}
 }
 
@@ -45,7 +48,7 @@ func (bc *BlockCache) GetBlock(hash *chainhash.Hash,
 		return nil, err
 	}
 	if cacheBlock != nil {
-		return cacheBlock.(*cache.CacheableBlock).MsgBlock(), nil
+		return cacheBlock.MsgBlock(), nil
 	}
 
 	// Fetch the block from the chain backends.
@@ -58,7 +61,7 @@ func (bc *BlockCache) GetBlock(hash *chainhash.Hash,
 	// capacity then the LFU item will be evicted in favour of this new
 	// block.
 	_, err = bc.Cache.Put(
-		*inv, &cache.CacheableBlock{
+		*inv, &neutrino.CacheableBlock{
 			Block: ltcutil.NewBlock(block),
 		},
 	)

@@ -6,6 +6,8 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/lnwire"
+	"github.com/ltcsuite/lnd/zpay32"
+	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/stretchr/testify/require"
 )
@@ -57,9 +59,7 @@ func TestProbabilityExtrapolation(t *testing.T) {
 	// modifications anywhere in the chain of components that is involved in
 	// this test.
 	attempts, err := ctx.testPayment(1)
-	if err != nil {
-		t.Fatalf("payment failed: %v", err)
-	}
+	require.NoError(t, err, "payment failed")
 	if len(attempts) != 5 {
 		t.Fatalf("expected 5 attempts, but needed %v", len(attempts))
 	}
@@ -67,11 +67,12 @@ func TestProbabilityExtrapolation(t *testing.T) {
 	// If we use a static value for the node probability (no extrapolation
 	// of data from other channels), all ten bad channels will be tried
 	// first before switching to the paid channel.
-	ctx.mcCfg.AprioriWeight = 1
-	attempts, err = ctx.testPayment(1)
-	if err != nil {
-		t.Fatalf("payment failed: %v", err)
+	estimator, ok := ctx.mcCfg.Estimator.(*AprioriEstimator)
+	if ok {
+		estimator.AprioriWeight = 1
 	}
+	attempts, err = ctx.testPayment(1)
+	require.NoError(t, err, "payment failed")
 	if len(attempts) != 11 {
 		t.Fatalf("expected 11 attempts, but needed %v", len(attempts))
 	}
@@ -236,6 +237,34 @@ var mppTestCases = []mppSendTestCase{
 		maxParts:     1000,
 		maxShardSize: 10_000,
 	},
+}
+
+// TestBadFirstHopHint tests that a payment with a first hop hint with an
+// invalid channel id still works since the node already knows its channel and
+// doesn't need hints.
+func TestBadFirstHopHint(t *testing.T) {
+	t.Parallel()
+
+	ctx := newIntegratedRoutingContext(t)
+
+	onePathGraph(ctx.graph)
+
+	sourcePubKey, _ := btcec.ParsePubKey(ctx.source.pubkey[:])
+
+	hopHint := zpay32.HopHint{
+		NodeID:                    sourcePubKey,
+		ChannelID:                 66,
+		FeeBaseMSat:               0,
+		FeeProportionalMillionths: 0,
+		CLTVExpiryDelta:           100,
+	}
+
+	ctx.routeHints = [][]zpay32.HopHint{{hopHint}}
+
+	ctx.amt = lnwire.NewMSatFromSatoshis(100)
+	_, err := ctx.testPayment(1)
+
+	require.NoError(t, err, "payment failed")
 }
 
 // TestMppSend tests that a payment can be completed using multiple shards.

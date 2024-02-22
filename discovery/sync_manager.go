@@ -183,6 +183,9 @@ func (m *SyncManager) Start() {
 // Stop stops the SyncManager from performing its duties.
 func (m *SyncManager) Stop() {
 	m.stop.Do(func() {
+		log.Debugf("SyncManager is stopping")
+		defer log.Debugf("SyncManager stopped")
+
 		close(m.quit)
 		m.wg.Wait()
 
@@ -202,8 +205,8 @@ func (m *SyncManager) Stop() {
 // 2. Finding new peers to receive graph updates from to ensure we don't only
 //    receive them from the same set of peers.
 
-// 3. Finding new peers to force a historical sync with to ensure we have as
-//    much of the public network as possible.
+//  3. Finding new peers to force a historical sync with to ensure we have as
+//     much of the public network as possible.
 //
 // NOTE: This must be run as a goroutine.
 func (m *SyncManager) syncerHandler() {
@@ -220,7 +223,7 @@ func (m *SyncManager) syncerHandler() {
 		initialHistoricalSyncer *GossipSyncer
 
 		// initialHistoricalSyncSignal is a signal that will fire once
-		// the intiial historical sync has been completed. This is
+		// the initial historical sync has been completed. This is
 		// crucial to ensure that another historical sync isn't
 		// attempted just because the initialHistoricalSyncer was
 		// disconnected.
@@ -232,7 +235,7 @@ func (m *SyncManager) syncerHandler() {
 		initialHistoricalSyncSignal = s.ResetSyncedSignal()
 
 		// Restart the timer for our new historical sync peer. This will
-		// ensure that all initial syncers recevie an equivalent
+		// ensure that all initial syncers receive an equivalent
 		// duration before attempting the next sync. Without doing so we
 		// might attempt two historical sync back to back if a peer
 		// disconnects just before the ticker fires.
@@ -362,7 +365,7 @@ func (m *SyncManager) syncerHandler() {
 			// Otherwise, our initialHistoricalSyncer corresponds to
 			// the peer being disconnected, so we'll have to find a
 			// replacement.
-			log.Debug("Finding replacement for intitial " +
+			log.Debug("Finding replacement for initial " +
 				"historical sync")
 
 			s := m.forceHistoricalSync()

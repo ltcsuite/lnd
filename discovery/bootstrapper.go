@@ -277,7 +277,7 @@ func (c *ChannelGraphBootstrapper) Name() string {
 // interface which implements peer bootstrapping via a special DNS seed as
 // defined in BOLT-0010. For further details concerning Lightning's current DNS
 // boot strapping protocol, see this link:
-//     * https://github.com/lightningnetwork/lightning-rfc/blob/master/10-dns-bootstrap.md
+//   - https://github.com/lightningnetwork/lightning-rfc/blob/master/10-dns-bootstrap.md
 type DNSSeedBootstrapper struct {
 	// dnsSeeds is an array of two tuples we'll use for bootstrapping. The
 	// first item in the tuple is the primary host we'll use to attempt the
@@ -286,7 +286,7 @@ type DNSSeedBootstrapper struct {
 	// in the tuple is a special A record that we'll query in order to
 	// receive the IP address of the current authoritative DNS server for
 	// the network seed.
-	dnsSeeds [][3]string
+	dnsSeeds [][2]string
 	net      tor.Net
 
 	// timeout is the maximum amount of time a dial will wait for a connect to
@@ -306,14 +306,15 @@ var _ NetworkPeerBootstrapper = (*ChannelGraphBootstrapper)(nil)
 // receiving the UDP response. The second host should return a single A record
 // with the IP address of the authoritative name server.
 func NewDNSSeedBootstrapper(
-	seeds [][3]string, net tor.Net,
+	seeds [][2]string, net tor.Net,
 	timeout time.Duration) NetworkPeerBootstrapper {
+
 	return &DNSSeedBootstrapper{dnsSeeds: seeds, net: net, timeout: timeout}
 }
 
 // fallBackSRVLookup attempts to manually query for SRV records we need to
 // properly bootstrap. We do this by querying the special record at the "soa."
-// sub-domain of supporting DNS servers. The retuned IP address will be the IP
+// sub-domain of supporting DNS servers. The returned IP address will be the IP
 // address of the authoritative DNS server. Once we have this IP address, we'll
 // connect manually over TCP to request the SRV record. This is necessary as
 // the records we return are currently too large for a class of resolvers,
@@ -361,7 +362,7 @@ func (d *DNSSeedBootstrapper) fallBackSRVLookup(soaShim string,
 			"received: %v", resp.Rcode)
 	}
 
-	// Retrieve the RR(s) of the Answer section, and covert to the format
+	// Retrieve the RR(s) of the Answer section, and convert to the format
 	// that net.LookupSRV would normally return.
 	var rrs []*net.SRV
 	for _, rr := range resp.Answer {
@@ -487,9 +488,7 @@ search:
 			if err != nil {
 				return nil, err
 			}
-			nodeKey, err := btcec.ParsePubKey(
-				nodeBytes,
-			)
+			nodeKey, err := btcec.ParsePubKey(nodeBytes)
 			if err != nil {
 				return nil, err
 			}

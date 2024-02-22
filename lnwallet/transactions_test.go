@@ -10,8 +10,8 @@ import (
 	"io"
 	"io/ioutil"
 	"net"
-	"os"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,8 +60,8 @@ type testContext struct {
 
 // newTestContext populates a new testContext struct with the constant
 // parameters defined in the BOLT 03 spec.
-func newTestContext(t *testing.T) (tc *testContext) {
-	tc = new(testContext)
+func newTestContext(t *testing.T) *testContext {
+	tc := new(testContext)
 
 	priv := func(v string) *btcec.PrivateKey {
 		k, err := privkeyFromHex(v)
@@ -87,48 +87,87 @@ func newTestContext(t *testing.T) (tc *testContext) {
 
 	tc.localCsvDelay = 144
 	tc.fundingAmount = 10000000
-	tc.dustLimit = 546
+	tc.dustLimit = 5460
 	tc.commitHeight = 42
 	tc.t = t
 
 	return tc
 }
 
-var testHtlcs = []struct {
+type htlc struct {
 	incoming bool
 	amount   lnwire.MilliSatoshi
 	expiry   uint32
 	preimage string
-}{
+}
+
+var testHtlcsSet1 = []htlc{
+	// htlc 0.
 	{
 		incoming: true,
 		amount:   1000000,
 		expiry:   500,
-		preimage: "0000000000000000000000000000000000000000000000000000000000000000",
+		preimage: "0000000000000000000000000000000000000000000000000" +
+			"000000000000000",
 	},
+	// htlc 1.
 	{
 		incoming: true,
 		amount:   2000000,
 		expiry:   501,
-		preimage: "0101010101010101010101010101010101010101010101010101010101010101",
+		preimage: "0101010101010101010101010101010101010101010101010" +
+			"101010101010101",
 	},
+	// htlc 2.
 	{
 		incoming: false,
 		amount:   2000000,
 		expiry:   502,
-		preimage: "0202020202020202020202020202020202020202020202020202020202020202",
+		preimage: "0202020202020202020202020202020202020202020202020" +
+			"202020202020202",
 	},
+	// htlc 3.
 	{
 		incoming: false,
 		amount:   3000000,
 		expiry:   503,
-		preimage: "0303030303030303030303030303030303030303030303030303030303030303",
+		preimage: "03030303030303030303030303030303030303030303030303" +
+			"03030303030303",
 	},
+	// htlc 4.
 	{
 		incoming: true,
 		amount:   4000000,
 		expiry:   504,
-		preimage: "0404040404040404040404040404040404040404040404040404040404040404",
+		preimage: "0404040404040404040404040404040404040404040404040" +
+			"404040404040404",
+	},
+}
+
+var testHtlcsSet2 = []htlc{
+	// htlc 1.
+	{
+		incoming: true,
+		amount:   2000000,
+		expiry:   501,
+		preimage: "01010101010101010101010101010101010101010101010101" +
+			"01010101010101",
+	},
+	// htlc 5.
+	{
+		incoming: false,
+		amount:   5000000,
+		expiry:   506,
+		preimage: "05050505050505050505050505050505050505050505050505" +
+			"05050505050505",
+	},
+	// htlc 6.
+	{
+		incoming: false,
+		amount:   5000001,
+		expiry:   505,
+		preimage: "05050505050505050505050505050505050505050505050505" +
+			"05050505050505",
 	},
 }
 
@@ -139,10 +178,11 @@ type htlcDesc struct {
 }
 
 type testCase struct {
-	Name          string
-	LocalBalance  lnwire.MilliSatoshi
-	RemoteBalance lnwire.MilliSatoshi
-	FeePerKw      ltcutil.Amount
+	Name              string
+	LocalBalance      lnwire.MilliSatoshi
+	RemoteBalance     lnwire.MilliSatoshi
+	FeePerKw          ltcutil.Amount
+	DustLimitSatoshis ltcutil.Amount
 
 	// UseTestHtlcs defined whether the fixed set of test htlc should be
 	// added to the channel before checking the commitment assertions.
@@ -170,9 +210,17 @@ func TestCommitmentAndHTLCTransactions(t *testing.T) {
 			jsonFile: "test_vectors_legacy.json",
 		},
 		{
-			name:     "anchors",
-			chanType: channeldb.SingleFunderTweaklessBit | channeldb.AnchorOutputsBit,
+			name: "anchors",
+			chanType: channeldb.SingleFunderTweaklessBit |
+				channeldb.AnchorOutputsBit,
 			jsonFile: "test_vectors_anchors.json",
+		},
+		{
+			name: "zero fee htlc tx",
+			chanType: channeldb.SingleFunderTweaklessBit |
+				channeldb.AnchorOutputsBit |
+				channeldb.ZeroHtlcTxFeeBit,
+			jsonFile: "test_vectors_zero_fee_htlc_tx.json",
 		},
 	}
 
@@ -187,25 +235,28 @@ func TestCommitmentAndHTLCTransactions(t *testing.T) {
 		err = json.Unmarshal(jsonText, &testCases)
 		require.NoError(t, err)
 
-		t.Run(set.name, func(t *testing.T) {
-			for _, test := range testCases {
-				test := test
+		for _, test := range testCases {
+			test := test
+			name := fmt.Sprintf("%s-%s", set.name, test.Name)
+
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 
 				t.Run(test.Name, func(t *testing.T) {
 					testVectors(t, set.chanType, test)
 				})
-			}
-		})
+			})
+		}
 	}
 }
 
 // addTestHtlcs adds the test vector htlcs to the update logs of the local and
 // remote node.
-func addTestHtlcs(t *testing.T, remote,
-	local *LightningChannel) map[[20]byte]lntypes.Preimage {
+func addTestHtlcs(t *testing.T, remote, local *LightningChannel,
+	htlcSet []htlc) map[[20]byte]lntypes.Preimage {
 
 	hash160map := make(map[[20]byte]lntypes.Preimage)
-	for _, htlc := range testHtlcs {
+	for _, htlc := range htlcSet {
 		preimage, err := lntypes.MakePreimageFromStr(htlc.preimage)
 		require.NoError(t, err)
 
@@ -252,6 +303,18 @@ func addTestHtlcs(t *testing.T, remote,
 func testVectors(t *testing.T, chanType channeldb.ChannelType, test testCase) {
 	tc := newTestContext(t)
 
+	// Determine which htlc set to use.
+	testHtlcs := testHtlcsSet1
+	if strings.Contains(test.Name, "same amount and preimage") {
+		testHtlcs = testHtlcsSet2
+	}
+
+	// If the test specifies a dust limit, then use it instead of the
+	// default.
+	if test.DustLimitSatoshis != 0 {
+		tc.dustLimit = test.DustLimitSatoshis
+	}
+
 	// Balances in the test vectors are before subtraction of in-flight
 	// htlcs. Convert to spendable balances.
 	remoteBalance := test.RemoteBalance
@@ -267,51 +330,65 @@ func testVectors(t *testing.T, chanType channeldb.ChannelType, test testCase) {
 		}
 	}
 
+	// Assert that the remote and local balances add up to the channel
+	// capacity.
+	require.EqualValues(t, lnwire.NewMSatFromSatoshis(tc.fundingAmount),
+		remoteBalance+localBalance)
+
 	// Set up a test channel on which the test commitment transaction is
 	// going to be produced.
-	remoteChannel, localChannel, cleanUp := createTestChannelsForVectors(
+	remoteChannel, localChannel := createTestChannelsForVectors(
 		tc,
 		chanType, test.FeePerKw,
 		remoteBalance.ToSatoshis(),
 		localBalance.ToSatoshis(),
 	)
-	defer cleanUp()
 
 	// Add htlcs (if any) to the update logs of both sides and save a hash
 	// map that allows us to identify the htlcs in the scripts later on and
 	// retrieve the corresponding preimage.
 	var hash160map map[[20]byte]lntypes.Preimage
 	if test.UseTestHtlcs {
-		hash160map = addTestHtlcs(t, remoteChannel, localChannel)
+		hash160map = addTestHtlcs(
+			t, remoteChannel, localChannel, testHtlcs,
+		)
 	}
 
 	// Execute commit dance to arrive at the point where the local node has
 	// received the test commitment and the remote signature.
-	localSig, localHtlcSigs, _, err := localChannel.SignNextCommitment()
+	localNewCommit, err := localChannel.SignNextCommitment()
 	require.NoError(t, err, "local unable to sign commitment")
 
-	err = remoteChannel.ReceiveNewCommitment(localSig, localHtlcSigs)
+	err = remoteChannel.ReceiveNewCommitment(localNewCommit.CommitSigs)
 	require.NoError(t, err)
 
-	revMsg, _, err := remoteChannel.RevokeCurrentCommitment()
+	revMsg, _, _, err := remoteChannel.RevokeCurrentCommitment()
 	require.NoError(t, err)
 
 	_, _, _, _, err = localChannel.ReceiveRevocation(revMsg)
 	require.NoError(t, err)
 
-	remoteSig, remoteHtlcSigs, _, err := remoteChannel.SignNextCommitment()
+	remoteNewCommit, err := remoteChannel.SignNextCommitment()
 	require.NoError(t, err)
 
-	require.Equal(t, test.RemoteSigHex, hex.EncodeToString(remoteSig.ToSignatureBytes()))
+	require.Equal(
+		t, test.RemoteSigHex,
+		hex.EncodeToString(
+			remoteNewCommit.CommitSig.ToSignatureBytes(),
+		),
+	)
 
-	for i, sig := range remoteHtlcSigs {
-		require.Equal(t, test.HtlcDescs[i].RemoteSigHex, hex.EncodeToString(sig.ToSignatureBytes()))
+	for i, sig := range remoteNewCommit.HtlcSigs {
+		require.Equal(
+			t, test.HtlcDescs[i].RemoteSigHex,
+			hex.EncodeToString(sig.ToSignatureBytes()),
+		)
 	}
 
-	err = localChannel.ReceiveNewCommitment(remoteSig, remoteHtlcSigs)
+	err = localChannel.ReceiveNewCommitment(remoteNewCommit.CommitSigs)
 	require.NoError(t, err)
 
-	_, _, err = localChannel.RevokeCurrentCommitment()
+	_, _, _, err = localChannel.RevokeCurrentCommitment()
 	require.NoError(t, err)
 
 	// Now the local node force closes the channel so that we can inspect
@@ -323,7 +400,10 @@ func testVectors(t *testing.T, chanType channeldb.ChannelType, test testCase) {
 	var txBytes bytes.Buffer
 	require.NoError(t, forceCloseSum.CloseTx.Serialize(&txBytes))
 
-	require.Equal(t, test.ExpectedCommitmentTxHex, hex.EncodeToString(txBytes.Bytes()))
+	require.Equal(
+		t, test.ExpectedCommitmentTxHex,
+		hex.EncodeToString(txBytes.Bytes()),
+	)
 
 	// Obtain the second level transactions that the local node's channel
 	// state machine has produced. Store them in a map indexed by commit tx
@@ -374,27 +454,6 @@ func testVectors(t *testing.T, chanType channeldb.ChannelType, test testCase) {
 			hex.EncodeToString(b.Bytes()),
 		)
 	}
-}
-
-// htlcViewFromHTLCs constructs an htlcView of PaymentDescriptors from a slice
-// of channeldb.HTLC structs.
-func htlcViewFromHTLCs(htlcs []channeldb.HTLC) *htlcView {
-	var theHTLCView htlcView
-	for _, htlc := range htlcs {
-		paymentDesc := &PaymentDescriptor{
-			RHash:   htlc.RHash,
-			Timeout: htlc.RefundTimeout,
-			Amount:  htlc.Amt,
-		}
-		if htlc.Incoming {
-			theHTLCView.theirUpdates =
-				append(theHTLCView.theirUpdates, paymentDesc)
-		} else {
-			theHTLCView.ourUpdates =
-				append(theHTLCView.ourUpdates, paymentDesc)
-		}
-	}
-	return &theHTLCView
 }
 
 func TestCommitTxStateHint(t *testing.T) {
@@ -495,9 +554,7 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	// doesn't need to exist, as we'll only be validating spending from the
 	// transaction that references this.
 	txid, err := chainhash.NewHash(testHdSeed.CloneBytes())
-	if err != nil {
-		t.Fatalf("unable to create txid: %v", err)
-	}
+	require.NoError(t, err, "unable to create txid")
 	fundingOut := &wire.OutPoint{
 		Hash:  *txid,
 		Index: 50,
@@ -538,9 +595,9 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	remoteCommitTweak := input.SingleTweakBytes(commitPoint, aliceKeyPub)
 	localCommitTweak := input.SingleTweakBytes(commitPoint, bobKeyPub)
 
-	aliceSelfOutputSigner := &input.MockSigner{
-		Privkeys: []*btcec.PrivateKey{aliceKeyPriv},
-	}
+	aliceSelfOutputSigner := input.NewMockSigner(
+		[]*btcec.PrivateKey{aliceKeyPriv}, nil,
+	)
 
 	// Calculate the dust limit we'll use for the test.
 	dustLimit := DustLimitForSize(input.UnknownWitnessSize)
@@ -585,9 +642,7 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	// We're testing an uncooperative close, output sweep, so construct a
 	// transaction which sweeps the funds to a random address.
 	targetOutput, err := input.CommitScriptUnencumbered(aliceKeyPub)
-	if err != nil {
-		t.Fatalf("unable to create target output: %v", err)
-	}
+	require.NoError(t, err, "unable to create target output")
 	sweepTx := wire.NewMsgTx(2)
 	sweepTx.AddTxIn(wire.NewTxIn(&wire.OutPoint{
 		Hash:  commitmentTx.TxHash(),
@@ -602,9 +657,7 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	delayScript, err := input.CommitScriptToSelf(
 		csvTimeout, aliceDelayKey, revokePubKey,
 	)
-	if err != nil {
-		t.Fatalf("unable to generate alice delay script: %v", err)
-	}
+	require.NoError(t, err, "unable to generate alice delay script")
 	sweepTx.TxIn[0].Sequence = input.LockTimeToSequence(false, csvTimeout)
 	signDesc := &input.SignDescriptor{
 		WitnessScript: delayScript,
@@ -612,7 +665,7 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 			PubKey: aliceKeyPub,
 		},
 		SingleTweak: remoteCommitTweak,
-		SigHashes:   txscript.NewTxSigHashes(sweepTx),
+		SigHashes:   input.NewTxSigHashesV0Only(sweepTx),
 		Output: &wire.TxOut{
 			Value: int64(channelBalance),
 		},
@@ -622,21 +675,19 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	aliceWitnessSpend, err := input.CommitSpendTimeout(
 		aliceSelfOutputSigner, signDesc, sweepTx,
 	)
-	if err != nil {
-		t.Fatalf("unable to generate delay commit spend witness: %v", err)
-	}
+	require.NoError(t, err, "unable to generate delay commit spend witness")
 	sweepTx.TxIn[0].Witness = aliceWitnessSpend
-	vm, err := txscript.NewEngine(delayOutput.PkScript,
-		sweepTx, 0, txscript.StandardVerifyFlags, nil,
-		nil, int64(channelBalance))
-	if err != nil {
-		t.Fatalf("unable to create engine: %v", err)
-	}
+	vm, err := txscript.NewEngine(
+		delayOutput.PkScript, sweepTx, 0, txscript.StandardVerifyFlags,
+		nil, nil, int64(channelBalance),
+		txscript.NewCannedPrevOutputFetcher(nil, 0),
+	)
+	require.NoError(t, err, "unable to create engine")
 	if err := vm.Execute(); err != nil {
 		t.Fatalf("spend from delay output is invalid: %v", err)
 	}
 
-	localSigner := &input.MockSigner{Privkeys: []*btcec.PrivateKey{bobKeyPriv}}
+	localSigner := input.NewMockSigner([]*btcec.PrivateKey{bobKeyPriv}, nil)
 
 	// Next, we'll test bob spending with the derived revocation key to
 	// simulate the scenario when Alice broadcasts this commitment
@@ -647,7 +698,7 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 		},
 		DoubleTweak:   commitSecret,
 		WitnessScript: delayScript,
-		SigHashes:     txscript.NewTxSigHashes(sweepTx),
+		SigHashes:     input.NewTxSigHashesV0Only(sweepTx),
 		Output: &wire.TxOut{
 			Value: int64(channelBalance),
 		},
@@ -656,16 +707,14 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	}
 	bobWitnessSpend, err := input.CommitSpendRevoke(localSigner, signDesc,
 		sweepTx)
-	if err != nil {
-		t.Fatalf("unable to generate revocation witness: %v", err)
-	}
+	require.NoError(t, err, "unable to generate revocation witness")
 	sweepTx.TxIn[0].Witness = bobWitnessSpend
-	vm, err = txscript.NewEngine(delayOutput.PkScript,
-		sweepTx, 0, txscript.StandardVerifyFlags, nil,
-		nil, int64(channelBalance))
-	if err != nil {
-		t.Fatalf("unable to create engine: %v", err)
-	}
+	vm, err = txscript.NewEngine(
+		delayOutput.PkScript, sweepTx, 0, txscript.StandardVerifyFlags,
+		nil, nil, int64(channelBalance),
+		txscript.NewCannedPrevOutputFetcher(nil, 0),
+	)
+	require.NoError(t, err, "unable to create engine")
 	if err := vm.Execute(); err != nil {
 		t.Fatalf("revocation spend is invalid: %v", err)
 	}
@@ -683,15 +732,13 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	// Finally, we test bob sweeping his output as normal in the case that
 	// Alice broadcasts this commitment transaction.
 	bobScriptP2WKH, err := input.CommitScriptUnencumbered(bobPayKey)
-	if err != nil {
-		t.Fatalf("unable to create bob p2wkh script: %v", err)
-	}
+	require.NoError(t, err, "unable to create bob p2wkh script")
 	signDesc = &input.SignDescriptor{
 		KeyDesc: keychain.KeyDescriptor{
 			PubKey: bobKeyPub,
 		},
 		WitnessScript: bobScriptP2WKH,
-		SigHashes:     txscript.NewTxSigHashes(sweepTx),
+		SigHashes:     input.NewTxSigHashesV0Only(sweepTx),
 		Output: &wire.TxOut{
 			Value:    int64(channelBalance),
 			PkScript: bobScriptP2WKH,
@@ -705,18 +752,15 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	bobRegularSpend, err := input.CommitSpendNoDelay(
 		localSigner, signDesc, sweepTx, tweakless,
 	)
-	if err != nil {
-		t.Fatalf("unable to create bob regular spend: %v", err)
-	}
+	require.NoError(t, err, "unable to create bob regular spend")
 	sweepTx.TxIn[0].Witness = bobRegularSpend
 	vm, err = txscript.NewEngine(
 		regularOutput.PkScript,
 		sweepTx, 0, txscript.StandardVerifyFlags, nil,
 		nil, int64(channelBalance),
+		txscript.NewCannedPrevOutputFetcher(bobScriptP2WKH, 0),
 	)
-	if err != nil {
-		t.Fatalf("unable to create engine: %v", err)
-	}
+	require.NoError(t, err, "unable to create engine")
 	if err := vm.Execute(); err != nil {
 		t.Fatalf("bob p2wkh spend is invalid: %v", err)
 	}
@@ -726,10 +770,10 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 // the commitment transaction.
 //
 // The following spending cases are covered by this test:
-//   * Alice's spend from the delayed output on her commitment transaction.
-//   * Bob's spend from Alice's delayed output when she broadcasts a revoked
+//   - Alice's spend from the delayed output on her commitment transaction.
+//   - Bob's spend from Alice's delayed output when she broadcasts a revoked
 //     commitment transaction.
-//   * Bob's spend from his unencumbered output within Alice's commitment
+//   - Bob's spend from his unencumbered output within Alice's commitment
 //     transaction.
 func TestCommitmentSpendValidation(t *testing.T) {
 	t.Parallel()
@@ -762,7 +806,7 @@ func (p *mockProducer) Encode(w io.Writer) error {
 // test channel that is used to verify the test vectors.
 func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelType,
 	feeRate ltcutil.Amount, remoteBalance, localBalance ltcutil.Amount) (
-	*LightningChannel, *LightningChannel, func()) {
+	*LightningChannel, *LightningChannel) {
 
 	t := tc.t
 
@@ -861,16 +905,10 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 	)
 
 	// Create temporary databases.
-	remotePath, err := ioutil.TempDir("", "remotedb")
+	dbRemote, err := channeldb.Open(t.TempDir())
 	require.NoError(t, err)
 
-	dbRemote, err := channeldb.Open(remotePath)
-	require.NoError(t, err)
-
-	localPath, err := ioutil.TempDir("", "localdb")
-	require.NoError(t, err)
-
-	dbLocal, err := channeldb.Open(localPath)
+	dbLocal, err := channeldb.Open(t.TempDir())
 	require.NoError(t, err)
 
 	// Create the initial commitment transactions for the channel.
@@ -964,15 +1002,15 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 	}
 
 	// Create mock signers that can sign for the keys that are used.
-	localSigner := &input.MockSigner{Privkeys: []*btcec.PrivateKey{
+	localSigner := input.NewMockSigner([]*btcec.PrivateKey{
 		tc.localPaymentBasepointSecret, tc.localDelayedPaymentBasepointSecret,
 		tc.localFundingPrivkey, localDummy1, localDummy2,
-	}}
+	}, nil)
 
-	remoteSigner := &input.MockSigner{Privkeys: []*btcec.PrivateKey{
+	remoteSigner := input.NewMockSigner([]*btcec.PrivateKey{
 		tc.remoteFundingPrivkey, tc.remoteRevocationBasepointSecret,
 		tc.remotePaymentBasepointSecret, remoteDummy1, remoteDummy2,
-	}}
+	}, nil)
 
 	remotePool := NewSigPool(1, remoteSigner)
 	channelRemote, err := NewLightningChannel(
@@ -1020,16 +1058,13 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 
 	// Return a clean up function that stops goroutines and removes the test
 	// databases.
-	cleanUpFunc := func() {
+	t.Cleanup(func() {
 		dbLocal.Close()
 		dbRemote.Close()
 
-		os.RemoveAll(localPath)
-		os.RemoveAll(remotePath)
-
 		require.NoError(t, remotePool.Stop())
 		require.NoError(t, localPool.Stop())
-	}
+	})
 
-	return channelRemote, channelLocal, cleanUpFunc
+	return channelRemote, channelLocal
 }

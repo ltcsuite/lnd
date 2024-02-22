@@ -6,7 +6,6 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/lnwire"
-
 	"github.com/ltcsuite/lnd/routing/route"
 )
 

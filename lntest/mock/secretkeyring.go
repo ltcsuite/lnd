@@ -4,7 +4,9 @@ import (
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/btcec/v2/ecdsa"
+	"github.com/ltcsuite/ltcd/btcec/v2/schnorr"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/txscript"
 )
 
 // SecretKeyRing is a mock implementation of the SecretKeyRing interface.
@@ -68,4 +70,24 @@ func (s *SecretKeyRing) SignMessageCompact(_ keychain.KeyLocator,
 		digest = chainhash.HashB(msg)
 	}
 	return ecdsa.SignCompact(s.RootKey, digest, true)
+}
+
+// SignMessageSchnorr signs the passed message and ignores the KeyDescriptor.
+func (s *SecretKeyRing) SignMessageSchnorr(_ keychain.KeyLocator,
+	msg []byte, doubleHash bool, taprootTweak []byte) (*schnorr.Signature,
+	error) {
+
+	var digest []byte
+	if doubleHash {
+		digest = chainhash.DoubleHashB(msg)
+	} else {
+		digest = chainhash.HashB(msg)
+	}
+
+	privKey := s.RootKey
+	if len(taprootTweak) > 0 {
+		privKey = txscript.TweakTaprootPrivKey(*privKey, taprootTweak)
+	}
+
+	return schnorr.Sign(privKey, digest)
 }

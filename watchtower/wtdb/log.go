@@ -3,6 +3,13 @@ package wtdb
 import (
 	"github.com/btcsuite/btclog"
 	"github.com/ltcsuite/lnd/build"
+	"github.com/ltcsuite/lnd/watchtower/wtdb/migration1"
+	"github.com/ltcsuite/lnd/watchtower/wtdb/migration2"
+	"github.com/ltcsuite/lnd/watchtower/wtdb/migration3"
+	"github.com/ltcsuite/lnd/watchtower/wtdb/migration4"
+	"github.com/ltcsuite/lnd/watchtower/wtdb/migration5"
+	"github.com/ltcsuite/lnd/watchtower/wtdb/migration6"
+	"github.com/ltcsuite/lnd/watchtower/wtdb/migration7"
 )
 
 // log is a logger that is initialized with no output filters.  This
@@ -26,6 +33,13 @@ func DisableLog() {
 // using btclog.
 func UseLogger(logger btclog.Logger) {
 	log = logger
+	migration1.UseLogger(logger)
+	migration2.UseLogger(logger)
+	migration3.UseLogger(logger)
+	migration4.UseLogger(logger)
+	migration5.UseLogger(logger)
+	migration6.UseLogger(logger)
+	migration7.UseLogger(logger)
 }
 
 // logClosure is used to provide a closure over expensive logging operations so

@@ -32,12 +32,12 @@ _testmain.go
 /lncli-itest
 
 # Integration test log files
-lntest/itest/*.log
-lntest/itest/.backendlogs
-lntest/itest/.minerlogs
-lntest/itest/lnd-itest
-lntest/itest/btcd-itest
-lntest/itest/.logs-*
+itest/*.log
+itest/.backendlogs
+itest/.minerlogs
+itest/lnd-itest
+itest/ltcd-itest
+itest/.logs-*
 
 cmd/cmd
 *.key
@@ -48,12 +48,6 @@ cmd/lncli/lncli
 # Files from mobile build.
 mobile/build
 mobile/*_generated.go
-
-# Files created for fuzzing.
-fuzz/**/*-fuzz.zip
-fuzz/**/corpus
-fuzz/**/crashers
-fuzz/**/suppressions
 
 # vim
 *.swp
@@ -74,3 +68,10 @@ profile.tmp
 
 # Coverage test
 coverage.txt
+
+# Visual Studio cache/options directory
+.vs/
+
+# Release build directory (to avoid build.vcs.modified Golang build tag to be
+# set to true by having untracked files in the working directory).
+/lnd-*/

@@ -153,7 +153,6 @@ func TestMonitorChannelEvents(t *testing.T) {
 
 		testEventStore(t, gen, peer1, 1)
 	})
-
 }
 
 // testEventStore creates a new test contexts, generates a set of events for it

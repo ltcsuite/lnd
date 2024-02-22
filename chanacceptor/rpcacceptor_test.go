@@ -18,7 +18,7 @@ import (
 func TestValidateAcceptorResponse(t *testing.T) {
 	var (
 		customError = errors.New("custom error")
-		validAddr   = "bcrt1qwrmq9uca0t3dy9t9wtuq5tm4405r7tfzyqn9pp"
+		validAddr   = "tltc1qwrmq9uca0t3dy9t9wtuq5tm4405r7tfzlpgkxp"
 		addr, _     = chancloser.ParseUpfrontShutdownAddress(
 			validAddr, &chaincfg.TestNet4Params,
 		)

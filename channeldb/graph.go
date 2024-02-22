@@ -14,7 +14,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ltcsuite/lnd/aliasmgr"
 	"github.com/ltcsuite/lnd/batch"
+	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/routing/route"
@@ -190,10 +192,12 @@ type ChannelGraph struct {
 // returned instance has its own unique reject cache and channel cache.
 func NewChannelGraph(db kvdb.Backend, rejectCacheSize, chanCacheSize int,
 	batchCommitInterval time.Duration, preAllocCacheNumNodes int,
-	useGraphCache bool) (*ChannelGraph, error) {
+	useGraphCache, noMigrations bool) (*ChannelGraph, error) {
 
-	if err := initChannelGraph(db); err != nil {
-		return nil, err
+	if !noMigrations {
+		if err := initChannelGraph(db); err != nil {
+			return nil, err
+		}
 	}
 
 	g := &ChannelGraph{
@@ -519,7 +523,6 @@ func (c *ChannelGraph) FetchNodeFeatures(
 	// Fallback that uses the database.
 	targetNode, err := c.FetchLightningNode(node)
 	switch err {
-
 	// If the node exists and has features, return them directly.
 	case nil:
 		return targetNode.Features, nil
@@ -591,7 +594,6 @@ func (c *ChannelGraph) ForEachNodeCached(cb func(node route.Vertex,
 			channels[e.ChannelID] = directedChannel
 
 			return nil
-
 		})
 		if err != nil {
 			return err
@@ -653,7 +655,9 @@ func (c *ChannelGraph) DisabledChannelIDs() ([]uint64, error) {
 //
 // TODO(roasbeef): add iterator interface to allow for memory efficient graph
 // traversal when graph gets mega
-func (c *ChannelGraph) ForEachNode(cb func(kvdb.RTx, *LightningNode) error) error { // nolint:interfacer
+func (c *ChannelGraph) ForEachNode(
+	cb func(kvdb.RTx, *LightningNode) error) error {
+
 	traversal := func(tx kvdb.RTx) error {
 		// First grab the nodes bucket which stores the mapping from
 		// pubKey to node information.
@@ -936,7 +940,6 @@ func (c *ChannelGraph) deleteLightningNode(nodes kvdb.RwBucket,
 	}
 
 	if err := nodes.Delete(compressedPubKey); err != nil {
-
 		return err
 	}
 
@@ -1054,7 +1057,6 @@ func (c *ChannelGraph) addChannelEdge(tx kvdb.RwTx, edge *ChannelEdgeInfo) error
 		if err != nil {
 			return fmt.Errorf("unable to create shell node "+
 				"for: %x", edge.NodeKey1Bytes)
-
 		}
 	case node1Err != nil:
 		return err
@@ -1071,7 +1073,6 @@ func (c *ChannelGraph) addChannelEdge(tx kvdb.RwTx, edge *ChannelEdgeInfo) error
 		if err != nil {
 			return fmt.Errorf("unable to create shell node "+
 				"for: %x", edge.NodeKey2Bytes)
-
 		}
 	case node2Err != nil:
 		return err
@@ -1086,11 +1087,12 @@ func (c *ChannelGraph) addChannelEdge(tx kvdb.RwTx, edge *ChannelEdgeInfo) error
 
 	// Mark edge policies for both sides as unknown. This is to enable
 	// efficient incoming channel lookup for a node.
-	for _, key := range []*[33]byte{&edge.NodeKey1Bytes,
-		&edge.NodeKey2Bytes} {
-
-		err := putChanEdgePolicyUnknown(edges, edge.ChannelID,
-			key[:])
+	keys := []*[33]byte{
+		&edge.NodeKey1Bytes,
+		&edge.NodeKey2Bytes,
+	}
+	for _, key := range keys {
+		err := putChanEdgePolicyUnknown(edges, edge.ChannelID, key[:])
 		if err != nil {
 			return err
 		}
@@ -1525,12 +1527,10 @@ func (c *ChannelGraph) DisconnectBlockAtHeight(height uint32) ([]*ChannelEdgeInf
 		BlockHeight: height,
 	}
 
-	// Delete everything after this height from the db.
-	endShortChanID := lnwire.ShortChannelID{
-		BlockHeight: math.MaxUint32 & 0x00ffffff,
-		TxIndex:     math.MaxUint32 & 0x00ffffff,
-		TxPosition:  math.MaxUint16,
-	}
+	// Delete everything after this height from the db up until the
+	// SCID alias range.
+	endShortChanID := aliasmgr.StartingAlias
+
 	// The block height will be the 3 first bytes of the channel IDs.
 	var chanIDStart [8]byte
 	byteOrder.PutUint64(chanIDStart[:], startShortChanID.ToUint64())
@@ -1569,11 +1569,14 @@ func (c *ChannelGraph) DisconnectBlockAtHeight(height uint32) ([]*ChannelEdgeInf
 		// found edge.
 		// NOTE: we must delete the edges after the cursor loop, since
 		// modifying the bucket while traversing is not safe.
+		// NOTE: We use a < comparison in bytes.Compare instead of <=
+		// so that the StartingAlias itself isn't deleted.
 		var keys [][]byte
 		cursor := edgeIndex.ReadWriteCursor()
-		for k, v := cursor.Seek(chanIDStart[:]); k != nil &&
-			bytes.Compare(k, chanIDEnd[:]) <= 0; k, v = cursor.Next() {
 
+		//nolint:lll
+		for k, v := cursor.Seek(chanIDStart[:]); k != nil &&
+			bytes.Compare(k, chanIDEnd[:]) < 0; k, v = cursor.Next() {
 			edgeInfoReader := bytes.NewReader(v)
 			edgeInfo, err := deserializeChanEdgeInfo(edgeInfoReader)
 			if err != nil {
@@ -1692,8 +1695,9 @@ func (c *ChannelGraph) PruneTip() (*chainhash.Hash, uint32, error) {
 // database, then ErrEdgeNotFound will be returned. If strictZombiePruning is
 // true, then when we mark these edges as zombies, we'll set up the keys such
 // that we require the node that failed to send the fresh update to be the one
-// that resurrects the channel from its zombie state.
-func (c *ChannelGraph) DeleteChannelEdges(strictZombiePruning bool,
+// that resurrects the channel from its zombie state. The markZombie bool
+// denotes whether or not to mark the channel as a zombie.
+func (c *ChannelGraph) DeleteChannelEdges(strictZombiePruning, markZombie bool,
 	chanIDs ...uint64) error {
 
 	// TODO(roasbeef): possibly delete from node bucket if node has no more
@@ -1730,7 +1734,7 @@ func (c *ChannelGraph) DeleteChannelEdges(strictZombiePruning bool,
 			byteOrder.PutUint64(rawChanID[:], chanID)
 			err := c.delChannelEdge(
 				edges, edgeIndex, chanIndex, zombieIndex, nodes,
-				rawChanID[:], true, strictZombiePruning,
+				rawChanID[:], markZombie, strictZombiePruning,
 			)
 			if err != nil {
 				return err
@@ -2167,8 +2171,18 @@ func (c *ChannelGraph) FilterChannelRange(startHeight,
 
 		// We'll now iterate through the database, and find each
 		// channel ID that resides within the specified range.
-		for k, _ := cursor.Seek(chanIDStart[:]); k != nil &&
-			bytes.Compare(k, chanIDEnd[:]) <= 0; k, _ = cursor.Next() {
+		for k, v := cursor.Seek(chanIDStart[:]); k != nil &&
+			bytes.Compare(k, chanIDEnd[:]) <= 0; k, v = cursor.Next() {
+			// Don't send alias SCIDs during gossip sync.
+			edgeReader := bytes.NewReader(v)
+			edgeInfo, err := deserializeChanEdgeInfo(edgeReader)
+			if err != nil {
+				return err
+			}
+
+			if edgeInfo.AuthProof == nil {
+				continue
+			}
 
 			// This channel ID rests within the target range, so
 			// we'll add it to our returned set.
@@ -2428,7 +2442,6 @@ func makeZombiePubkeys(info *ChannelEdgeInfo,
 	e1, e2 *ChannelEdgePolicy) ([33]byte, [33]byte) {
 
 	switch {
-
 	// If we don't have either edge policy, we'll return both pubkeys so
 	// that the channel can be resurrected by either party.
 	case e1 == nil && e2 == nil:
@@ -2542,7 +2555,6 @@ func updateEdgePolicy(tx kvdb.RwTx, edge *ChannelEdgePolicy,
 	edges := tx.ReadWriteBucket(edgeBucket)
 	if edges == nil {
 		return false, ErrEdgeNotFound
-
 	}
 	edgeIndex := edges.NestedReadWriteBucket(edgeIndexBucket)
 	if edgeIndex == nil {
@@ -2715,7 +2727,7 @@ func (l *LightningNode) NodeAnnouncement(signed bool) (*lnwire.NodeAnnouncement,
 		return nodeAnn, nil
 	}
 
-	sig, err := lnwire.NewSigFromRawSignature(l.AuthSigBytes)
+	sig, err := lnwire.NewSigFromECDSARawSignature(l.AuthSigBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -3197,7 +3209,8 @@ func (c *ChannelEdgeInfo) OtherNodeKeyBytes(thisNodeKey []byte) (
 // the target node in the channel. This is useful when one knows the pubkey of
 // one of the nodes, and wishes to obtain the full LightningNode for the other
 // end of the channel.
-func (c *ChannelEdgeInfo) FetchOtherNode(tx kvdb.RTx, thisNodeKey []byte) (*LightningNode, error) {
+func (c *ChannelEdgeInfo) FetchOtherNode(tx kvdb.RTx,
+	thisNodeKey []byte) (*LightningNode, error) {
 
 	// Ensure that the node passed in is actually a member of the channel.
 	var targetNodeBytes [33]byte
@@ -3719,35 +3732,17 @@ func (c *ChannelGraph) IsPublicNode(pubKey [33]byte) (bool, error) {
 
 // genMultiSigP2WSH generates the p2wsh'd multisig script for 2 of 2 pubkeys.
 func genMultiSigP2WSH(aPub, bPub []byte) ([]byte, error) {
-	if len(aPub) != 33 || len(bPub) != 33 {
-		return nil, fmt.Errorf("pubkey size error. Compressed " +
-			"pubkeys only")
-	}
-
-	// Swap to sort pubkeys if needed. Keys are sorted in lexicographical
-	// order. The signatures within the scriptSig must also adhere to the
-	// order, ensuring that the signatures for each public key appears in
-	// the proper order on the stack.
-	if bytes.Compare(aPub, bPub) == 1 {
-		aPub, bPub = bPub, aPub
-	}
-
-	// First, we'll generate the witness script for the multi-sig.
-	bldr := txscript.NewScriptBuilder()
-	bldr.AddOp(txscript.OP_2)
-	bldr.AddData(aPub) // Add both pubkeys (sorted).
-	bldr.AddData(bPub)
-	bldr.AddOp(txscript.OP_2)
-	bldr.AddOp(txscript.OP_CHECKMULTISIG)
-	witnessScript, err := bldr.Script()
+	witnessScript, err := input.GenMultiSigScript(aPub, bPub)
 	if err != nil {
 		return nil, err
 	}
 
-	// With the witness script generated, we'll now turn it into a p2sh
+	// With the witness script generated, we'll now turn it into a p2wsh
 	// script:
 	//  * OP_0 <sha256(script)>
-	bldr = txscript.NewScriptBuilder()
+	bldr := txscript.NewScriptBuilder(
+		txscript.WithScriptAllocSize(input.P2WSHSize),
+	)
 	bldr.AddOp(txscript.OP_0)
 	scriptHash := sha256.Sum256(witnessScript)
 	bldr.AddData(scriptHash[:])

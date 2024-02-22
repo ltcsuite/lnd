@@ -8,13 +8,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/watchtower/blob"
 	"github.com/ltcsuite/lnd/watchtower/lookout"
 	"github.com/ltcsuite/lnd/watchtower/wtdb"
 	"github.com/ltcsuite/lnd/watchtower/wtmock"
 	"github.com/ltcsuite/lnd/watchtower/wtpolicy"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/stretchr/testify/require"
 )
 
 type mockPunisher struct {
@@ -54,6 +56,12 @@ func makeArray64(i uint64) [64]byte {
 	var arr [64]byte
 	binary.BigEndian.PutUint64(arr[:], i)
 	return arr
+}
+
+func makeTestSig(i uint64) lnwire.Sig {
+	sigBytes := makeArray64(i)
+	sig, _ := lnwire.NewSigFromWireECDSA(sigBytes[:])
+	return sig
 }
 
 func makeAddrSlice(size int) []byte {
@@ -116,13 +124,9 @@ func TestLookoutBreachMatching(t *testing.T) {
 
 	// Insert both sessions into the watchtower's database.
 	err := db.InsertSessionInfo(sessionInfo1)
-	if err != nil {
-		t.Fatalf("unable to insert session info: %v", err)
-	}
+	require.NoError(t, err, "unable to insert session info")
 	err = db.InsertSessionInfo(sessionInfo2)
-	if err != nil {
-		t.Fatalf("unable to insert session info: %v", err)
-	}
+	require.NoError(t, err, "unable to insert session info")
 
 	// Construct two distinct transactions, that will be used to test the
 	// breach hint matching.
@@ -144,7 +148,7 @@ func TestLookoutBreachMatching(t *testing.T) {
 		RevocationPubKey: makePubKey(1),
 		LocalDelayPubKey: makePubKey(1),
 		CSVDelay:         144,
-		CommitToLocalSig: makeArray64(1),
+		CommitToLocalSig: makeTestSig(1),
 	}
 	blob2 := &blob.JusticeKit{
 		BlobType:         blobType,
@@ -152,7 +156,7 @@ func TestLookoutBreachMatching(t *testing.T) {
 		RevocationPubKey: makePubKey(2),
 		LocalDelayPubKey: makePubKey(2),
 		CSVDelay:         144,
-		CommitToLocalSig: makeArray64(2),
+		CommitToLocalSig: makeTestSig(2),
 	}
 
 	key1 := blob.NewBreachKeyFromHash(&hash1)
@@ -160,15 +164,11 @@ func TestLookoutBreachMatching(t *testing.T) {
 
 	// Encrypt the first justice kit under breach key one.
 	encBlob1, err := blob1.Encrypt(key1)
-	if err != nil {
-		t.Fatalf("unable to encrypt sweep detail 1: %v", err)
-	}
+	require.NoError(t, err, "unable to encrypt sweep detail 1")
 
 	// Encrypt the second justice kit under breach key two.
 	encBlob2, err := blob2.Encrypt(key2)
-	if err != nil {
-		t.Fatalf("unable to encrypt sweep detail 2: %v", err)
-	}
+	require.NoError(t, err, "unable to encrypt sweep detail 2")
 
 	// Add both state updates to the tower's database.
 	txBlob1 := &wtdb.SessionStateUpdate{

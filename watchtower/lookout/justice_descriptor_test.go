@@ -156,7 +156,6 @@ func testJusticeDescriptor(t *testing.T, blobType blob.Type) {
 
 		// As it should be.
 		toRemoteSigningScript = toRemoteRedeemScript
-
 	} else {
 		toRemoteRedeemScript = toRemotePK.SerializeCompressed()
 		toRemoteScriptHash, err = input.CommitScriptUnencumbered(
@@ -270,7 +269,7 @@ func testJusticeDescriptor(t *testing.T, blobType blob.Type) {
 	justiceTxn.TxOut = outputs
 	txsort.InPlaceSort(justiceTxn)
 
-	hashCache := txscript.NewTxSigHashes(justiceTxn)
+	hashCache := input.NewTxSigHashesV0Only(justiceTxn)
 
 	// Create the sign descriptor used to sign for the to-local input.
 	toLocalSignDesc := &input.SignDescriptor{
@@ -321,8 +320,8 @@ func testJusticeDescriptor(t *testing.T, blobType blob.Type) {
 	require.Nil(t, err)
 
 	// Complete our justice kit by copying the signatures into the payload.
-	copy(justiceKit.CommitToLocalSig[:], toLocalSig[:])
-	copy(justiceKit.CommitToRemoteSig[:], toRemoteSig[:])
+	justiceKit.CommitToLocalSig = toLocalSig
+	justiceKit.CommitToRemoteSig = toRemoteSig
 
 	justiceDesc := &lookout.JusticeDescriptor{
 		BreachedCommitTx: breachTxn,

@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/ltcsuite/ltcd/wire"
 	"github.com/btcsuite/btclog"
 	"github.com/ltcsuite/lnd/build"
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 var (

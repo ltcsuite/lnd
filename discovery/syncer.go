@@ -450,6 +450,9 @@ func (g *GossipSyncer) Start() {
 // exited.
 func (g *GossipSyncer) Stop() {
 	g.stopped.Do(func() {
+		log.Debugf("Stopping GossipSyncer(%x)", g.cfg.peerPub[:])
+		defer log.Debugf("GossipSyncer(%x) stopped", g.cfg.peerPub[:])
+
 		close(g.quit)
 		g.wg.Wait()
 	})
@@ -842,6 +845,7 @@ func (g *GossipSyncer) processChanRangeReply(msg *lnwire.ReplyChannelRange) erro
 		// behind a few blocks from us.
 		if replyLastHeight < queryLastHeight &&
 			g.numChanRangeRepliesRcvd < maxReplies {
+
 			return nil
 		}
 	}
@@ -1247,6 +1251,8 @@ func (g *GossipSyncer) FilterGossipMsgs(msgs ...msgWithSenders) {
 	// If the peer doesn't have an update horizon set, then we won't send
 	// it any new update messages.
 	if g.remoteUpdateHorizon == nil {
+		log.Tracef("GossipSyncer(%x): skipped due to nil "+
+			"remoteUpdateHorizon", g.cfg.peerPub[:])
 		return
 	}
 
@@ -1377,6 +1383,7 @@ func (g *GossipSyncer) ProcessQueryMsg(msg lnwire.Message, peerQuit <-chan struc
 		syncState := g.syncState()
 		if syncState != waitingQueryRangeReply &&
 			syncState != waitingQueryChanReply {
+
 			return fmt.Errorf("received unexpected query reply "+
 				"message %T", msg)
 		}

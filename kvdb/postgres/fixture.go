@@ -1,5 +1,4 @@
 //go:build kvdb_postgres
-// +build kvdb_postgres
 
 package postgres
 
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
+	"github.com/ltcsuite/lnd/kvdb/sqlbase"
 	"github.com/ltcsuite/ltcwallet/walletdb"
 )
 
@@ -33,7 +33,7 @@ const testMaxConnections = 50
 // to be done once, because NewFixture will create random new databases on every
 // call. It returns a stop closure that stops the database if called.
 func StartEmbeddedPostgres() (func() error, error) {
-	Init(testMaxConnections)
+	sqlbase.Init(testMaxConnections)
 
 	postgres := embeddedpostgres.NewDatabase(
 		embeddedpostgres.DefaultConfig().

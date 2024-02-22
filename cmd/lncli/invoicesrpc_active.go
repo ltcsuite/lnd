@@ -6,7 +6,6 @@ package main
 import (
 	"encoding/hex"
 	"fmt"
-
 	"strconv"
 
 	"github.com/ltcsuite/lnd/lnrpc/invoicesrpc"
@@ -149,7 +148,7 @@ var addHoldInvoiceCommand = cli.Command{
 	Add a new invoice, expressing intent for a future payment.
 
 	Invoices without an amount can be created by not supplying any
-	parameters or providing an amount of 0. These invoices allow the payee
+	parameters or providing an amount of 0. These invoices allow the payer
 	to specify the amount of satoshis they wish to send.`,
 	ArgsUsage: "hash [amt]",
 	Flags: []cli.Flag{
@@ -182,10 +181,10 @@ var addHoldInvoiceCommand = cli.Command{
 		cli.Int64Flag{
 			Name: "expiry",
 			Usage: "the invoice's expiry time in seconds. If not " +
-				"specified, an expiry of 3600 seconds (1 hour) " +
-				"is implied.",
+				"specified, an expiry of " +
+				"86400 seconds (24 hours) is implied.",
 		},
-		cli.BoolTFlag{
+		cli.BoolFlag{
 			Name: "private",
 			Usage: "encode routing hints in the invoice with " +
 				"private channels in order to assist the " +

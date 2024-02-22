@@ -111,6 +111,9 @@ http:
       get: "/v1/graph/node/{pub_key}"
     - selector: lnrpc.Lightning.QueryRoutes
       get: "/v1/graph/routes/{pub_key}/{amt}"
+      additional_bindings:
+        - post: "/v1/graph/routes/{pub_key}/{amt}"
+          body: "*"
     - selector: lnrpc.Lightning.GetNetworkInfo
       get: "/v1/graph/info"
     - selector: lnrpc.Lightning.StopDaemon
@@ -160,3 +163,7 @@ http:
       body: "*"
     - selector: lnrpc.Lightning.SubscribeCustomMessages
       get: "/v1/custommessage/subscribe"      
+    - selector: lnrpc.Lightning.ListAliases
+      get: "/v1/aliases/list"
+    - selector: lnrpc.Lightning.LookupHtlcResolution
+      get: "/v1/htlc-resolution/{chan_id}/{htlc_index}"

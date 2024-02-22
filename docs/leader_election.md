@@ -1,4 +1,4 @@
-# Increasing LND reliablity by clustering
+# Increasing LND reliability by clustering
 
 Normally LND nodes use the embedded bbolt database to store all important states.
 This method of running has been proven to work well in a variety of environments,
@@ -9,7 +9,7 @@ do updates and be more resilient to datacenter failures.
 It is now possible to store all essential state in a replicated etcd DB and to
 run multiple LND nodes on different machines where only one of them (the leader) 
 is able to read and mutate the database. In such setup if the leader node fails
-or decomissioned, a follower node will be elected as the new leader and will
+or decommissioned, a follower node will be elected as the new leader and will
 quickly come online to minimize downtime.
 
 The leader election feature currently relies on etcd to work both for the election
@@ -20,7 +20,7 @@ itself and for the replicated data store.
 To create a dev build of LND with leader election support use the following command:
 
 ```shell
-⛰  make tags="kvdb_etcd"
+$  make tags="kvdb_etcd"
 ```
 
 ## Running a local etcd instance for testing
@@ -28,7 +28,7 @@ To create a dev build of LND with leader election support use the following comm
 To start your local etcd instance for testing run:
 
 ```shell
-⛰  ./etcd \
+$  ./etcd \
     --auto-tls \
     --advertise-client-urls=https://127.0.0.1:2379 \
     --listen-client-urls=https://0.0.0.0:2379 \
@@ -47,7 +47,7 @@ through command line flags or in `lnd.conf`.
 Sample command line:
 
 ```shell
-⛰  ./lnd-debug \
+$  ./lnd-debug \
     --db.backend=etcd \
     --db.etcd.host=127.0.0.1:2379 \
     --db.etcd.certfile=/home/user/etcd/bin/default.etcd/fixtures/client/cert.pem \

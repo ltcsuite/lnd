@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/textproto"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -77,6 +78,17 @@ var (
 	// errTCNotStarted is used when we require the tor controller to be
 	// not stopped while it is.
 	errTCStopped = errors.New("tor controller must not be stopped")
+
+	// replyFieldRegexp is the regular expression used to find fields in a
+	// reply.  Parameters within a reply should be of the form KEY=VALUE or
+	// KEY="VALUE", where quoted values might contain spaces, newlines and
+	// quoted pairs. If the parameter doesn't contain "=", then we can
+	// assume it doesn't provide any relevant information that isn't already
+	// known. Read more on this topic:
+	//   https://gitweb.torproject.org/torspec.git/tree/control-spec.txt#n188
+	replyFieldRegexp = regexp.MustCompile(
+		`[^" \r\n]+=(?:"(?:[^"\\]|\\[\0-\x7F])*"|[^" \r\n]*)`,
+	)
 )
 
 // Controller is an implementation of the Tor Control protocol. This is used in
@@ -87,9 +99,9 @@ var (
 // proceeding to send commands. Otherwise, the connection will be closed.
 //
 // TODO:
-//   * if adding support for more commands, extend this with a command queue?
-//   * place under sub-package?
-//   * support async replies from the server
+//   - if adding support for more commands, extend this with a command queue?
+//   - place under sub-package?
+//   - support async replies from the server
 type Controller struct {
 	// started is used atomically in order to prevent multiple calls to
 	// Start.
@@ -257,21 +269,22 @@ func (c *Controller) sendCommand(command string) (int, string, error) {
 // readResponse reads the replies from Tor to the controller. The reply has the
 // following format,
 //
-//   Reply = SyncReply / AsyncReply
-//   SyncReply = *(MidReplyLine / DataReplyLine) EndReplyLine
-//   AsyncReply = *(MidReplyLine / DataReplyLine) EndReplyLine
+//	Reply = SyncReply / AsyncReply
+//	SyncReply = *(MidReplyLine / DataReplyLine) EndReplyLine
+//	AsyncReply = *(MidReplyLine / DataReplyLine) EndReplyLine
 //
-//   MidReplyLine = StatusCode "-" ReplyLine
-//   DataReplyLine = StatusCode "+" ReplyLine CmdData
-//   EndReplyLine = StatusCode SP ReplyLine
-//   ReplyLine = [ReplyText] CRLF
-//   ReplyText = XXXX
-//   StatusCode = 3DIGIT
+//	MidReplyLine = StatusCode "-" ReplyLine
+//	DataReplyLine = StatusCode "+" ReplyLine CmdData
+//	EndReplyLine = StatusCode SP ReplyLine
+//	ReplyLine = [ReplyText] CRLF
+//	ReplyText = XXXX
+//	StatusCode = 3DIGIT
 //
 // Unless specified otherwise, multiple lines in a single reply from Tor daemon
 // to the controller are guaranteed to share the same status code. Read more on
 // this topic:
-//   https://gitweb.torproject.org/torspec.git/tree/control-spec.txt#n158
+//
+//	https://gitweb.torproject.org/torspec.git/tree/control-spec.txt#n158
 //
 // NOTE: this code is influenced by https://github.com/Yawning/bulb.
 func (c *Controller) readResponse(expected int) (int, string, error) {
@@ -367,29 +380,51 @@ func (c *Controller) readResponse(expected int) (int, string, error) {
 	return code, reply, nil
 }
 
+// unescapeValue removes escape codes from the value in the Tor reply. A
+// backslash followed by any character represents that character, so we remove
+// any backslash not preceded by another backslash.
+func unescapeValue(value string) string {
+	newString := ""
+	justRemovedBackslash := false
+
+	for _, char := range value {
+		if char == '\\' && !justRemovedBackslash {
+			justRemovedBackslash = true
+			continue
+		}
+
+		newString += string(char)
+		justRemovedBackslash = false
+	}
+
+	return newString
+}
+
 // parseTorReply parses the reply from the Tor server after receiving a command
 // from a controller. This will parse the relevant reply parameters into a map
 // of keys and values.
 func parseTorReply(reply string) map[string]string {
 	params := make(map[string]string)
 
-	// Replies can either span single or multiple lines, so we'll default
-	// to stripping whitespace and newlines in order to retrieve the
-	// individual contents of it. The -1 indicates that we want this to span
-	// across all instances of a newline.
-	contents := strings.Split(strings.Replace(reply, "\n", " ", -1), " ")
+	// Find all fields of a reply. The -1 indicates that we want this to
+	// find all instances of the regexp.
+	contents := replyFieldRegexp.FindAllString(reply, -1)
 	for _, content := range contents {
 		// Each parameter within the reply should be of the form
-		// "KEY=VALUE". If the parameter doesn't contain "=", then we
-		// can assume it does not provide any other relevant information
-		// already known.
+		// KEY=VALUE or KEY="VALUE".
 		keyValue := strings.SplitN(content, "=", 2)
-		if len(keyValue) != 2 {
-			continue
-		}
-
 		key := keyValue[0]
 		value := keyValue[1]
+
+		// Quoted strings need extra processing.
+		if strings.HasPrefix(value, `"`) {
+			// Remove quotes around the value.
+			value = value[1 : len(value)-1]
+
+			// Unescape the value.
+			value = unescapeValue(value)
+		}
+
 		params[key] = value
 	}
 
@@ -582,8 +617,9 @@ func computeHMAC256(key, message []byte) []byte {
 }
 
 // supportsV3 is a helper function that parses the current version of the Tor
-// server and determines whether it supports creationg v3 onion services through
+// server and determines whether it supports creating v3 onion services through
 // Tor's control port. The version string should be of the format:
+//
 //	major.minor.revision.build
 func supportsV3(version string) error {
 	// We'll split the minimum Tor version that's supported and the given

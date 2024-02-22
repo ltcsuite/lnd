@@ -93,14 +93,14 @@ func (l *linkTestContext) receiveHtlcAliceToBob() {
 func (l *linkTestContext) sendCommitSigBobToAlice(expHtlcs int) {
 	l.t.Helper()
 
-	sig, htlcSigs, _, err := l.bobChannel.SignNextCommitment()
+	sigs, err := l.bobChannel.SignNextCommitment()
 	if err != nil {
 		l.t.Fatalf("error signing commitment: %v", err)
 	}
 
 	commitSig := &lnwire.CommitSig{
-		CommitSig: sig,
-		HtlcSigs:  htlcSigs,
+		CommitSig: sigs.CommitSig,
+		HtlcSigs:  sigs.HtlcSigs,
 	}
 
 	if len(commitSig.HtlcSigs) != expHtlcs {
@@ -141,9 +141,10 @@ func (l *linkTestContext) receiveCommitSigAliceToBob(expHtlcs int) {
 
 	comSig := l.receiveCommitSigAlice(expHtlcs)
 
-	err := l.bobChannel.ReceiveNewCommitment(
-		comSig.CommitSig, comSig.HtlcSigs,
-	)
+	err := l.bobChannel.ReceiveNewCommitment(&lnwallet.CommitSigs{
+		CommitSig: comSig.CommitSig,
+		HtlcSigs:  comSig.HtlcSigs,
+	})
 	if err != nil {
 		l.t.Fatalf("bob failed receiving commitment: %v", err)
 	}
@@ -179,7 +180,7 @@ func (l *linkTestContext) receiveCommitSigAlice(expHtlcs int) *lnwire.CommitSig 
 func (l *linkTestContext) sendRevAndAckBobToAlice() {
 	l.t.Helper()
 
-	rev, _, err := l.bobChannel.RevokeCurrentCommitment()
+	rev, _, _, err := l.bobChannel.RevokeCurrentCommitment()
 	if err != nil {
 		l.t.Fatalf("unable to revoke commitment: %v", err)
 	}

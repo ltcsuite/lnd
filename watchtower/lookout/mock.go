@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/lnd/chainntnfs"
 )
 
 type MockBackend struct {

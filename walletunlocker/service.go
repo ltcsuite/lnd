@@ -65,6 +65,10 @@ type WalletUnlockParams struct {
 	// MacResponseChan is the channel for sending back the admin macaroon to
 	// the WalletUnlocker service.
 	MacResponseChan chan []byte
+
+	// MacRootKey is the 32 byte macaroon root key specified by the user
+	// during wallet initialization.
+	MacRootKey []byte
 }
 
 // ChannelsToRecover wraps any set of packed (serialized+encrypted) channel
@@ -130,6 +134,10 @@ type WalletInitMsg struct {
 	// initialized stateless, which means no unencrypted macaroons should be
 	// written to disk.
 	StatelessInit bool
+
+	// MacRootKey is the 32 byte macaroon root key specified by the user
+	// during wallet initialization.
+	MacRootKey []byte
 }
 
 // WalletUnlockMsg is a message sent by the UnlockerService when a user wishes
@@ -309,7 +317,7 @@ func (u *UnlockerService) GenSeed(_ context.Context,
 	// instance.
 	//
 	cipherSeed, err := aezeed.New(
-		keychain.KeyDerivationVersion, &entropy, time.Now(),
+		keychain.CurrentKeyDerivationVersion, &entropy, time.Now(),
 	)
 	if err != nil {
 		return nil, err
@@ -398,6 +406,17 @@ func (u *UnlockerService) InitWallet(ctx context.Context,
 			"non-negative", recoveryWindow)
 	}
 
+	// Ensure that the macaroon root key is *exactly* 32-bytes.
+	macaroonRootKey := in.MacaroonRootKey
+	if len(macaroonRootKey) > 0 &&
+		len(macaroonRootKey) != macaroons.RootKeyLen {
+
+		return nil, fmt.Errorf("macaroon root key must be exactly "+
+			"%v bytes, is instead %v",
+			macaroons.RootKeyLen, len(macaroonRootKey),
+		)
+	}
+
 	// We'll then open up the directory that will be used to store the
 	// wallet's files so we can check if the wallet already exists.
 	loader, err := u.newLoader(uint32(recoveryWindow))
@@ -422,6 +441,7 @@ func (u *UnlockerService) InitWallet(ctx context.Context,
 		Passphrase:     password,
 		RecoveryWindow: uint32(recoveryWindow),
 		StatelessInit:  in.StatelessInit,
+		MacRootKey:     macaroonRootKey,
 	}
 
 	// There are two supported ways to initialize the wallet. Either from
@@ -657,7 +677,13 @@ func (u *UnlockerService) LoadAndUnlock(password []byte,
 			return nil, nil, dropErr
 		}
 
-		// All looks good, let's now open the wallet again.
+		// All looks good, let's now open the wallet again. The loader
+		// was unloaded and might have removed its remote DB connection,
+		// so let's re-create it as well.
+		loader, err = u.newLoader(recoveryWindow)
+		if err != nil {
+			return nil, nil, err
+		}
 		unlockedWallet, err = loader.OpenExistingWallet(password, false)
 		if err != nil {
 			return nil, nil, err
@@ -807,8 +833,12 @@ func (u *UnlockerService) ChangePassword(ctx context.Context,
 	// then close it again.
 	// Attempt to open the macaroon DB, unlock it and then change
 	// the passphrase.
+	rootKeyStore, err := macaroons.NewRootKeyStorage(u.macaroonDB)
+	if err != nil {
+		return nil, err
+	}
 	macaroonService, err := macaroons.NewService(
-		u.macaroonDB, "lnd", in.StatelessInit,
+		rootKeyStore, "lnd", in.StatelessInit,
 	)
 	if err != nil {
 		return nil, err

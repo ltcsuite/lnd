@@ -12,6 +12,7 @@ import (
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -98,7 +99,7 @@ func newChannelTestCtx(chanSize int64) (*channelTestCtx, error) {
 		},
 	}
 
-	sigHashes := txscript.NewTxSigHashes(commitTx)
+	sigHashes := input.NewTxSigHashesV0Only(commitTx)
 	aliceSigRaw, err := txscript.RawTxInWitnessSignature(
 		commitTx, sigHashes, 0, chanSize,
 		multiSigScript, txscript.SigHashAll, alicePriv,
@@ -155,9 +156,7 @@ func TestValidate(t *testing.T) {
 
 	chanSize := int64(1000000)
 	channelCtx, err := newChannelTestCtx(chanSize)
-	if err != nil {
-		t.Fatalf("unable to make channel context: %v", err)
-	}
+	require.NoError(t, err, "unable to make channel context")
 
 	testCases := []struct {
 		// expectedErr is the error we expect, this should be nil if

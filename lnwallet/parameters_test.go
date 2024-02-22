@@ -60,27 +60,27 @@ func TestDustLimitForSize(t *testing.T) {
 		{
 			name:          "p2pkh dust limit",
 			size:          input.P2PKHSize,
-			expectedLimit: ltcutil.Amount(546),
+			expectedLimit: ltcutil.Amount(5460),
 		},
 		{
 			name:          "p2sh dust limit",
 			size:          input.P2SHSize,
-			expectedLimit: ltcutil.Amount(540),
+			expectedLimit: ltcutil.Amount(5400),
 		},
 		{
 			name:          "p2wpkh dust limit",
 			size:          input.P2WPKHSize,
-			expectedLimit: ltcutil.Amount(294),
+			expectedLimit: ltcutil.Amount(2940),
 		},
 		{
 			name:          "p2wsh dust limit",
 			size:          input.P2WSHSize,
-			expectedLimit: ltcutil.Amount(330),
+			expectedLimit: ltcutil.Amount(3300),
 		},
 		{
 			name:          "unknown witness limit",
 			size:          input.UnknownWitnessSize,
-			expectedLimit: ltcutil.Amount(354),
+			expectedLimit: ltcutil.Amount(3540),
 		},
 	}
 

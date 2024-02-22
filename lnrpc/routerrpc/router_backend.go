@@ -31,7 +31,7 @@ const (
 	// for MPP when the user is attempting to send a payment.
 	//
 	// TODO(roasbeef): make this value dynamic based on expected number of
-	// attempts for given amount
+	// attempts for given amount.
 	DefaultMaxParts = 16
 )
 
@@ -45,6 +45,11 @@ type RouterBackend struct {
 	// capacity of a channel to populate in responses.
 	FetchChannelCapacity func(chanID uint64) (ltcutil.Amount, error)
 
+	// FetchAmountPairCapacity determines the maximal channel capacity
+	// between two nodes given a certain amount.
+	FetchAmountPairCapacity func(nodeFrom, nodeTo route.Vertex,
+		amount lnwire.MilliSatoshi) (ltcutil.Amount, error)
+
 	// FetchChannelEndpoints returns the pubkeys of both endpoints of the
 	// given channel id.
 	FetchChannelEndpoints func(chanID uint64) (route.Vertex,
@@ -53,10 +58,11 @@ type RouterBackend struct {
 	// FindRoutes is a closure that abstracts away how we locate/query for
 	// routes.
 	FindRoute func(source, target route.Vertex,
-		amt lnwire.MilliSatoshi, restrictions *routing.RestrictParams,
+		amt lnwire.MilliSatoshi, timePref float64,
+		restrictions *routing.RestrictParams,
 		destCustomRecords record.CustomSet,
 		routeHints map[route.Vertex][]*channeldb.CachedEdgePolicy,
-		finalExpiry uint16) (*route.Route, error)
+		finalExpiry uint16) (*route.Route, float64, error)
 
 	MissionControl MissionControl
 
@@ -102,7 +108,7 @@ type MissionControl interface {
 	// GetProbability is expected to return the success probability of a
 	// payment from fromNode to toNode.
 	GetProbability(fromNode, toNode route.Vertex,
-		amt lnwire.MilliSatoshi) float64
+		amt lnwire.MilliSatoshi, capacity ltcutil.Amount) float64
 
 	// ResetHistory resets the history of MissionControl returning it to a
 	// state as if no payment attempts have been made.
@@ -132,7 +138,7 @@ type MissionControl interface {
 
 // QueryRoutes attempts to query the daemons' Channel Router for a possible
 // route to a target destination capable of carrying a specific amount of
-// satoshis within the route's flow. The retuned route contains the full
+// satoshis within the route's flow. The returned route contains the full
 // details required to craft and send an HTLC, also including the necessary
 // information that should be present within the Sphinx packet encapsulated
 // within the HTLC.
@@ -257,7 +263,8 @@ func (r *RouterBackend) QueryRoutes(ctx context.Context,
 	restrictions := &routing.RestrictParams{
 		FeeLimit: feeLimit,
 		ProbabilitySource: func(fromNode, toNode route.Vertex,
-			amt lnwire.MilliSatoshi) float64 {
+			amt lnwire.MilliSatoshi,
+			capacity ltcutil.Amount) float64 {
 
 			if _, ok := ignoredNodes[fromNode]; ok {
 				return 0
@@ -276,7 +283,7 @@ func (r *RouterBackend) QueryRoutes(ctx context.Context,
 			}
 
 			return r.MissionControl.GetProbability(
-				fromNode, toNode, amt,
+				fromNode, toNode, amt, capacity,
 			)
 		},
 		DestCustomRecords: record.CustomSet(in.DestCustomRecords),
@@ -323,8 +330,8 @@ func (r *RouterBackend) QueryRoutes(ctx context.Context,
 	// Query the channel router for a possible path to the destination that
 	// can carry `in.Amt` satoshis _including_ the total fee required on
 	// the route.
-	route, err := r.FindRoute(
-		sourcePubKey, targetPubKey, amt, restrictions,
+	route, successProb, err := r.FindRoute(
+		sourcePubKey, targetPubKey, amt, in.TimePref, restrictions,
 		customRecords, routeHintEdges, finalCLTVDelta,
 	)
 	if err != nil {
@@ -338,39 +345,12 @@ func (r *RouterBackend) QueryRoutes(ctx context.Context,
 		return nil, err
 	}
 
-	// Calculate route success probability. Do not rely on a probability
-	// that could have been returned from path finding, because mission
-	// control may have been disabled in the provided ProbabilitySource.
-	successProb := r.getSuccessProbability(route)
-
 	routeResp := &lnrpc.QueryRoutesResponse{
 		Routes:      []*lnrpc.Route{rpcRoute},
 		SuccessProb: successProb,
 	}
 
 	return routeResp, nil
-}
-
-// getSuccessProbability returns the success probability for the given route
-// based on the current state of mission control.
-func (r *RouterBackend) getSuccessProbability(rt *route.Route) float64 {
-	fromNode := rt.SourcePubKey
-	amtToFwd := rt.TotalAmount
-	successProb := 1.0
-	for _, hop := range rt.Hops {
-		toNode := hop.PubKeyBytes
-
-		probability := r.MissionControl.GetProbability(
-			fromNode, toNode, amtToFwd,
-		)
-
-		successProb *= probability
-
-		amtToFwd = hop.AmtToForward
-		fromNode = toNode
-	}
-
-	return successProb
 }
 
 // rpcEdgeToPair looks up the provided channel and returns the channel endpoints
@@ -443,6 +423,7 @@ func (r *RouterBackend) MarshallRoute(route *route.Route) (*lnrpc.Route, error) 
 			CustomRecords: hop.CustomRecords,
 			TlvPayload:    !hop.LegacyPayload,
 			MppRecord:     mpp,
+			Metadata:      hop.Metadata,
 		}
 		incomingAmt = hop.AmtToForward
 	}
@@ -476,7 +457,7 @@ func UnmarshallHopWithPubkey(rpcHop *lnrpc.Hop, pubkey route.Vertex) (*route.Hop
 		PubKeyBytes:      pubkey,
 		ChannelID:        rpcHop.ChanId,
 		CustomRecords:    customRecords,
-		LegacyPayload:    !rpcHop.TlvPayload,
+		LegacyPayload:    false,
 		MPP:              mpp,
 		AMP:              amp,
 	}, nil
@@ -558,6 +539,12 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 	rpcPayReq *SendPaymentRequest) (*routing.LightningPayment, error) {
 
 	payIntent := &routing.LightningPayment{}
+
+	// Pass along time preference.
+	if rpcPayReq.TimePref < -1 || rpcPayReq.TimePref > 1 {
+		return nil, errors.New("time preference out of range")
+	}
+	payIntent.TimePref = rpcPayReq.TimePref
 
 	// Pass along restrictions on the outgoing channels that may be used.
 	payIntent.OutgoingChannelIDs = rpcPayReq.OutgoingChanIds
@@ -683,7 +670,7 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 		}
 
 		// If the amount was not included in the invoice, then we let
-		// the payee specify the amount of satoshis they wish to send.
+		// the payer specify the amount of satoshis they wish to send.
 		// We override the amount to pay with the amount provided from
 		// the payment request.
 		if payReq.MilliSat == nil {
@@ -759,6 +746,7 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 		payIntent.DestFeatures = payReq.Features
 		payIntent.PaymentAddr = payAddr
 		payIntent.PaymentRequest = []byte(rpcPayReq.PaymentRequest)
+		payIntent.Metadata = payReq.Metadata
 	} else {
 		// Otherwise, If the payment request field was not specified
 		// (and a custom route wasn't specified), construct the payment
@@ -1008,7 +996,6 @@ func UnmarshalMPP(reqMPP *lnrpc.MPPRecord) (*record.MPP, error) {
 	reqAddr := reqMPP.PaymentAddr
 
 	switch {
-
 	// No MPP fields were provided.
 	case reqTotal == 0 && len(reqAddr) == 0:
 		return nil, fmt.Errorf("missing total_msat and payment_addr")
@@ -1110,7 +1097,6 @@ func marshallHtlcFailure(failure *channeldb.HTLCFailInfo) (*lnrpc.Failure,
 	}
 
 	switch failure.Reason {
-
 	case channeldb.HTLCFailUnknown:
 		rpcFailure.Code = lnrpc.Failure_UNKNOWN_FAILURE
 
@@ -1191,7 +1177,6 @@ func marshallWireError(msg lnwire.FailureMessage,
 	response *lnrpc.Failure) error {
 
 	switch onionErr := msg.(type) {
-
 	case *lnwire.FailIncorrectDetails:
 		response.Code = lnrpc.Failure_INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS
 		response.Height = onionErr.Height()
@@ -1298,7 +1283,7 @@ func marshallChannelUpdate(update *lnwire.ChannelUpdate) *lnrpc.ChannelUpdate {
 	}
 
 	return &lnrpc.ChannelUpdate{
-		Signature:       update.Signature[:],
+		Signature:       update.Signature.RawBytes(),
 		ChainHash:       update.ChainHash[:],
 		ChanId:          update.ShortChannelID.ToUint64(),
 		Timestamp:       update.Timestamp,
@@ -1412,7 +1397,6 @@ func marshallPaymentFailureReason(reason *channeldb.FailureReason) (
 	}
 
 	switch *reason {
-
 	case channeldb.FailureReasonTimeout:
 		return lnrpc.PaymentFailureReason_FAILURE_REASON_TIMEOUT, nil
 

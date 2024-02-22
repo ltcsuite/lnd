@@ -175,43 +175,6 @@ func (r FailureReason) String() string {
 	return "unknown"
 }
 
-// PaymentStatus represent current status of payment
-type PaymentStatus byte
-
-const (
-	// StatusUnknown is the status where a payment has never been initiated
-	// and hence is unknown.
-	StatusUnknown PaymentStatus = 0
-
-	// StatusInFlight is the status where a payment has been initiated, but
-	// a response has not been received.
-	StatusInFlight PaymentStatus = 1
-
-	// StatusSucceeded is the status where a payment has been initiated and
-	// the payment was completed successfully.
-	StatusSucceeded PaymentStatus = 2
-
-	// StatusFailed is the status where a payment has been initiated and a
-	// failure result has come back.
-	StatusFailed PaymentStatus = 3
-)
-
-// String returns readable representation of payment status.
-func (ps PaymentStatus) String() string {
-	switch ps {
-	case StatusUnknown:
-		return "Unknown"
-	case StatusInFlight:
-		return "In Flight"
-	case StatusSucceeded:
-		return "Succeeded"
-	case StatusFailed:
-		return "Failed"
-	default:
-		return "Unknown"
-	}
-}
-
 // PaymentCreationInfo is the information necessary to have ready when
 // initiating a payment, moving it into state InFlight.
 type PaymentCreationInfo struct {
@@ -315,7 +278,6 @@ func fetchPayment(bucket kvdb.RBucket) (*MPPayment, error) {
 	creationInfo, err := fetchCreationInfo(bucket)
 	if err != nil {
 		return nil, err
-
 	}
 
 	var htlcs []HTLCAttempt
@@ -358,7 +320,6 @@ func fetchPayment(bucket kvdb.RBucket) (*MPPayment, error) {
 	var paymentStatus PaymentStatus
 
 	switch {
-
 	// If any of the the HTLCs did succeed and there are no HTLCs in
 	// flight, the payment succeeded.
 	case !inflight && settled:
@@ -383,7 +344,7 @@ func fetchPayment(bucket kvdb.RBucket) (*MPPayment, error) {
 	}, nil
 }
 
-// fetchHtlcAttempts retrives all htlc attempts made for the payment found in
+// fetchHtlcAttempts retrieves all htlc attempts made for the payment found in
 // the given bucket.
 func fetchHtlcAttempts(bucket kvdb.RBucket) ([]HTLCAttempt, error) {
 	htlcsMap := make(map[uint64]*HTLCAttempt)
@@ -534,6 +495,18 @@ type PaymentsQuery struct {
 	// fully completed. This means that pending payments, as well as failed
 	// payments will show up if this field is set to true.
 	IncludeIncomplete bool
+
+	// CountTotal indicates that all payments currently present in the
+	// payment index (complete and incomplete) should be counted.
+	CountTotal bool
+
+	// CreationDateStart, if set, filters out all payments with a creation
+	// date greater than or euqal to it.
+	CreationDateStart time.Time
+
+	// CreationDateEnd, if set, filters out all payments with a creation
+	// date less than or euqal to it.
+	CreationDateEnd time.Time
 }
 
 // PaymentsResponse contains the result of a query to the payments database.
@@ -557,13 +530,22 @@ type PaymentsResponse struct {
 	// in the event that the slice has too many events to fit into a single
 	// response. The offset can be used to continue forward pagination.
 	LastIndexOffset uint64
+
+	// TotalCount represents the total number of payments that are currently
+	// stored in the payment database. This will only be set if the
+	// CountTotal field in the query was set to true.
+	TotalCount uint64
 }
 
 // QueryPayments is a query to the payments database which is restricted
 // to a subset of payments by the payments query, containing an offset
 // index and a maximum number of returned payments.
 func (d *DB) QueryPayments(query PaymentsQuery) (PaymentsResponse, error) {
-	var resp PaymentsResponse
+	var (
+		resp         PaymentsResponse
+		startDateSet = !query.CreationDateStart.IsZero()
+		endDateSet   = !query.CreationDateEnd.IsZero()
+	)
 
 	if err := kvdb.View(d, func(tx kvdb.RTx) error {
 		// Get the root payments bucket.
@@ -608,6 +590,24 @@ func (d *DB) QueryPayments(query PaymentsQuery) (PaymentsResponse, error) {
 				return false, err
 			}
 
+			// Skip any payments that were created before the
+			// specified time.
+			if startDateSet && payment.Info.CreationTime.Before(
+				query.CreationDateStart,
+			) {
+
+				return false, nil
+			}
+
+			// Skip any payments that were created after the
+			// specified time.
+			if endDateSet && payment.Info.CreationTime.After(
+				query.CreationDateEnd,
+			) {
+
+				return false, nil
+			}
+
 			// At this point, we've exhausted the offset, so we'll
 			// begin collecting invoices found within the range.
 			resp.Payments = append(resp.Payments, payment)
@@ -624,6 +624,35 @@ func (d *DB) QueryPayments(query PaymentsQuery) (PaymentsResponse, error) {
 		// Run a paginated query, adding payments to our response.
 		if err := paginator.query(accumulatePayments); err != nil {
 			return err
+		}
+
+		// Counting the total number of payments is expensive, since we
+		// literally have to traverse the cursor linearly, which can
+		// take quite a while. So it's an optional query parameter.
+		if query.CountTotal {
+			var (
+				totalPayments uint64
+				err           error
+			)
+			countFn := func(_, _ []byte) error {
+				totalPayments++
+
+				return nil
+			}
+
+			// In non-boltdb database backends, there's a faster
+			// ForAll query that allows for batch fetching items.
+			if fastBucket, ok := indexes.(kvdb.ExtendedRBucket); ok {
+				err = fastBucket.ForAll(countFn)
+			} else {
+				err = indexes.ForEach(countFn)
+			}
+			if err != nil {
+				return fmt.Errorf("error counting payments: %v",
+					err)
+			}
+
+			resp.TotalCount = totalPayments
 		}
 
 		return nil
@@ -732,7 +761,9 @@ func fetchPaymentWithSequenceNumber(tx kvdb.RTx, paymentHash lntypes.Hash,
 // DeletePayment deletes a payment from the DB given its payment hash. If
 // failedHtlcsOnly is set, only failed HTLC attempts of the payment will be
 // deleted.
-func (d *DB) DeletePayment(paymentHash lntypes.Hash, failedHtlcsOnly bool) error { // nolint:interfacer
+func (d *DB) DeletePayment(paymentHash lntypes.Hash,
+	failedHtlcsOnly bool) error {
+
 	return kvdb.Update(d, func(tx kvdb.RwTx) error {
 		payments := tx.ReadWriteBucket(paymentsRootBucket)
 		if payments == nil {
@@ -1092,7 +1123,6 @@ func deserializeHTLCAttemptInfo(r io.Reader) (*HTLCAttemptInfo, error) {
 	_, err = io.ReadFull(r, hash[:])
 
 	switch {
-
 	// Older payment attempts wouldn't have the hash set, in which case we
 	// can just return.
 	case err == io.EOF, err == io.ErrUnexpectedEOF:
@@ -1140,6 +1170,10 @@ func serializeHop(w io.Writer, h *route.Hop) error {
 	var records []tlv.Record
 	if h.MPP != nil {
 		records = append(records, h.MPP.Record())
+	}
+
+	if h.Metadata != nil {
+		records = append(records, record.NewMetadataRecord(&h.Metadata))
 	}
 
 	// Final sanity check to absolutely rule out custom records that are not
@@ -1254,6 +1288,13 @@ func deserializeHop(r io.Reader) (*route.Hop, error) {
 			return nil, err
 		}
 		h.MPP = mpp
+	}
+
+	metadataType := uint64(record.MetadataOnionType)
+	if metadata, ok := tlvMap[metadataType]; ok {
+		delete(tlvMap, metadataType)
+
+		h.Metadata = metadata
 	}
 
 	h.CustomRecords = tlvMap

@@ -1,11 +1,14 @@
 package walletrpc
 
 import (
+	"bytes"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // AccountsToWatchOnly converts the accounts returned by the walletkit's
@@ -73,4 +76,23 @@ func parseDerivationPath(path string) ([]uint32, error) {
 		indices[i] = uint32(parsed)
 	}
 	return indices, nil
+}
+
+// doubleHashMessage creates the double hash (sha256) of a message
+// prepended with a specified prefix.
+func doubleHashMessage(prefix string, msg string) ([]byte, error) {
+	var buf bytes.Buffer
+	err := wire.WriteVarString(&buf, 0, prefix)
+	if err != nil {
+		return nil, err
+	}
+
+	err = wire.WriteVarString(&buf, 0, msg)
+	if err != nil {
+		return nil, err
+	}
+
+	digest := chainhash.DoubleHashB(buf.Bytes())
+
+	return digest, nil
 }

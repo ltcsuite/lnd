@@ -8,6 +8,7 @@ import (
 
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/keychain"
+	"github.com/ltcsuite/lnd/lnencrypt"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
@@ -47,6 +48,10 @@ const (
 	// commitment and HTLC outputs that pay directly to the channel
 	// initiator.
 	ScriptEnforcedLeaseVersion = 4
+
+	// SimpleTaprootVersion is a version that denotes this channel is using
+	// the musig2 based taproot commitment format.
+	SimpleTaprootVersion = 5
 )
 
 // Single is a static description of an existing channel that can be used for
@@ -177,7 +182,25 @@ func NewSingle(channel *channeldb.OpenChannel,
 	// to the channel ID so we can use that as height hint on restore.
 	chanID := channel.ShortChanID()
 	if chanID.BlockHeight == 0 {
-		chanID.BlockHeight = channel.FundingBroadcastHeight
+		chanID.BlockHeight = channel.BroadcastHeight()
+	}
+
+	// If this is a zero-conf channel, we'll need to have separate logic
+	// depending on whether it's confirmed or not. This is because the
+	// ShortChanID is an alias.
+	if channel.IsZeroConf() {
+		// If the channel is confirmed, we'll use the confirmed SCID.
+		if channel.ZeroConfConfirmed() {
+			chanID = channel.ZeroConfRealScid()
+		} else {
+			// Else if the zero-conf channel is unconfirmed, we'll
+			// need to use the broadcast height and zero out the
+			// TxIndex and TxPosition fields. This is so
+			// openChannelShell works properly.
+			chanID.BlockHeight = channel.BroadcastHeight()
+			chanID.TxIndex = 0
+			chanID.TxPosition = 0
+		}
 	}
 
 	single := Single{
@@ -194,6 +217,9 @@ func NewSingle(channel *channeldb.OpenChannel,
 	}
 
 	switch {
+	case channel.ChanType.IsTaproot():
+		single.Version = SimpleTaprootVersion
+
 	case channel.ChanType.HasLeaseExpiration():
 		single.Version = ScriptEnforcedLeaseVersion
 		single.LeaseExpiry = channel.ThawHeight
@@ -225,6 +251,7 @@ func (s *Single) Serialize(w io.Writer) error {
 	case AnchorsCommitVersion:
 	case AnchorsZeroFeeHtlcTxCommitVersion:
 	case ScriptEnforcedLeaseVersion:
+	case SimpleTaprootVersion:
 	default:
 		return fmt.Errorf("unable to serialize w/ unknown "+
 			"version: %v", s.Version)
@@ -315,10 +342,10 @@ func (s *Single) Serialize(w io.Writer) error {
 // global counter to use as a sequence number for nonces, and want to ensure
 // that we're able to decrypt these blobs without any additional context. We
 // derive the key that we use for encryption via a SHA2 operation of the with
-// the golden keychain.KeyFamilyStaticBackup base encryption key.  We then take
-// the serialized resulting shared secret point, and hash it using sha256 to
-// obtain the key that we'll use for encryption. When using the AEAD, we pass
-// the nonce as associated data such that we'll be able to package the two
+// the golden keychain.KeyFamilyBaseEncryption base encryption key.  We then
+// take the serialized resulting shared secret point, and hash it using sha256
+// to obtain the key that we'll use for encryption. When using the AEAD, we
+// pass the nonce as associated data such that we'll be able to package the two
 // together for storage. Before writing out the encrypted payload, we prepend
 // the nonce to the final blob.
 func (s *Single) PackToWriter(w io.Writer, keyRing keychain.KeyRing) error {
@@ -333,7 +360,11 @@ func (s *Single) PackToWriter(w io.Writer, keyRing keychain.KeyRing) error {
 	// Finally, we'll encrypt the raw serialized SCB (using the nonce as
 	// associated data), and write out the ciphertext prepend with the
 	// nonce that we used to the passed io.Reader.
-	return encryptPayloadToWriter(rawBytes, w, keyRing)
+	e, err := lnencrypt.KeyRingEncrypter(keyRing)
+	if err != nil {
+		return fmt.Errorf("unable to generate encrypt key %v", err)
+	}
+	return e.EncryptPayloadToWriter(rawBytes.Bytes(), w)
 }
 
 // readLocalKeyDesc reads a KeyDescriptor encoded within an unpacked Single.
@@ -397,6 +428,7 @@ func (s *Single) Deserialize(r io.Reader) error {
 	case AnchorsCommitVersion:
 	case AnchorsZeroFeeHtlcTxCommitVersion:
 	case ScriptEnforcedLeaseVersion:
+	case SimpleTaprootVersion:
 	default:
 		return fmt.Errorf("unable to de-serialize w/ unknown "+
 			"version: %v", s.Version)
@@ -510,7 +542,11 @@ func (s *Single) Deserialize(r io.Reader) error {
 // payload for whatever reason (wrong key, wrong nonce, etc), then this method
 // will return an error.
 func (s *Single) UnpackFromReader(r io.Reader, keyRing keychain.KeyRing) error {
-	plaintext, err := decryptPayloadFromReader(r, keyRing)
+	e, err := lnencrypt.KeyRingEncrypter(keyRing)
+	if err != nil {
+		return fmt.Errorf("unable to generate key decrypter %v", err)
+	}
+	plaintext, err := e.DecryptPayloadFromReader(r)
 	if err != nil {
 		return err
 	}

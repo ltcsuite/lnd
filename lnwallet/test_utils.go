@@ -5,10 +5,9 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"io"
-	"io/ioutil"
 	prand "math/rand"
 	"net"
-	"os"
+	"testing"
 
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/input"
@@ -20,6 +19,7 @@ import (
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -103,17 +103,16 @@ var (
 // CreateTestChannels creates to fully populated channels to be used within
 // testing fixtures. The channels will be returned as if the funding process
 // has just completed.  The channel itself is funded with 10 BTC, with 5 BTC
-// allocated to each side. Within the channel, Alice is the initiator. The
-// function also returns a "cleanup" function that is meant to be called once
-// the test has been finalized. The clean up function will remote all temporary
-// files created. If tweaklessCommits is true, then the commits within the
-// channels will use the new format, otherwise the legacy format.
-func CreateTestChannels(chanType channeldb.ChannelType) (
-	*LightningChannel, *LightningChannel, func(), error) {
+// allocated to each side. Within the channel, Alice is the initiator. If
+// tweaklessCommits is true, then the commits within the channels will use the
+// new format, otherwise the legacy format.
+func CreateTestChannels(t *testing.T, chanType channeldb.ChannelType,
+	dbModifiers ...channeldb.OptionModifier) (*LightningChannel,
+	*LightningChannel, error) {
 
 	channelCapacity, err := ltcutil.NewAmount(testChannelCapacity)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	channelBal := channelCapacity / 2
@@ -202,23 +201,23 @@ func CreateTestChannels(chanType channeldb.ChannelType) (
 
 	bobRoot, err := chainhash.NewHash(bobKeys[0].Serialize())
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	bobPreimageProducer := shachain.NewRevocationProducer(*bobRoot)
 	bobFirstRevoke, err := bobPreimageProducer.AtIndex(0)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	bobCommitPoint := input.ComputeCommitmentPoint(bobFirstRevoke[:])
 
 	aliceRoot, err := chainhash.NewHash(aliceKeys[0].Serialize())
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	alicePreimageProducer := shachain.NewRevocationProducer(*aliceRoot)
 	aliceFirstRevoke, err := alicePreimageProducer.AtIndex(0)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	aliceCommitPoint := input.ComputeCommitmentPoint(aliceFirstRevoke[:])
 
@@ -227,33 +226,29 @@ func CreateTestChannels(chanType channeldb.ChannelType) (
 		bobCommitPoint, *fundingTxIn, chanType, isAliceInitiator, 0,
 	)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
-	alicePath, err := ioutil.TempDir("", "alicedb")
+	dbAlice, err := channeldb.Open(t.TempDir(), dbModifiers...)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
+	t.Cleanup(func() {
+		require.NoError(t, dbAlice.Close())
+	})
 
-	dbAlice, err := channeldb.Open(alicePath)
+	dbBob, err := channeldb.Open(t.TempDir(), dbModifiers...)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-
-	bobPath, err := ioutil.TempDir("", "bobdb")
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	dbBob, err := channeldb.Open(bobPath)
-	if err != nil {
-		return nil, nil, nil, err
-	}
+	t.Cleanup(func() {
+		require.NoError(t, dbBob.Close())
+	})
 
 	estimator := chainfee.NewStaticEstimator(6000, 0)
 	feePerKw, err := estimator.EstimateFeePerKW(1)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	commitFee := calcStaticFee(chanType, 0)
 	var anchorAmt ltcutil.Amount
@@ -305,7 +300,7 @@ func CreateTestChannels(chanType channeldb.ChannelType) (
 
 	var chanIDBytes [8]byte
 	if _, err := io.ReadFull(rand.Reader, chanIDBytes[:]); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	shortChanID := lnwire.NewShortChanIDFromInt(
@@ -348,8 +343,8 @@ func CreateTestChannels(chanType channeldb.ChannelType) (
 		Packager:                channeldb.NewChannelPackager(shortChanID),
 	}
 
-	aliceSigner := &input.MockSigner{Privkeys: aliceKeys}
-	bobSigner := &input.MockSigner{Privkeys: bobKeys}
+	aliceSigner := input.NewMockSigner(aliceKeys, nil)
+	bobSigner := input.NewMockSigner(bobKeys, nil)
 
 	// TODO(roasbeef): make mock version of pre-image store
 
@@ -358,9 +353,12 @@ func CreateTestChannels(chanType channeldb.ChannelType) (
 		aliceSigner, aliceChannelState, alicePool,
 	)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	alicePool.Start()
+	t.Cleanup(func() {
+		require.NoError(t, alicePool.Stop())
+	})
 
 	obfuscator := createStateHintObfuscator(aliceChannelState)
 
@@ -369,21 +367,24 @@ func CreateTestChannels(chanType channeldb.ChannelType) (
 		bobSigner, bobChannelState, bobPool,
 	)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	bobPool.Start()
+	t.Cleanup(func() {
+		require.NoError(t, bobPool.Stop())
+	})
 
 	err = SetStateNumHint(
 		aliceCommitTx, 0, obfuscator,
 	)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	err = SetStateNumHint(
 		bobCommitTx, 0, obfuscator,
 	)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	addr := &net.TCPAddr{
@@ -391,7 +392,7 @@ func CreateTestChannels(chanType channeldb.ChannelType) (
 		Port: 18556,
 	}
 	if err := channelAlice.channelState.SyncPending(addr, 101); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	addr = &net.TCPAddr{
@@ -400,31 +401,44 @@ func CreateTestChannels(chanType channeldb.ChannelType) (
 	}
 
 	if err := channelBob.channelState.SyncPending(addr, 101); err != nil {
-		return nil, nil, nil, err
-	}
-
-	cleanUpFunc := func() {
-		os.RemoveAll(bobPath)
-		os.RemoveAll(alicePath)
-
-		alicePool.Stop()
-		bobPool.Stop()
+		return nil, nil, err
 	}
 
 	// Now that the channel are open, simulate the start of a session by
 	// having Alice and Bob extend their revocation windows to each other.
 	err = initRevocationWindows(channelAlice, channelBob)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
-	return channelAlice, channelBob, cleanUpFunc, nil
+	return channelAlice, channelBob, nil
 }
 
 // initRevocationWindows simulates a new channel being opened within the p2p
 // network by populating the initial revocation windows of the passed
 // commitment state machines.
 func initRevocationWindows(chanA, chanB *LightningChannel) error {
+	// If these are taproot chanenls, then we need to also simulate sending
+	// either FundingLocked or ChannelReestablish by calling
+	// InitRemoteMusigNonces for both sides.
+	if chanA.channelState.ChanType.IsTaproot() {
+		chanANonces, err := chanA.GenMusigNonces()
+		if err != nil {
+			return err
+		}
+		chanBNonces, err := chanB.GenMusigNonces()
+		if err != nil {
+			return err
+		}
+
+		if err := chanA.InitRemoteMusigNonces(chanBNonces); err != nil {
+			return err
+		}
+		if err := chanB.InitRemoteMusigNonces(chanANonces); err != nil {
+			return err
+		}
+	}
+
 	aliceNextRevoke, err := chanA.NextRevocationKey()
 	if err != nil {
 		return err
@@ -502,35 +516,39 @@ func calcStaticFee(chanType channeldb.ChannelType, numHTLCs int) ltcutil.Amount 
 // pending updates. This method is useful when testing interactions between two
 // live state machines.
 func ForceStateTransition(chanA, chanB *LightningChannel) error {
-	aliceSig, aliceHtlcSigs, _, err := chanA.SignNextCommitment()
+	aliceNewCommit, err := chanA.SignNextCommitment()
 	if err != nil {
 		return err
 	}
-	if err = chanB.ReceiveNewCommitment(aliceSig, aliceHtlcSigs); err != nil {
-		return err
-	}
-
-	bobRevocation, _, err := chanB.RevokeCurrentCommitment()
-	if err != nil {
-		return err
-	}
-	bobSig, bobHtlcSigs, _, err := chanB.SignNextCommitment()
+	err = chanB.ReceiveNewCommitment(aliceNewCommit.CommitSigs)
 	if err != nil {
 		return err
 	}
 
-	if _, _, _, _, err := chanA.ReceiveRevocation(bobRevocation); err != nil {
-		return err
-	}
-	if err := chanA.ReceiveNewCommitment(bobSig, bobHtlcSigs); err != nil {
-		return err
-	}
-
-	aliceRevocation, _, err := chanA.RevokeCurrentCommitment()
+	bobRevocation, _, _, err := chanB.RevokeCurrentCommitment()
 	if err != nil {
 		return err
 	}
-	if _, _, _, _, err := chanB.ReceiveRevocation(aliceRevocation); err != nil {
+	bobNewCommit, err := chanB.SignNextCommitment()
+	if err != nil {
+		return err
+	}
+
+	_, _, _, _, err = chanA.ReceiveRevocation(bobRevocation)
+	if err != nil {
+		return err
+	}
+	err = chanA.ReceiveNewCommitment(bobNewCommit.CommitSigs)
+	if err != nil {
+		return err
+	}
+
+	aliceRevocation, _, _, err := chanA.RevokeCurrentCommitment()
+	if err != nil {
+		return err
+	}
+	_, _, _, _, err = chanB.ReceiveRevocation(aliceRevocation)
+	if err != nil {
 		return err
 	}
 

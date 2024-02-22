@@ -63,7 +63,7 @@ func (i testInputType) keyPath() []uint32 {
 	case nestedP2WKH:
 		return []uint32{
 			hardenedKey(waddrmgr.KeyScopeBIP0049Plus.Purpose),
-			hardenedKey(0),
+			hardenedKey(2),
 			hardenedKey(0),
 			0, 0,
 		}
@@ -87,7 +87,7 @@ func (i testInputType) keyPath() []uint32 {
 	default:
 		return []uint32{
 			hardenedKey(waddrmgr.KeyScopeBIP0084.Purpose),
-			hardenedKey(0),
+			hardenedKey(2),
 			hardenedKey(0),
 			0, 0,
 		}
@@ -205,10 +205,9 @@ func (i testInputType) decorateInput(t *testing.T, privKey *btcec.PrivateKey,
 	}
 }
 
-func (i testInputType) beforeFinalize(t *testing.T, packet *psbt.Packet) {
+func (i testInputType) finalize(t *testing.T, packet *psbt.Packet) {
 	in := &packet.Inputs[0]
 	sigBytes := in.PartialSigs[0].Signature
-	pubKeyBytes := in.PartialSigs[0].PubKey
 
 	var witnessStack wire.TxWitness
 	switch i {
@@ -227,9 +226,12 @@ func (i testInputType) beforeFinalize(t *testing.T, packet *psbt.Packet) {
 		witnessStack[2] = in.WitnessScript
 
 	default:
-		witnessStack = make([][]byte, 2)
-		witnessStack[0] = sigBytes
-		witnessStack[1] = pubKeyBytes
+		// The PSBT finalizer knows what to do if we're not using a
+		// custom script.
+		err := psbt.MaybeFinalizeAll(packet)
+		require.NoError(t, err)
+
+		return
 	}
 
 	var err error
@@ -250,8 +252,7 @@ func serializeTxWitness(txWitness wire.TxWitness) ([]byte, error) {
 
 // TestSignPsbt tests the PSBT signing functionality.
 func TestSignPsbt(t *testing.T) {
-	w, cleanup := newTestWallet(t, netParams, seedBytes)
-	defer cleanup()
+	w, _ := newTestWallet(t, netParams, seedBytes)
 
 	testCases := []struct {
 		name      string
@@ -316,12 +317,16 @@ func TestSignPsbt(t *testing.T) {
 
 		// Let the wallet do its job. We expect to be the only signer
 		// for this PSBT, so we'll be able to finalize it later.
-		err = w.SignPsbt(packet)
+		signedInputs, err := w.SignPsbt(packet)
 		require.NoError(t, err)
+
+		// We expect one signed input at index 0.
+		require.Len(t, signedInputs, 1)
+		require.EqualValues(t, 0, signedInputs[0])
 
 		// If the witness stack needs to be assembled, give the caller
 		// the option to do that now.
-		tc.inputType.beforeFinalize(t, packet)
+		tc.inputType.finalize(t, packet)
 
 		finalTx, err := psbt.Extract(packet)
 		require.NoError(t, err)
@@ -330,6 +335,9 @@ func TestSignPsbt(t *testing.T) {
 			refTx.TxOut[0].PkScript, finalTx, 0,
 			txscript.StandardVerifyFlags, nil, nil,
 			refTx.TxOut[0].Value,
+			txscript.NewCannedPrevOutputFetcher(
+				refTx.TxOut[0].PkScript, refTx.TxOut[0].Value,
+			),
 		)
 		require.NoError(t, err)
 		require.NoError(t, vm.Execute())

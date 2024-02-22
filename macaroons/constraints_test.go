@@ -6,9 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
-
 	"github.com/ltcsuite/lnd/macaroons"
+	"github.com/stretchr/testify/require"
 	macaroon "gopkg.in/macaroon.v2"
 )
 
@@ -24,15 +23,15 @@ func createDummyMacaroon(t *testing.T) *macaroon.Macaroon {
 	dummyMacaroon, err := macaroon.New(
 		testRootKey, testID, testLocation, testVersion,
 	)
-	if err != nil {
-		t.Fatalf("Error creating initial macaroon: %v", err)
-	}
+	require.NoError(t, err, "Error creating initial macaroon")
 	return dummyMacaroon
 }
 
 // TestAddConstraints tests that constraints can be added to an existing
 // macaroon and therefore tighten its restrictions.
 func TestAddConstraints(t *testing.T) {
+	t.Parallel()
+
 	// We need a dummy macaroon to start with. Create one without
 	// a bakery, because we mock everything anyway.
 	initialMac := createDummyMacaroon(t)
@@ -42,9 +41,7 @@ func TestAddConstraints(t *testing.T) {
 	newMac, err := macaroons.AddConstraints(
 		initialMac, macaroons.TimeoutConstraint(1),
 	)
-	if err != nil {
-		t.Fatalf("Error adding constraint: %v", err)
-	}
+	require.NoError(t, err, "Error adding constraint")
 	if &newMac == &initialMac {
 		t.Fatalf("Initial macaroon has been changed, something " +
 			"went wrong!")
@@ -60,6 +57,8 @@ func TestAddConstraints(t *testing.T) {
 // TestTimeoutConstraint tests that a caveat for the lifetime of
 // a macaroon is created.
 func TestTimeoutConstraint(t *testing.T) {
+	t.Parallel()
+
 	// Get a configured version of the constraint function.
 	constraintFunc := macaroons.TimeoutConstraint(3)
 
@@ -67,9 +66,7 @@ func TestTimeoutConstraint(t *testing.T) {
 	// function to.
 	testMacaroon := createDummyMacaroon(t)
 	err := constraintFunc(testMacaroon)
-	if err != nil {
-		t.Fatalf("Error applying timeout constraint: %v", err)
-	}
+	require.NoError(t, err, "Error applying timeout constraint")
 
 	// Finally, check that the created caveat has an
 	// acceptable value.
@@ -77,6 +74,7 @@ func TestTimeoutConstraint(t *testing.T) {
 		string(testMacaroon.Caveats()[0].Id),
 		expectedTimeCaveatSubstring,
 	) {
+
 		t.Fatalf("Added caveat '%s' does not meet the expectations!",
 			testMacaroon.Caveats()[0].Id)
 	}
@@ -85,6 +83,8 @@ func TestTimeoutConstraint(t *testing.T) {
 // TestTimeoutConstraint tests that a caveat for the lifetime of
 // a macaroon is created.
 func TestIpLockConstraint(t *testing.T) {
+	t.Parallel()
+
 	// Get a configured version of the constraint function.
 	constraintFunc := macaroons.IPLockConstraint("127.0.0.1")
 
@@ -92,9 +92,7 @@ func TestIpLockConstraint(t *testing.T) {
 	// function to.
 	testMacaroon := createDummyMacaroon(t)
 	err := constraintFunc(testMacaroon)
-	if err != nil {
-		t.Fatalf("Error applying timeout constraint: %v", err)
-	}
+	require.NoError(t, err, "Error applying timeout constraint")
 
 	// Finally, check that the created caveat has an
 	// acceptable value.
@@ -107,6 +105,8 @@ func TestIpLockConstraint(t *testing.T) {
 // TestIPLockBadIP tests that an IP constraint cannot be added if the
 // provided string is not a valid IP address.
 func TestIPLockBadIP(t *testing.T) {
+	t.Parallel()
+
 	constraintFunc := macaroons.IPLockConstraint("127.0.0/800")
 	testMacaroon := createDummyMacaroon(t)
 	err := constraintFunc(testMacaroon)
@@ -118,6 +118,8 @@ func TestIPLockBadIP(t *testing.T) {
 // TestCustomConstraint tests that a custom constraint with a name and value can
 // be added to a macaroon.
 func TestCustomConstraint(t *testing.T) {
+	t.Parallel()
+
 	// Test a custom caveat with a value first.
 	constraintFunc := macaroons.CustomConstraint("unit-test", "test-value")
 	testMacaroon := createDummyMacaroon(t)

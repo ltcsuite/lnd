@@ -11,6 +11,7 @@ import (
 	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
+	"github.com/stretchr/testify/require"
 )
 
 type moreChansResp struct {
@@ -154,15 +155,13 @@ type testContext struct {
 	sync.Mutex
 }
 
-func setup(t *testing.T, initialChans []LocalChannel) (*testContext, func()) {
+func setup(t *testing.T, initialChans []LocalChannel) *testContext {
 	t.Helper()
 
 	// First, we'll create all the dependencies that we'll need in order to
 	// create the autopilot agent.
 	self, err := randKey()
-	if err != nil {
-		t.Fatalf("unable to generate key: %v", err)
-	}
+	require.NoError(t, err, "unable to generate key")
 
 	quit := make(chan struct{})
 	heuristic := &mockHeuristic{
@@ -179,7 +178,7 @@ func setup(t *testing.T, initialChans []LocalChannel) (*testContext, func()) {
 	chanController := &mockChanController{
 		openChanSignals: make(chan openChanIntent, 10),
 	}
-	memGraph, _, _ := newMemChanGraph()
+	memGraph, _ := newMemChanGraph(t)
 
 	// We'll keep track of the funds available to the agent, to make sure
 	// it correctly uses this value when querying the ChannelBudget.
@@ -216,9 +215,7 @@ func setup(t *testing.T, initialChans []LocalChannel) (*testContext, func()) {
 	}
 
 	agent, err := New(testCfg, initialChans)
-	if err != nil {
-		t.Fatalf("unable to create agent: %v", err)
-	}
+	require.NoError(t, err, "unable to create agent")
 	ctx.agent = agent
 
 	// With the autopilot agent and all its dependencies we'll start the
@@ -227,14 +224,14 @@ func setup(t *testing.T, initialChans []LocalChannel) (*testContext, func()) {
 		t.Fatalf("unable to start agent: %v", err)
 	}
 
-	cleanup := func() {
+	t.Cleanup(func() {
 		// We must close quit before agent.Stop(), to make sure
 		// ChannelBudget won't block preventing the agent from exiting.
 		close(quit)
 		agent.Stop()
-	}
+	})
 
-	return ctx, cleanup
+	return ctx
 }
 
 // respondMoreChans consumes the moreChanArgs element and responds to the agent
@@ -282,8 +279,7 @@ func respondNodeScores(t *testing.T, testCtx *testContext,
 func TestAgentChannelOpenSignal(t *testing.T) {
 	t.Parallel()
 
-	testCtx, cleanup := setup(t, nil)
-	defer cleanup()
+	testCtx := setup(t, nil)
 
 	// We'll send an initial "no" response to advance the agent past its
 	// initial check.
@@ -327,19 +323,16 @@ func TestAgentChannelOpenSignal(t *testing.T) {
 func TestAgentHeuristicUpdateSignal(t *testing.T) {
 	t.Parallel()
 
-	testCtx, cleanup := setup(t, nil)
-	defer cleanup()
+	testCtx := setup(t, nil)
 
 	pub, err := testCtx.graph.addRandNode()
-	if err != nil {
-		t.Fatalf("unable to generate key: %v", err)
-	}
+	require.NoError(t, err, "unable to generate key")
 
 	// We'll send an initial "no" response to advance the agent past its
 	// initial check.
 	respondMoreChans(t, testCtx, moreChansResp{0, 0})
 
-	// Next we'll signal that one of the heuristcs have been updated.
+	// Next we'll signal that one of the heuristics have been updated.
 	testCtx.agent.OnHeuristicUpdate(testCtx.heuristic)
 
 	// The update should trigger the agent to ask for a channel budget.so
@@ -391,15 +384,12 @@ var _ ChannelController = (*mockFailingChanController)(nil)
 func TestAgentChannelFailureSignal(t *testing.T) {
 	t.Parallel()
 
-	testCtx, cleanup := setup(t, nil)
-	defer cleanup()
+	testCtx := setup(t, nil)
 
 	testCtx.chanController = &mockFailingChanController{}
 
 	node, err := testCtx.graph.addRandNode()
-	if err != nil {
-		t.Fatalf("unable to add node: %v", err)
-	}
+	require.NoError(t, err, "unable to add node")
 
 	// First ensure the agent will attempt to open a new channel. Return
 	// that we need more channels, and have 5BTC to use.
@@ -443,8 +433,7 @@ func TestAgentChannelCloseSignal(t *testing.T) {
 		},
 	}
 
-	testCtx, cleanup := setup(t, initialChans)
-	defer cleanup()
+	testCtx := setup(t, initialChans)
 
 	// We'll send an initial "no" response to advance the agent past its
 	// initial check.
@@ -485,8 +474,7 @@ func TestAgentChannelCloseSignal(t *testing.T) {
 func TestAgentBalanceUpdate(t *testing.T) {
 	t.Parallel()
 
-	testCtx, cleanup := setup(t, nil)
-	defer cleanup()
+	testCtx := setup(t, nil)
 
 	// We'll send an initial "no" response to advance the agent past its
 	// initial check.
@@ -532,8 +520,7 @@ func TestAgentBalanceUpdate(t *testing.T) {
 func TestAgentImmediateAttach(t *testing.T) {
 	t.Parallel()
 
-	testCtx, cleanup := setup(t, nil)
-	defer cleanup()
+	testCtx := setup(t, nil)
 
 	const numChans = 5
 
@@ -598,8 +585,7 @@ func TestAgentImmediateAttach(t *testing.T) {
 func TestAgentPrivateChannels(t *testing.T) {
 	t.Parallel()
 
-	testCtx, cleanup := setup(t, nil)
-	defer cleanup()
+	testCtx := setup(t, nil)
 
 	// The chanController should be initialized such that all of its open
 	// channel requests are for private channels.
@@ -659,14 +645,11 @@ func TestAgentPrivateChannels(t *testing.T) {
 func TestAgentPendingChannelState(t *testing.T) {
 	t.Parallel()
 
-	testCtx, cleanup := setup(t, nil)
-	defer cleanup()
+	testCtx := setup(t, nil)
 
 	// We'll only return a single directive for a pre-chosen node.
 	nodeKey, err := testCtx.graph.addRandNode()
-	if err != nil {
-		t.Fatalf("unable to generate key: %v", err)
-	}
+	require.NoError(t, err, "unable to generate key")
 	nodeID := NewNodeID(nodeKey)
 	nodeDirective := &NodeScore{
 		NodeID: nodeID,
@@ -773,8 +756,7 @@ func TestAgentPendingChannelState(t *testing.T) {
 func TestAgentPendingOpenChannel(t *testing.T) {
 	t.Parallel()
 
-	testCtx, cleanup := setup(t, nil)
-	defer cleanup()
+	testCtx := setup(t, nil)
 
 	// We'll send an initial "no" response to advance the agent past its
 	// initial check.
@@ -805,8 +787,7 @@ func TestAgentPendingOpenChannel(t *testing.T) {
 func TestAgentOnNodeUpdates(t *testing.T) {
 	t.Parallel()
 
-	testCtx, cleanup := setup(t, nil)
-	defer cleanup()
+	testCtx := setup(t, nil)
 
 	// We'll send an initial "yes" response to advance the agent past its
 	// initial check. This will cause it to try to get directives from an
@@ -853,8 +834,7 @@ func TestAgentOnNodeUpdates(t *testing.T) {
 func TestAgentSkipPendingConns(t *testing.T) {
 	t.Parallel()
 
-	testCtx, cleanup := setup(t, nil)
-	defer cleanup()
+	testCtx := setup(t, nil)
 
 	connect := make(chan chan error)
 	testCtx.agent.cfg.ConnectToPeer = func(*btcec.PublicKey, []net.Addr) (bool, error) {
@@ -876,9 +856,7 @@ func TestAgentSkipPendingConns(t *testing.T) {
 
 	// We'll only return a single directive for a pre-chosen node.
 	nodeKey, err := testCtx.graph.addRandNode()
-	if err != nil {
-		t.Fatalf("unable to generate key: %v", err)
-	}
+	require.NoError(t, err, "unable to generate key")
 	nodeID := NewNodeID(nodeKey)
 	nodeDirective := &NodeScore{
 		NodeID: nodeID,
@@ -888,9 +866,7 @@ func TestAgentSkipPendingConns(t *testing.T) {
 	// We'll also add a second node to the graph, to keep the first one
 	// company.
 	nodeKey2, err := testCtx.graph.addRandNode()
-	if err != nil {
-		t.Fatalf("unable to generate key: %v", err)
-	}
+	require.NoError(t, err, "unable to generate key")
 	nodeID2 := NewNodeID(nodeKey2)
 
 	// We'll send an initial "yes" response to advance the agent past its
@@ -1038,8 +1014,7 @@ func TestAgentSkipPendingConns(t *testing.T) {
 func TestAgentQuitWhenPendingConns(t *testing.T) {
 	t.Parallel()
 
-	testCtx, cleanup := setup(t, nil)
-	defer cleanup()
+	testCtx := setup(t, nil)
 
 	connect := make(chan chan error)
 
@@ -1062,9 +1037,7 @@ func TestAgentQuitWhenPendingConns(t *testing.T) {
 
 	// We'll only return a single directive for a pre-chosen node.
 	nodeKey, err := testCtx.graph.addRandNode()
-	if err != nil {
-		t.Fatalf("unable to generate key: %v", err)
-	}
+	require.NoError(t, err, "unable to generate key")
 	nodeID := NewNodeID(nodeKey)
 	nodeDirective := &NodeScore{
 		NodeID: nodeID,
@@ -1231,8 +1204,7 @@ func TestAgentChannelSizeAllocation(t *testing.T) {
 	// Total number of nodes in our mock graph.
 	const numNodes = 20
 
-	testCtx, cleanup := setup(t, nil)
-	defer cleanup()
+	testCtx := setup(t, nil)
 
 	nodeScores := make(map[NodeID]*NodeScore)
 	for i := 0; i < numNodes; i++ {
@@ -1256,7 +1228,7 @@ func TestAgentChannelSizeAllocation(t *testing.T) {
 				"had %v", len(arg.chans))
 		}
 		if arg.balance != testCtx.walletBalance {
-			t.Fatalf("expectd agent to have %v balance, had %v",
+			t.Fatalf("expected agent to have %v balance, had %v",
 				testCtx.walletBalance, arg.balance)
 		}
 	case <-time.After(time.Second * 3):

@@ -47,6 +47,8 @@ type StandardWitnessType uint16
 // WitnessType interface.
 var _ WitnessType = (StandardWitnessType)(0)
 
+// NOTE: When adding a new `StandardWitnessType`, also update the `WitnessType`
+// protobuf enum and the `allWitnessTypes` map in the `walletrpc` package.
 const (
 	// CommitmentTimeLock is a witness that allows us to spend our output
 	// on our local commitment transaction after a relative lock-time
@@ -84,7 +86,7 @@ const (
 	// us to sweep an HTLC output that we extended to a party, but was
 	// never fulfilled. This _is_ the HTLC output directly on our
 	// commitment transaction, and the input to the second-level HTLC
-	// tiemout transaction. It can only be spent after CLTV expiry, and
+	// timeout transaction. It can only be spent after CLTV expiry, and
 	// commitment confirmation.
 	HtlcOfferedTimeoutSecondLevelInputConfirmed StandardWitnessType = 15
 
@@ -175,6 +177,83 @@ const (
 	// and CLTV locktime as part of the script enforced lease commitment
 	// type.
 	LeaseHtlcAcceptedSuccessSecondLevel StandardWitnessType = 20
+
+	// TaprootPubKeySpend is a witness type that allows us to spend a
+	// regular p2tr output that's sent to an output which is under complete
+	// control of the backing wallet.
+	TaprootPubKeySpend StandardWitnessType = 21
+
+	// TaprootLocalCommitSpend is a witness type that allows us to spend
+	// our settled local commitment after a CSV delay when we force close
+	// the channel.
+	TaprootLocalCommitSpend StandardWitnessType = 22
+
+	// TaprootRemoteCommitSpend is a witness type that allows us to spend
+	// our settled local commitment after a CSV delay when the remote party
+	// has force closed the channel.
+	TaprootRemoteCommitSpend StandardWitnessType = 23
+
+	// TaprootAnchorSweepSpend is the witness type we'll use for spending
+	// our own anchor output.
+	TaprootAnchorSweepSpend StandardWitnessType = 24
+
+	// TaprootHtlcOfferedTimeoutSecondLevel is a witness that allows us to
+	// timeout an HTLC we offered to the remote party on our commitment
+	// transaction. We use this when we need to go on chain to time out an
+	// HTLC.
+	TaprootHtlcOfferedTimeoutSecondLevel StandardWitnessType = 25
+
+	// TaprootHtlcAcceptedSuccessSecondLevel is a witness that allows us to
+	// sweep an HTLC we accepted on our commitment transaction after we go
+	// to the second level on chain.
+	TaprootHtlcAcceptedSuccessSecondLevel StandardWitnessType = 26
+
+	// TaprootHtlcSecondLevelRevoke is a witness that allows us to sweep an
+	// HTLC on the revoked transaction of the remote party that goes to the
+	// second level.
+	TaprootHtlcSecondLevelRevoke StandardWitnessType = 27
+
+	// TaprootHtlcAcceptedRevoke is a witness that allows us to sweep an
+	// HTLC sent to us by the remote party in the event that they broadcast
+	// a revoked state.
+	TaprootHtlcAcceptedRevoke StandardWitnessType = 28
+
+	// TaprootHtlcOfferedRevoke is a witness that allows us to sweep an
+	// HTLC we offered to the remote party if they broadcast a revoked
+	// commitment.
+	TaprootHtlcOfferedRevoke StandardWitnessType = 29
+
+	// TaprootHtlcOfferedRemoteTimeout is a witness that allows us to sweep
+	// an HTLC we offered to the remote party that lies on the commitment
+	// transaction for the remote party. We can spend this output after the
+	// absolute CLTV timeout of the HTLC as passed.
+	TaprootHtlcOfferedRemoteTimeout StandardWitnessType = 30
+
+	// TaprootHtlcLocalOfferedTimeout is a witness type that allows us to
+	// sign the second level HTLC timeout transaction when spending from an
+	// HTLC residing on our local commitment transaction.
+	//
+	// This is used by the sweeper to re-sign inputs if it needs to
+	// aggregate several second level HTLCs.
+	TaprootHtlcLocalOfferedTimeout StandardWitnessType = 31
+
+	// TaprootHtlcAcceptedRemoteSuccess is a witness that allows us to
+	// sweep an HTLC that was offered to us by the remote party for a
+	// taproot channels. We use this witness in the case that the remote
+	// party goes to chain, and we know the pre-image to the HTLC. We can
+	// sweep this without any additional timeout.
+	TaprootHtlcAcceptedRemoteSuccess StandardWitnessType = 32
+
+	// TaprootHtlcAcceptedLocalSuccess is a witness type that allows us to
+	// sweep the HTLC offered to us on our local commitment transaction.
+	// We'll use this when we need to go on chain to sweep the HTLC. In
+	// this case, this is the second level HTLC success transaction.
+	TaprootHtlcAcceptedLocalSuccess StandardWitnessType = 33
+
+	// TaprootCommitmentRevoke is a witness that allows us to sweep the
+	// settled output of a malicious counterparty's who broadcasts a
+	// revoked taproot commitment transaction.
+	TaprootCommitmentRevoke StandardWitnessType = 34
 )
 
 // String returns a human readable version of the target WitnessType.
@@ -245,6 +324,48 @@ func (wt StandardWitnessType) String() string {
 	case LeaseHtlcAcceptedSuccessSecondLevel:
 		return "LeaseHtlcAcceptedSuccessSecondLevel"
 
+	case TaprootPubKeySpend:
+		return "TaprootPubKeySpend"
+
+	case TaprootLocalCommitSpend:
+		return "TaprootLocalCommitSpend"
+
+	case TaprootRemoteCommitSpend:
+		return "TaprootRemoteCommitSpend"
+
+	case TaprootAnchorSweepSpend:
+		return "TaprootAnchorSweepSpend"
+
+	case TaprootHtlcOfferedTimeoutSecondLevel:
+		return "TaprootHtlcOfferedTimeoutSecondLevel"
+
+	case TaprootHtlcAcceptedSuccessSecondLevel:
+		return "TaprootHtlcAcceptedSuccessSecondLevel"
+
+	case TaprootHtlcSecondLevelRevoke:
+		return "TaprootHtlcSecondLevelRevoke"
+
+	case TaprootHtlcAcceptedRevoke:
+		return "TaprootHtlcAcceptedRevoke"
+
+	case TaprootHtlcOfferedRevoke:
+		return "TaprootHtlcOfferedRevoke"
+
+	case TaprootHtlcOfferedRemoteTimeout:
+		return "TaprootHtlcOfferedRemoteTimeout"
+
+	case TaprootHtlcLocalOfferedTimeout:
+		return "TaprootHtlcLocalOfferedTimeout"
+
+	case TaprootHtlcAcceptedRemoteSuccess:
+		return "TaprootHtlcAcceptedRemoteSuccess"
+
+	case TaprootHtlcAcceptedLocalSuccess:
+		return "TaprootHtlcAcceptedLocalSuccess"
+
+	case TaprootCommitmentRevoke:
+		return "TaprootCommitmentRevoke"
+
 	default:
 		return fmt.Sprintf("Unknown WitnessType: %v", uint32(wt))
 	}
@@ -262,6 +383,7 @@ func (wt StandardWitnessType) WitnessGenerator(signer Signer,
 	return func(tx *wire.MsgTx, hc *txscript.TxSigHashes,
 		inputIndex int) (*Script, error) {
 
+		// TODO(roasbeef): copy the desc?
 		desc := descriptor
 		desc.SigHashes = hc
 		desc.InputIndex = inputIndex
@@ -388,8 +510,209 @@ func (wt StandardWitnessType) WitnessGenerator(signer Signer,
 
 		case WitnessKeyHash:
 			fallthrough
+		case TaprootPubKeySpend:
+			fallthrough
 		case NestedWitnessKeyHash:
 			return signer.ComputeInputScript(tx, desc)
+
+		case TaprootLocalCommitSpend:
+			// Ensure that the sign desc has the proper sign method
+			// set, and a valid prev output fetcher.
+			desc.SignMethod = TaprootScriptSpendSignMethod
+
+			// The control block bytes must be set at this point.
+			if desc.ControlBlock == nil {
+				return nil, fmt.Errorf("control block must " +
+					"be set for taproot spend")
+			}
+
+			witness, err := TaprootCommitSpendSuccess(
+				signer, desc, tx, nil,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			return &Script{
+				Witness: witness,
+			}, nil
+
+		case TaprootRemoteCommitSpend:
+			// Ensure that the sign desc has the proper sign method
+			// set, and a valid prev output fetcher.
+			desc.SignMethod = TaprootScriptSpendSignMethod
+
+			// The control block bytes must be set at this point.
+			if desc.ControlBlock == nil {
+				return nil, fmt.Errorf("control block must " +
+					"be set for taproot spend")
+			}
+
+			witness, err := TaprootCommitRemoteSpend(
+				signer, desc, tx, nil,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			return &Script{
+				Witness: witness,
+			}, nil
+
+		case TaprootAnchorSweepSpend:
+			// Ensure that the sign desc has the proper sign method
+			// set, and a valid prev output fetcher.
+			desc.SignMethod = TaprootKeySpendSignMethod
+
+			// The tap tweak must be set at this point.
+			if desc.TapTweak == nil {
+				return nil, fmt.Errorf("tap tweak must be " +
+					"set for keyspend")
+			}
+
+			witness, err := TaprootAnchorSpend(
+				signer, desc, tx,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			return &Script{
+				Witness: witness,
+			}, nil
+
+		case TaprootHtlcOfferedTimeoutSecondLevel,
+			TaprootHtlcAcceptedSuccessSecondLevel:
+			// Ensure that the sign desc has the proper sign method
+			// set, and a valid prev output fetcher.
+			desc.SignMethod = TaprootScriptSpendSignMethod
+
+			// The control block bytes must be set at this point.
+			if desc.ControlBlock == nil {
+				return nil, fmt.Errorf("control block must " +
+					"be set for taproot spend")
+			}
+
+			witness, err := TaprootHtlcSpendSuccess(
+				signer, desc, tx, nil, nil,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			return &Script{
+				Witness: witness,
+			}, nil
+
+		case TaprootHtlcSecondLevelRevoke:
+			// Ensure that the sign desc has the proper sign method
+			// set, and a valid prev output fetcher.
+			desc.SignMethod = TaprootKeySpendSignMethod
+
+			// The tap tweak must be set at this point.
+			if desc.TapTweak == nil {
+				return nil, fmt.Errorf("tap tweak must be " +
+					"set for keyspend")
+			}
+
+			witness, err := TaprootHtlcSpendRevoke(
+				signer, desc, tx,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			return &Script{
+				Witness: witness,
+			}, nil
+
+		case TaprootHtlcOfferedRevoke:
+			// Ensure that the sign desc has the proper sign method
+			// set, and a valid prev output fetcher.
+			desc.SignMethod = TaprootKeySpendSignMethod
+
+			// The tap tweak must be set at this point.
+			if desc.TapTweak == nil {
+				return nil, fmt.Errorf("tap tweak must be " +
+					"set for keyspend")
+			}
+
+			witness, err := SenderHTLCScriptTaprootRevoke(
+				signer, desc, tx,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			return &Script{
+				Witness: witness,
+			}, nil
+
+		case TaprootHtlcAcceptedRevoke:
+			// Ensure that the sign desc has the proper sign method
+			// set, and a valid prev output fetcher.
+			desc.SignMethod = TaprootKeySpendSignMethod
+
+			// The tap tweak must be set at this point.
+			if desc.TapTweak == nil {
+				return nil, fmt.Errorf("tap tweak must be " +
+					"set for keyspend")
+			}
+
+			witness, err := ReceiverHTLCScriptTaprootRevoke(
+				signer, desc, tx,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			return &Script{
+				Witness: witness,
+			}, nil
+
+		case TaprootHtlcOfferedRemoteTimeout:
+			// Ensure that the sign desc has the proper sign method
+			// set, and a valid prev output fetcher.
+			desc.SignMethod = TaprootScriptSpendSignMethod
+
+			// The control block bytes must be set at this point.
+			if desc.ControlBlock == nil {
+				return nil, fmt.Errorf("control block " +
+					"must be set for taproot spend")
+			}
+
+			witness, err := ReceiverHTLCScriptTaprootTimeout(
+				signer, desc, tx, -1, nil, nil,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			return &Script{
+				Witness: witness,
+			}, nil
+
+		case TaprootCommitmentRevoke:
+			// Ensure that the sign desc has the proper sign method
+			// set, and a valid prev output fetcher.
+			desc.SignMethod = TaprootScriptSpendSignMethod
+
+			// The control block bytes must be set at this point.
+			if desc.ControlBlock == nil {
+				return nil, fmt.Errorf("control block " +
+					"must be set for taproot spend")
+			}
+
+			witness, err := TaprootCommitSpendRevoke(
+				signer, desc, tx, nil,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			return &Script{
+				Witness: witness,
+			}, nil
 
 		default:
 			return nil, fmt.Errorf("unknown witness type: %v", wt)
@@ -405,7 +728,6 @@ func (wt StandardWitnessType) WitnessGenerator(signer Signer,
 // NOTE: This is part of the WitnessType interface.
 func (wt StandardWitnessType) SizeUpperBound() (int, bool, error) {
 	switch wt {
-
 	// Outputs on a remote commitment transaction that pay directly to us.
 	case CommitSpendNoDelayTweakless:
 		fallthrough
@@ -495,6 +817,51 @@ func (wt StandardWitnessType) SizeUpperBound() (int, bool, error) {
 	// The revocation output of a second level output of an HTLC.
 	case HtlcSecondLevelRevoke:
 		return ToLocalPenaltyWitnessSize, false, nil
+
+	case TaprootPubKeySpend:
+		return TaprootKeyPathCustomSighashWitnessSize, false, nil
+
+	// Sweeping a self output after a delay for taproot channels.
+	case TaprootLocalCommitSpend:
+		return TaprootToLocalWitnessSize, false, nil
+
+	// Sweeping a self output after the remote party fro ce closes. Must
+	// wait 1 CSV.
+	case TaprootRemoteCommitSpend:
+		return TaprootToRemoteWitnessSize, false, nil
+
+	// Sweeping our anchor output with a key spend witness.
+	case TaprootAnchorSweepSpend:
+		return TaprootAnchorWitnessSize, false, nil
+
+	case TaprootHtlcOfferedTimeoutSecondLevel,
+		TaprootHtlcAcceptedSuccessSecondLevel:
+
+		return TaprootSecondLevelHtlcWitnessSize, false, nil
+
+	case TaprootHtlcSecondLevelRevoke:
+		return TaprootSecondLevelRevokeWitnessSize, false, nil
+
+	case TaprootHtlcAcceptedRevoke:
+		return TaprootAcceptedRevokeWitnessSize, false, nil
+
+	case TaprootHtlcOfferedRevoke:
+		return TaprootOfferedRevokeWitnessSize, false, nil
+
+	case TaprootHtlcOfferedRemoteTimeout:
+		return TaprootHtlcOfferedRemoteTimeoutWitnessSize, false, nil
+
+	case TaprootHtlcLocalOfferedTimeout:
+		return TaprootOfferedLocalTimeoutWitnessSize, false, nil
+
+	case TaprootHtlcAcceptedRemoteSuccess:
+		return TaprootHtlcAcceptedRemoteSuccessWitnessSize, false, nil
+
+	case TaprootHtlcAcceptedLocalSuccess:
+		return TaprootHtlcAcceptedLocalSuccessWitnessSize, false, nil
+
+	case TaprootCommitmentRevoke:
+		return TaprootToLocalRevokeWitnessSize, false, nil
 	}
 
 	return 0, false, fmt.Errorf("unexpected witness type: %v", wt)

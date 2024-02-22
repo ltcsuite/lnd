@@ -4,7 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/invoices"
 	"github.com/ltcsuite/lnd/lnrpc"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/zpay32"
@@ -16,7 +16,7 @@ import (
 // because not all information is stored in dedicated invoice fields. If there
 // is no payment request present, a dummy request will be returned. This can
 // happen with just-in-time inserted keysend invoices.
-func decodePayReq(invoice *channeldb.Invoice,
+func decodePayReq(invoice *invoices.Invoice,
 	activeNetParams *chaincfg.Params) (*zpay32.Invoice, error) {
 
 	paymentRequest := string(invoice.PaymentRequest)
@@ -38,11 +38,10 @@ func decodePayReq(invoice *channeldb.Invoice,
 			"request: %v", err)
 	}
 	return decoded, nil
-
 }
 
-// CreateRPCInvoice creates an *lnrpc.Invoice from the *channeldb.Invoice.
-func CreateRPCInvoice(invoice *channeldb.Invoice,
+// CreateRPCInvoice creates an *lnrpc.Invoice from the *invoices.Invoice.
+func CreateRPCInvoice(invoice *invoices.Invoice,
 	activeNetParams *chaincfg.Params) (*lnrpc.Invoice, error) {
 
 	decoded, err := decodePayReq(invoice, activeNetParams)
@@ -77,18 +76,22 @@ func CreateRPCInvoice(invoice *channeldb.Invoice,
 	satAmt := invoice.Terms.Value.ToSatoshis()
 	satAmtPaid := invoice.AmtPaid.ToSatoshis()
 
-	isSettled := invoice.State == channeldb.ContractSettled
+	isSettled := invoice.State == invoices.ContractSettled
 
 	var state lnrpc.Invoice_InvoiceState
 	switch invoice.State {
-	case channeldb.ContractOpen:
+	case invoices.ContractOpen:
 		state = lnrpc.Invoice_OPEN
-	case channeldb.ContractSettled:
+
+	case invoices.ContractSettled:
 		state = lnrpc.Invoice_SETTLED
-	case channeldb.ContractCanceled:
+
+	case invoices.ContractCanceled:
 		state = lnrpc.Invoice_CANCELED
-	case channeldb.ContractAccepted:
+
+	case invoices.ContractAccepted:
 		state = lnrpc.Invoice_ACCEPTED
+
 	default:
 		return nil, fmt.Errorf("unknown invoice state %v",
 			invoice.State)
@@ -98,11 +101,11 @@ func CreateRPCInvoice(invoice *channeldb.Invoice,
 	for key, htlc := range invoice.Htlcs {
 		var state lnrpc.InvoiceHTLCState
 		switch htlc.State {
-		case channeldb.HtlcStateAccepted:
+		case invoices.HtlcStateAccepted:
 			state = lnrpc.InvoiceHTLCState_ACCEPTED
-		case channeldb.HtlcStateSettled:
+		case invoices.HtlcStateSettled:
 			state = lnrpc.InvoiceHTLCState_SETTLED
-		case channeldb.HtlcStateCanceled:
+		case invoices.HtlcStateCanceled:
 			state = lnrpc.InvoiceHTLCState_CANCELED
 		default:
 			return nil, fmt.Errorf("unknown state %v", htlc.State)
@@ -140,14 +143,12 @@ func CreateRPCInvoice(invoice *channeldb.Invoice,
 		}
 
 		// Only report resolved times if htlc is resolved.
-		if htlc.State != channeldb.HtlcStateAccepted {
+		if htlc.State != invoices.HtlcStateAccepted {
 			rpcHtlc.ResolveTime = htlc.ResolveTime.Unix()
 		}
 
 		rpcHtlcs = append(rpcHtlcs, &rpcHtlc)
 	}
-
-	isAmp := invoice.Terms.Features.HasFeature(lnwire.AMPOptional)
 
 	rpcInvoice := &lnrpc.Invoice{
 		Memo:            string(invoice.Memo),
@@ -172,23 +173,22 @@ func CreateRPCInvoice(invoice *channeldb.Invoice,
 		State:           state,
 		Htlcs:           rpcHtlcs,
 		Features:        CreateRPCFeatures(invoice.Terms.Features),
-		IsKeysend:       len(invoice.PaymentRequest) == 0 && !isAmp,
+		IsKeysend:       invoice.IsKeysend(),
 		PaymentAddr:     invoice.Terms.PaymentAddr[:],
-		IsAmp:           isAmp,
+		IsAmp:           invoice.IsAMP(),
 	}
 
 	rpcInvoice.AmpInvoiceState = make(map[string]*lnrpc.AMPInvoiceState)
 	for setID, ampState := range invoice.AMPState {
-
 		setIDStr := hex.EncodeToString(setID[:])
 
 		var state lnrpc.InvoiceHTLCState
 		switch ampState.State {
-		case channeldb.HtlcStateAccepted:
+		case invoices.HtlcStateAccepted:
 			state = lnrpc.InvoiceHTLCState_ACCEPTED
-		case channeldb.HtlcStateSettled:
+		case invoices.HtlcStateSettled:
 			state = lnrpc.InvoiceHTLCState_SETTLED
-		case channeldb.HtlcStateCanceled:
+		case invoices.HtlcStateCanceled:
 			state = lnrpc.InvoiceHTLCState_CANCELED
 		default:
 			return nil, fmt.Errorf("unknown state %v", ampState.State)
@@ -204,7 +204,7 @@ func CreateRPCInvoice(invoice *channeldb.Invoice,
 		// If at least one of the present HTLC sets show up as being
 		// settled, then we'll mark the invoice itself as being
 		// settled.
-		if ampState.State == channeldb.HtlcStateSettled {
+		if ampState.State == invoices.HtlcStateSettled {
 			rpcInvoice.Settled = true // nolint:staticcheck
 			rpcInvoice.State = lnrpc.Invoice_SETTLED
 		}

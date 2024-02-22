@@ -1,25 +1,27 @@
 # Table of Contents
-* [Installation](#installation)
-  * [Installing a binary release](#installing-a-binary-release)
-  * [Building a tagged version with Docker](#building-a-tagged-version-with-docker)
-  * [Building a development version from source](#building-a-development-version-from-source)
-    * [Preliminaries](#preliminaries-for-installing-from-source)
-    * [Installing lnd](#installing-lnd-from-source)
-* [Available Backend Operating Modes](#available-backend-operating-modes)
-  * [ltcd Options](#ltcd-options)
-  * [Neutrino Options](#neutrino-options)
-  * [Litecoind Options](#litecoind-options)
-  * [Using ltcd](#using-ltcd)
-    * [Installing ltcd](#installing-ltcd)
-    * [Starting ltcd](#starting-ltcd)
-    * [Running lnd using the ltcd backend](#running-lnd-using-the-ltcd-backend)
-  * [Using Neutrino](#using-neutrino)
-  * [Using Litecoind](#using-litecoind)
-* [Creating a Wallet](#creating-a-wallet)
-* [Macaroons](#macaroons)
-* [Network Reachability](#network-reachability)
-* [Simnet vs. Testnet Development](#simnet-vs-testnet-development)
-* [Creating an lnd.conf (Optional)](#creating-an-lndconf-optional)
+- [Table of Contents](#table-of-contents)
+- [Installation](#installation)
+  - [Installing a binary release](#installing-a-binary-release)
+  - [Building a tagged version with Docker](#building-a-tagged-version-with-docker)
+  - [Building a development version from source](#building-a-development-version-from-source)
+    - [Installing Go](#installing-go)
+    - [Go modules](#go-modules)
+    - [Installing lnd from source](#installing-lnd-from-source)
+- [Available Backend Operating Modes](#available-backend-operating-modes)
+  - [ltcd Options](#ltcd-options)
+  - [Neutrino Options](#neutrino-options)
+  - [Litecoind Options](#litecoind-options)
+  - [Using ltcd](#using-ltcd)
+    - [Installing ltcd](#installing-ltcd)
+    - [Starting ltcd](#starting-ltcd)
+    - [Running lnd using the ltcd backend](#running-lnd-using-the-ltcd-backend)
+  - [Using Neutrino](#using-neutrino)
+  - [Using litecoind](#using-litecoind)
+- [Creating a wallet](#creating-a-wallet)
+- [Macaroons](#macaroons)
+- [Network Reachability](#network-reachability)
+- [Simnet vs. Testnet Development](#simnet-vs-testnet-development)
+- [Creating an lnd.conf (Optional)](#creating-an-lndconf-optional)
 
 # Installation
 
@@ -67,10 +69,10 @@ To build a specific git tag of `lnd`, simply run the following steps (assuming
 `v0.x.y-beta` is the tagged version to build):
 
 ```shell
-⛰  git clone https://github.com/ltcsuite/lnd
-⛰  cd lnd
-⛰  git checkout v0.x.y-beta
-⛰  make docker-release tag=v0.x.y-beta
+git clone https://github.com/ltcsuite/lnd
+cd lnd
+git checkout v0.x.y-beta
+make docker-release tag=v0.x.y-beta
 ```
 
 This will create a directory called `lnd-v0.x.y-beta` that contains the release
@@ -86,93 +88,119 @@ recommended for mainnet. The `master` branch can at times be unstable and
 running your node off of it can prevent it to go back to a previous, stable
 version if there are database migrations present.
 
-### Preliminaries for installing from source
-  In order to work with [`lnd`](https://github.com/ltcsuite/lnd), the
-  following build dependencies are required:
+In order to work with [`lnd`](https://github.com/ltcsuite/lnd), the 
+following build dependencies are required:
 
-  * **Go:** `lnd` is written in Go. To install, run one of the following commands:
+### Installing Go
 
+`lnd` is written in Go, with a minimum version of 1.19. To install, run one of
+the following commands for your OS:
 
-    **Note**: The minimum version of Go supported is Go 1.16. We recommend that
-    users use the latest version of Go, which at the time of writing is
-    [`1.17.1`](https://blog.golang.org/go1.17.1).
+<details>
+  <summary>Linux (x86-64)</summary>
+  
+  ```
+  wget https://dl.google.com/go/go1.19.7.linux-amd64.tar.gz
+  sha256sum go1.19.7.linux-amd64.tar.gz | awk -F " " '{ print $1 }'
+  ```
 
+  The final output of the command above should be
+  `7a75720c9b066ae1750f6bcc7052aba70fa3813f4223199ee2a2315fd3eb533d`. If it
+  isn't, then the target REPO HAS BEEN MODIFIED, and you shouldn't install
+  this version of Go. If it matches, then proceed to install Go:
+  ```
+  sudo tar -C /usr/local -xzf go1.19.7.linux-amd64.tar.gz
+  export PATH=$PATH:/usr/local/go/bin
+  ```
+</details>
 
-    On Linux:
+<details>
+  <summary>Linux (ARMv6)</summary>
+  
+  ```
+  wget https://dl.google.com/go/go1.19.7.linux-armv6l.tar.gz
+  sha256sum go1.19.7.linux-armv6l.tar.gz | awk -F " " '{ print $1 }'
+  ```
 
-    (x86-64)
-    ```
-    wget https://dl.google.com/go/go1.17.1.linux-amd64.tar.gz
-    sha256sum go1.17.1.linux-amd64.tar.gz | awk -F " " '{ print $1 }'
-    ```
+  The final output of the command above should be
+  `93b1f621ddfc2c2b4e383e185fa7801e80f8b546918cb96afea2723677928312`. If it
+  isn't, then the target REPO HAS BEEN MODIFIED, and you shouldn't install
+  this version of Go. If it matches, then proceed to install Go:
+  ```
+  tar -C /usr/local -xzf go1.19.7.linux-armv6l.tar.gz
+  export PATH=$PATH:/usr/local/go/bin
+  ```  
+  
+</details>
 
-    The final output of the command above should be
-    `dab7d9c34361dc21ec237d584590d72500652e7c909bf082758fb63064fca0ef`. If it
-    isn't, then the target REPO HAS BEEN MODIFIED, and you shouldn't install
-    this version of Go. If it matches, then proceed to install Go:
-    ```
-    sudo tar -C /usr/local -xzf go1.17.1.linux-amd64.tar.gz
-    export PATH=$PATH:/usr/local/go/bin
-    ```
+<details>
+  <summary>macOS</summary>
+  
+  First, install [Homebrew](https://brew.sh) if you don‘t already have it.
 
-    (ARMv6)
-    ```
-    wget https://dl.google.com/go/go1.17.1.linux-armv6l.tar.gz
-    sha256sum go1.17.1.linux-armv6l.tar.gz | awk -F " " '{ print $1 }'
-    ```
+  Then
 
-    The final output of the command above should be
-    `ed3e4dbc9b80353f6482c441d65b51808290e94ff1d15d56da5f4a7be7353758`. If it
-    isn't, then the target REPO HAS BEEN MODIFIED, and you shouldn't install
-    this version of Go. If it matches, then proceed to install Go:
-    ```
-    tar -C /usr/local -xzf go1.17.1.linux-armv6l.tar.gz
-    export PATH=$PATH:/usr/local/go/bin
-    ```
+  ```
+  brew install go
+  ```
 
-    On Mac OS X:
-    ```
-    brew install go@1.17.1
-    ```
+</details>
 
-    On FreeBSD:
-    ```
-    pkg install go
-    ```
+<details>
+  <summary>FreeBSD</summary>
+  
+  ```
+  pkg install go
+  ```
 
-    Alternatively, one can download the pre-compiled binaries hosted on the
-    [Golang download page](https://golang.org/dl/). If one seeks to install
-    from source, then more detailed installation instructions can be found
-    [here](https://golang.org/doc/install).
+  Alternatively, one can download the pre-compiled binaries hosted on the
+  [Golang download page](https://golang.org/dl/). If one seeks to install
+  from source, then more detailed installation instructions can be found
+  [here](https://golang.org/doc/install).
+</details>
 
-    At this point, you should set your `$GOPATH` environment variable, which
-    represents the path to your workspace. By default, `$GOPATH` is set to
-    `~/go`. You will also need to add `$GOPATH/bin` to your `PATH`. This ensures
-    that your shell will be able to detect the binaries you install.
+***Important***
 
-    ```shell
-    ⛰  export GOPATH=~/gocode
-    ⛰  export PATH=$PATH:$GOPATH/bin
-    ```
+At this point, you should set your `$GOPATH` environment variable, which
+represents the path to your workspace. By default, `$GOPATH` is set to
+`~/go`. You will also need to add `$GOPATH/bin` to your `PATH`. This ensures
+that your shell will be able to detect the binaries you install.
 
-    We recommend placing the above in your .bashrc or in a setup script so that
-    you can avoid typing this every time you open a new terminal window.
+```shell
+export GOPATH=~/go
+export PATH=$PATH:$GOPATH/bin
+```
 
-  * **Go modules:** This project uses [Go modules](https://github.com/golang/go/wiki/Modules) 
-    to manage dependencies as well as to provide *reproducible builds*.
+--- 
 
-    Usage of Go modules (with Go 1.13) means that you no longer need to clone
-    `lnd` into your `$GOPATH` for development purposes. Instead, your `lnd`
-    repo can now live anywhere!
+We recommend placing the above in your `.bashrc`, `.zshrc` or in a setup script 
+so that you can avoid typing this every time you open a new terminal window.
+
+### Go modules
+
+This project uses [Go modules](https://github.com/golang/go/wiki/Modules) 
+to manage dependencies as well as to provide *reproducible builds*.
+
+Usage of Go modules (with Go 1.13) means that you no longer need to clone
+`lnd` into your `$GOPATH` for development purposes. Instead, your `lnd`
+repo can now live anywhere!
+
+---
+Note: For mobile development, having the source code in `$GOPATH` is still
+required due to a current limitation in 
+[Go mobile](https://pkg.go.dev/golang.org/x/mobile). Take a look at the 
+documentation for [building mobile libraries](../mobile) to learn more.
+
+---
 
 ### Installing lnd from source
 
 With the preliminary steps completed, to install `lnd`, `lncli`, and all
 related dependencies run the following commands:
 ```shell
-⛰  git clone https://github.com/ltcsuite/lnd
-⛰  cd lnd
-⛰  make install
+git clone https://github.com/ltcsuite/lnd
+cd lnd
+make install
 ```
 
 The command above will install the current _master_ branch of `lnd`. If you
@@ -182,12 +210,11 @@ release](https://github.com/ltcsuite/lnd/releases). Assuming the name
 of the release is `v0.x.x`, then you can compile this release from source with
 a small modification to the above command: 
 ```shell
-⛰  git clone https://github.com/ltcsuite/lnd
-⛰  cd lnd
-⛰  git checkout v0.x.x
-⛰  make install
+git clone https://github.com/ltcsuite/lnd
+cd lnd
+git checkout v0.x.x
+make install
 ```
-
 
 **NOTE**: Our instructions still use the `$GOPATH` directory from prior
 versions of Go, but with Go 1.13, it's now possible for `lnd` to live
@@ -198,9 +225,9 @@ For Windows WSL users, make will need to be referenced directly via
 like so:
 
 ```shell
-⛰  /usr/bin/make && /usr/bin/make install
+/usr/bin/make && /usr/bin/make install
 
-⛰  "make" && "make" install
+"make" && "make" install
 ```
 
 On FreeBSD, use gmake instead of make.
@@ -208,7 +235,35 @@ On FreeBSD, use gmake instead of make.
 Alternatively, if one doesn't wish to use `make`, then the `go` commands can be
 used directly:
 ```shell
-⛰  go install -v ./...
+go install -v ./...
+```
+
+**Tags**
+
+Release binaries and installations from source using `make release-install`
+will have the following tags:
+
+- [autopilotrpc](/lnrpc/autopilotrpc/autopilot.proto)
+- [signrpc](/lnrpc/signrpc/signer.proto)
+- [walletrpc](/lnrpc/walletrpc/walletkit.proto)
+- [chainrpc](/lnrpc/chainrpc/chainnotifier.proto)
+- [invoicesrpc](/lnrpc/invoicesrpc/invoices.proto)
+- [neutrinorpc](/lnrpc/neutrinorpc/neutrino.proto)
+- [routerrpc](/lnrpc/routerrpc/router.proto)
+- [watchtowerrpc](/lnrpc/watchtowerrpc/watchtower.proto)
+- [monitoring](/monitoring) (for Prometheus integration)
+- [peersrpc](/lnrpc/peersrpc/peers.proto)
+- [kvdb_postrgres](/docs/postgres.md)
+- [kvdb_sqlite](/docs/sqlite.md)
+- [kvdb_etcd](/docs/etcd.md)
+
+The `dev` tag is used for development builds, and is not included in the
+release builds & installation.
+
+You can specify a custom set of tags when installing from source using the `tags=""` parameter. For example:
+
+```shell
+make install tags="signrpc walletrpc routerrpc invoicesrpc"
 ```
 
 **Updating**
@@ -216,9 +271,9 @@ used directly:
 To update your version of `lnd` to the latest version run the following
 commands:
 ```shell
-⛰  cd $GOPATH/src/github.com/ltcsuite/lnd
-⛰  git pull
-⛰  make clean && make && make install
+cd $GOPATH/src/github.com/ltcsuite/lnd
+git pull
+make clean && make && make install
 ```
 
 On FreeBSD, use gmake instead of make.
@@ -226,20 +281,25 @@ On FreeBSD, use gmake instead of make.
 Alternatively, if one doesn't wish to use `make`, then the `go` commands can be
 used directly:
 ```shell
-⛰  cd $GOPATH/src/github.com/ltcsuite/lnd
-⛰  git pull
-⛰  go install -v ./...
+cd $GOPATH/src/github.com/ltcsuite/lnd
+git pull
+go install -v ./...
 ```
 
 **Tests**
 
 To check that `lnd` was installed properly run the following command:
 ```shell
-⛰   make check
+ make check
 ```
 
 This command requires `litecoind` (almost any version should do) to be available
 in the system's `$PATH` variable. Otherwise some of the tests will fail.
+
+**Command-line completion for `lncli`**
+
+_Bash_: See `contrib/lncli.bash-completion`  
+_Fish_: Run: `lncli fish-completion > $HOME/.config/fish/completions/lncli.fish`
 
 # Available Backend Operating Modes
 
@@ -256,11 +316,11 @@ The set of arguments for each of the backend modes is as follows:
 ## ltcd Options
 ```text
 ltcd:
-      --ltcd.dir=                                             The base directory that contains the node's data, logs, configuration file, etc. (default: /Users/roasbeef/Library/Application Support/ltcd)
+      --ltcd.dir=                                             The base directory that contains the node's data, logs, configuration file, etc. (default: /Users/<username>/Library/Application Support/ltcd)
       --ltcd.rpchost=                                         The daemon's rpc listening address. If a port is omitted, then the default port for the selected chain parameters will be used. (default: localhost)
       --ltcd.rpcuser=                                         Username for RPC connections
       --ltcd.rpcpass=                                         Password for RPC connections
-      --ltcd.rpccert=                                         File containing the daemon's certificate file (default: /Users/roasbeef/Library/Application Support/Ltcd/rpc.cert)
+      --ltcd.rpccert=                                         File containing the daemon's certificate file (default: /Users/<username>/Library/Application Support/Ltcd/rpc.cert)
       --ltcd.rawrpccert=                                      The raw bytes of the daemon's PEM-encoded certificate chain which will be used to authenticate the RPC connection.
 ```
 
@@ -279,7 +339,7 @@ neutrino:
 ## litecoind Options
 ```text
 litecoind:
-      --litecoind.dir=                                         The base directory that contains the node's data, logs, configuration file, etc. (default: /Users/roasbeef/Library/Application Support/Litecoin)
+      --litecoind.dir=                                         The base directory that contains the node's data, logs, configuration file, etc. (default: /Users/<username>/Library/Application Support/Litecoin)
       --litecoind.rpchost=                                     The daemon's rpc listening address. If a port is omitted, then the default port for the selected chain parameters will be used. (default: localhost)
       --litecoind.rpcuser=                                     Username for RPC connections
       --litecoind.rpcpass=                                     Password for RPC connections
@@ -294,11 +354,14 @@ litecoind:
 
 On FreeBSD, use gmake instead of make.
 
+In order to be able to utilize the latest Taproot features, [`ltcd` version
+`v0.23.5`](https://github.com/btcsuite/ltcd/releases/tag/v0.23.5) MUST be used.
+
 To install ltcd, run the following commands:
 
 Install **ltcd**:
 ```shell
-⛰   make ltcd
+ make ltcd
 ```
 
 Alternatively, you can install [`ltcd` directly from its
@@ -309,7 +372,7 @@ repo](https://github.com/ltcsuite/ltcd).
 Running the following command will create `rpc.cert` and default `ltcd.conf`.
 
 ```shell
-⛰   ltcd --testnet --rpcuser=REPLACEME --rpcpass=REPLACEME
+ ltcd --testnet --rpcuser=REPLACEME --rpcpass=REPLACEME
 ```
 If you want to use `lnd` on testnet, `ltcd` needs to first fully sync the
 testnet blockchain. Depending on your hardware, this may take up to a few
@@ -322,7 +385,7 @@ directly, rather than scanning blocks or BIP 158 filters for relevant items.
 While `ltcd` is syncing you can check on its progress using ltcd's `getinfo`
 RPC command:
 ```shell
-⛰   btcctl --testnet --rpcuser=REPLACEME --rpcpass=REPLACEME getinfo
+ btcctl --testnet --rpcuser=REPLACEME --rpcpass=REPLACEME getinfo
 {
   "version": 120000,
   "protocolversion": 70002,
@@ -342,7 +405,7 @@ time.
 
 You can test your `ltcd` node's connectivity using the `getpeerinfo` command:
 ```shell
-⛰   btcctl --testnet --rpcuser=REPLACEME --rpcpass=REPLACEME getpeerinfo | more
+ btcctl --testnet --rpcuser=REPLACEME --rpcpass=REPLACEME getpeerinfo | more
 ```
 
 ### Running lnd using the ltcd backend
@@ -352,7 +415,7 @@ Otherwise, replace `--litecoin.testnet` with `--litecoin.simnet`. If you are
 installing `lnd` in preparation for the
 [tutorial](https://dev.lightning.community/tutorial), you may skip this step.
 ```shell
-⛰   lnd --litecoin.active --litecoin.testnet --debuglevel=debug \
+ lnd --litecoin.active --litecoin.testnet --debuglevel=debug \
        --ltcd.rpcuser=kek --ltcd.rpcpass=kek --externalip=X.X.X.X
 ```
 
@@ -368,14 +431,16 @@ mode.  A public instance of such a node can be found at
 To run lnd in neutrino mode, run `lnd` with the following arguments, (swapping
 in `--litecoin.simnet` if needed), and also your own `ltcd` node if available:
 ```shell
-⛰   lnd --litecoin.active --litecoin.testnet --debuglevel=debug \
+ lnd --litecoin.active --litecoin.testnet --debuglevel=debug \
        --litecoin.node=neutrino --neutrino.connect=faucet.lightning.community
 ```
 
 
 ## Using litecoind
 
-Note that adding `--txindex` is
+Setup will be described in regards to `litecoind`, but note that `lnd`
+uses a distinct `litecoin.node=litecoind` argument and analogous
+subconfigurations prefixed by `litecoind`. Note that adding `--txindex` is
 optional, as it will take longer to sync the node, but then `lnd` will
 generally operate faster as it can hit the index directly, rather than scanning
 blocks or BIP 158 filters for relevant items.
@@ -394,8 +459,8 @@ the following:
 - Configure the `litecoind` instance for ZMQ with `--zmqpubrawblock` and
   `--zmqpubrawtx`. These options must each use their own unique address in order
   to provide a reliable delivery of notifications (e.g.
-  `--zmqpubrawblock=tcp://127.0.0.1:28332` and
-  `--zmqpubrawtx=tcp://127.0.0.1:28333`).
+  `--zmqpubrawblock=tcp://127.0.0.1:29332` and
+  `--zmqpubrawtx=tcp://127.0.0.1:29333`).
 - Start `litecoind` running against testnet, and let it complete a full sync with
   the testnet chain (alternatively, use `--litecoind.regtest` instead).
 
@@ -404,8 +469,8 @@ Here's a sample `litecoin.conf` for use with lnd:
 testnet=1
 server=1
 daemon=1
-zmqpubrawblock=tcp://127.0.0.1:28332
-zmqpubrawtx=tcp://127.0.0.1:28333
+zmqpubrawblock=tcp://127.0.0.1:29332
+zmqpubrawtx=tcp://127.0.0.1:29333
 ```
 
 Once all of the above is complete, and you've confirmed `litecoind` is fully
@@ -415,11 +480,11 @@ updated with the latest blocks on testnet, run the command below to launch
 below):
 
 ```shell
-⛰   lnd --litecoin.active --litecoin.testnet --debuglevel=debug \
+ lnd --litecoin.active --litecoin.testnet --debuglevel=debug \
        --litecoin.node=litecoind --litecoind.rpcuser=REPLACEME \
        --litecoind.rpcpass=REPLACEME \
-       --litecoind.zmqpubrawblock=tcp://127.0.0.1:28332 \
-       --litecoind.zmqpubrawtx=tcp://127.0.0.1:28333 \
+       --litecoind.zmqpubrawblock=tcp://127.0.0.1:29332 \
+       --litecoind.zmqpubrawtx=tcp://127.0.0.1:29333 \
        --externalip=X.X.X.X
 ```
 
@@ -449,14 +514,14 @@ below):
   `lnd` plus any application that consumes the RPC could cause `lnd` to miss
   crucial updates from the backend.
 - The default fee estimate mode in `litecoind` is CONSERVATIVE. You can set
-  `litecoind.estimatemode=ECONOMICAL` to change it into ECONOMICAL. Futhermore,
+  `litecoind.estimatemode=ECONOMICAL` to change it into ECONOMICAL. Furthermore,
   if you start `litecoind` in `regtest`, this configuration won't take any effect.
 
 
 # Creating a wallet
 If `lnd` is being run for the first time, create a new wallet with:
 ```shell
-⛰   lncli create
+ lncli create
 ```
 This will prompt for a wallet password, and optionally a cipher seed
 passphrase.
@@ -475,8 +540,9 @@ bearer credentials allowing for delegation, attenuation, and other cool
 features. You can learn more about them in Alex Akselrod's [writeup on
 Github](https://github.com/ltcsuite/lnd/issues/20).
 
-Running `lnd` for the first time will by default generate the `admin.macaroon`,
-`read_only.macaroon`, and `macaroons.db` files that are used to authenticate
+Running `lncli create` to create a wallet, will by default generate 
+the `admin.macaroon`, `read_only.macaroon`, and `macaroons.db` 
+files that are used to authenticate
 into `lnd`. They will be stored in the network directory (default:
 `lnddir/data/chain/litecoin/mainnet`) so that it's possible to use a distinct
 password for mainnet, testnet, simnet, etc. Note that if you specified an
@@ -515,6 +581,12 @@ There are currently two primary ways to run `lnd`: one requires a local `ltcd`
 instance with the RPC service exposed, and the other uses a fully integrated
 light client powered by [neutrino](https://github.com/ltcsuite/neutrino).
 
+For testing scenarios like integration tests where wallet security is not
+important, the `itest/lnd-itest` binary can be used which uses very weak
+password stretching for the wallet encryption and therefore starts up faster
+than a production/mainnet/release build. The binary can be built by running
+`make build-itest`.
+
 # Creating an lnd.conf (Optional)
 
 Optionally, if you'd like to have a persistent configuration between `lnd`
@@ -522,7 +594,7 @@ launches, allowing you to simply type `lnd --litecoin.testnet --litecoin.active`
 at the command line, you can create an `lnd.conf`.
 
 **On MacOS, located at:**
-`/Users/[username]/Library/Application Support/Lndltc/lnd.conf`
+`/Users/<username>/Library/Application Support/Lndltc/lnd.conf`
 
 **On Linux, located at:**
 `~/.lndltc/lnd.conf`
@@ -533,12 +605,12 @@ Here's a sample `lnd.conf` for `ltcd` to get you started:
 debuglevel=trace
 maxpendingchannels=10
 
-[Bitcoin]
+[Litecoin]
 litecoin.active=1
 ```
 
-Notice the `[Bitcoin]` section. This section houses the parameters for the
-Bitcoin chain. `lnd` also supports Litecoin testnet4 (but not both BTC and LTC
+Notice the `[Litecoin]` section. This section houses the parameters for the
+Litecoin chain. `lnd` also supports Litecoin testnet4 (but not both BTC and LTC
 at the same time), so when working with Litecoin be sure to set to parameters
 for Litecoin accordingly. See a more detailed sample config file available
 [here](https://github.com/ltcsuite/lnd/blob/master/sample-lnd.conf)

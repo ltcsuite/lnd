@@ -10,13 +10,14 @@ import (
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCreateChanAnnouncement(t *testing.T) {
 	t.Parallel()
 
 	key := [33]byte{0x1}
-	sig := lnwire.Sig{0x1}
+	var sig lnwire.Sig
 	features := lnwire.NewRawFeatureVector(lnwire.AnchorsRequired)
 	var featuresBuf bytes.Buffer
 	if err := features.Encode(&featuresBuf); err != nil {
@@ -59,9 +60,7 @@ func TestCreateChanAnnouncement(t *testing.T) {
 	chanAnn, _, _, err := CreateChanAnnouncement(
 		chanProof, chanInfo, nil, nil,
 	)
-	if err != nil {
-		t.Fatalf("unable to create channel announcement: %v", err)
-	}
+	require.NoError(t, err, "unable to create channel announcement")
 
 	assert.Equal(t, chanAnn, expChanAnn)
 }

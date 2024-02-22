@@ -23,13 +23,12 @@ import (
 // prints debug information to stdout.
 func assertEngineExecution(t *testing.T, testNum int, valid bool,
 	newEngine func() (*txscript.Engine, error)) {
+
 	t.Helper()
 
 	// Get a new VM to execute.
 	vm, err := newEngine()
-	if err != nil {
-		t.Fatalf("unable to create engine: %v", err)
-	}
+	require.NoError(t, err, "unable to create engine")
 
 	// Execute the VM, only go on to the step-by-step execution if
 	// it doesn't validate as expected.
@@ -41,9 +40,7 @@ func assertEngineExecution(t *testing.T, testNum int, valid bool,
 	// Now that the execution didn't match what we expected, fetch a new VM
 	// to step through.
 	vm, err = newEngine()
-	if err != nil {
-		t.Fatalf("unable to create engine: %v", err)
-	}
+	require.NoError(t, err, "unable to create engine")
 
 	// This buffer will trace execution of the Script, dumping out
 	// to stdout.
@@ -55,21 +52,24 @@ func assertEngineExecution(t *testing.T, testNum int, valid bool,
 		if err != nil {
 			t.Fatalf("stepping (%v)\n", err)
 		}
-		debugBuf.WriteString(fmt.Sprintf("stepping %v\n", dis))
+		debugBuf.WriteString(fmt.Sprintf("Stepping %v\n", dis))
 
 		done, err = vm.Step()
 		if err != nil && valid {
-			fmt.Println(debugBuf.String())
+			t.Log(debugBuf.String())
 			t.Fatalf("spend test case #%v failed, spend "+
 				"should be valid: %v", testNum, err)
 		} else if err == nil && !valid && done {
-			fmt.Println(debugBuf.String())
+			t.Log(debugBuf.String())
 			t.Fatalf("spend test case #%v succeed, spend "+
 				"should be invalid: %v", testNum, err)
 		}
 
-		debugBuf.WriteString(fmt.Sprintf("Stack: %v", vm.GetStack()))
-		debugBuf.WriteString(fmt.Sprintf("AltStack: %v", vm.GetAltStack()))
+		debugBuf.WriteString(fmt.Sprintf("Stack: %v\n",
+			vm.GetStack()))
+		debugBuf.WriteString(fmt.Sprintf("AltStack: %v\n",
+			vm.GetAltStack()))
+		debugBuf.WriteString("-----\n")
 	}
 
 	// If we get to this point the unexpected case was not reached
@@ -80,7 +80,7 @@ func assertEngineExecution(t *testing.T, testNum int, valid bool,
 		validity = "valid"
 	}
 
-	fmt.Println(debugBuf.String())
+	t.Log(debugBuf.String())
 	t.Fatalf("%v spend test case #%v execution ended with: %v", validity, testNum, vmErr)
 }
 
@@ -162,14 +162,14 @@ func makeWitnessTestCase(t *testing.T,
 //
 // The following cases are exercised by this test:
 // sender script:
-//  * receiver spends
-//    * revoke w/ sig
-//    * HTLC with invalid preimage size
-//    * HTLC with valid preimage size + sig
-//  * sender spends
-//    * invalid lock-time for CLTV
-//    * invalid sequence for CSV
-//    * valid lock-time+sequence, valid sig
+//   - receiver spends
+//   - revoke w/ sig
+//   - HTLC with invalid preimage size
+//   - HTLC with valid preimage size + sig
+//   - sender spends
+//   - invalid lock-time for CLTV
+//   - invalid sequence for CSV
+//   - valid lock-time+sequence, valid sig
 func TestHTLCSenderSpendValidation(t *testing.T) {
 	t.Parallel()
 
@@ -177,9 +177,7 @@ func TestHTLCSenderSpendValidation(t *testing.T) {
 	// doesn't need to exist, as we'll only be validating spending from the
 	// transaction that references this.
 	txid, err := chainhash.NewHash(testHdSeed.CloneBytes())
-	if err != nil {
-		t.Fatalf("unable to create txid: %v", err)
-	}
+	require.NoError(t, err, "unable to create txid")
 	fundingOut := &wire.OutPoint{
 		Hash:  *txid,
 		Index: 50,
@@ -279,7 +277,7 @@ func TestHTLCSenderSpendValidation(t *testing.T) {
 			},
 		)
 
-		sweepTxSigHashes = txscript.NewTxSigHashes(sweepTx)
+		sweepTxSigHashes = NewTxSigHashesV0Only(sweepTx)
 
 		bobSigHash = txscript.SigHashAll
 		if confirmed {
@@ -545,9 +543,14 @@ func TestHTLCSenderSpendValidation(t *testing.T) {
 		sweepTx.TxIn[0].Witness = testCase.witness()
 
 		newEngine := func() (*txscript.Engine, error) {
-			return txscript.NewEngine(htlcPkScript,
-				sweepTx, 0, txscript.StandardVerifyFlags, nil,
-				nil, int64(paymentAmt))
+			return txscript.NewEngine(
+				htlcPkScript, sweepTx, 0,
+				txscript.StandardVerifyFlags, nil, nil,
+				int64(paymentAmt),
+				txscript.NewCannedPrevOutputFetcher(
+					htlcPkScript, int64(paymentAmt),
+				),
+			)
 		}
 
 		assertEngineExecution(t, i, testCase.valid, newEngine)
@@ -559,14 +562,14 @@ func TestHTLCSenderSpendValidation(t *testing.T) {
 // incoming HTLC.
 //
 // The following cases are exercised by this test:
-//  * receiver spends
-//     * HTLC redemption w/ invalid preimage size
-//     * HTLC redemption w/ invalid sequence
-//     * HTLC redemption w/ valid preimage size
-//  * sender spends
-//     * revoke w/ sig
-//     * refund w/ invalid lock time
-//     * refund w/ valid lock time
+//   - receiver spends
+//     1. HTLC redemption w/ invalid preimage size
+//     2. HTLC redemption w/ invalid sequence
+//     3. HTLC redemption w/ valid preimage size
+//   - sender spends
+//     1. revoke w/ sig
+//     2. refund w/ invalid lock time
+//     3. refund w/ valid lock time
 func TestHTLCReceiverSpendValidation(t *testing.T) {
 	t.Parallel()
 
@@ -574,9 +577,7 @@ func TestHTLCReceiverSpendValidation(t *testing.T) {
 	// doesn't need to exist, as we'll only be validating spending from the
 	// transaction that references this.
 	txid, err := chainhash.NewHash(testHdSeed.CloneBytes())
-	if err != nil {
-		t.Fatalf("unable to create txid: %v", err)
-	}
+	require.NoError(t, err, "unable to create txid")
 	fundingOut := &wire.OutPoint{
 		Hash:  *txid,
 		Index: 50,
@@ -673,7 +674,7 @@ func TestHTLCReceiverSpendValidation(t *testing.T) {
 				Value:    1 * 10e8,
 			},
 		)
-		sweepTxSigHashes = txscript.NewTxSigHashes(sweepTx)
+		sweepTxSigHashes = NewTxSigHashesV0Only(sweepTx)
 
 		aliceSigHash = txscript.SigHashAll
 		if confirmed {
@@ -699,7 +700,9 @@ func TestHTLCReceiverSpendValidation(t *testing.T) {
 			t.Fatalf("unable to generate alice signature: %v", err)
 		}
 
-		aliceSenderSig, err = ecdsa.ParseDERSignature(aliceSig.Serialize())
+		aliceSenderSig, err = ecdsa.ParseDERSignature(
+			aliceSig.Serialize(),
+		)
 		if err != nil {
 			t.Fatalf("unable to parse signature: %v", err)
 		}
@@ -959,9 +962,14 @@ func TestHTLCReceiverSpendValidation(t *testing.T) {
 		sweepTx.TxIn[0].Witness = testCase.witness()
 
 		newEngine := func() (*txscript.Engine, error) {
-			return txscript.NewEngine(htlcPkScript,
+			return txscript.NewEngine(
+				htlcPkScript,
 				sweepTx, 0, txscript.StandardVerifyFlags, nil,
-				nil, int64(paymentAmt))
+				nil, int64(paymentAmt),
+				txscript.NewCannedPrevOutputFetcher(
+					htlcPkScript, int64(paymentAmt),
+				),
+			)
 		}
 
 		assertEngineExecution(t, i, testCase.valid, newEngine)
@@ -996,9 +1004,7 @@ func TestSecondLevelHtlcSpends(t *testing.T) {
 	// Next, craft a fake HTLC outpoint that we'll use to generate the
 	// sweeping transaction using.
 	txid, err := chainhash.NewHash(testHdSeed.CloneBytes())
-	if err != nil {
-		t.Fatalf("unable to create txid: %v", err)
-	}
+	require.NoError(t, err, "unable to create txid")
 	htlcOutPoint := &wire.OutPoint{
 		Hash:  *txid,
 		Index: 0,
@@ -1011,7 +1017,7 @@ func TestSecondLevelHtlcSpends(t *testing.T) {
 			Value:    1 * 10e8,
 		},
 	)
-	sweepTxSigHashes := txscript.NewTxSigHashes(sweepTx)
+	sweepTxSigHashes := NewTxSigHashesV0Only(sweepTx)
 
 	// The delay key will be crafted using Bob's public key as the output
 	// we created will be spending from Alice's commitment transaction.
@@ -1026,13 +1032,9 @@ func TestSecondLevelHtlcSpends(t *testing.T) {
 	// sweep the output after a particular delay.
 	htlcWitnessScript, err := SecondLevelHtlcScript(revocationKey,
 		delayKey, claimDelay)
-	if err != nil {
-		t.Fatalf("unable to create htlc script: %v", err)
-	}
+	require.NoError(t, err, "unable to create htlc script")
 	htlcPkScript, err := WitnessScriptHash(htlcWitnessScript)
-	if err != nil {
-		t.Fatalf("unable to create htlc output: %v", err)
-	}
+	require.NoError(t, err, "unable to create htlc output")
 
 	htlcOutput := &wire.TxOut{
 		PkScript: htlcPkScript,
@@ -1162,9 +1164,14 @@ func TestSecondLevelHtlcSpends(t *testing.T) {
 		sweepTx.TxIn[0].Witness = testCase.witness()
 
 		newEngine := func() (*txscript.Engine, error) {
-			return txscript.NewEngine(htlcPkScript,
+			return txscript.NewEngine(
+				htlcPkScript,
 				sweepTx, 0, txscript.StandardVerifyFlags, nil,
-				nil, int64(htlcAmt))
+				nil, int64(htlcAmt),
+				txscript.NewCannedPrevOutputFetcher(
+					htlcPkScript, int64(htlcAmt),
+				),
+			)
 		}
 
 		assertEngineExecution(t, i, testCase.valid, newEngine)
@@ -1217,7 +1224,7 @@ func TestLeaseSecondLevelHtlcSpends(t *testing.T) {
 			Value:    1 * 10e8,
 		},
 	)
-	sweepTxSigHashes := txscript.NewTxSigHashes(sweepTx)
+	sweepTxSigHashes := NewTxSigHashesV0Only(sweepTx)
 
 	// The delay key will be crafted using Bob's public key as the output
 	// we created will be spending from Alice's commitment transaction.
@@ -1397,9 +1404,14 @@ func TestLeaseSecondLevelHtlcSpends(t *testing.T) {
 		sweepTx.TxIn[0].Witness = testCase.witness()
 
 		newEngine := func() (*txscript.Engine, error) {
-			return txscript.NewEngine(htlcPkScript,
-				sweepTx, 0, txscript.StandardVerifyFlags, nil,
-				nil, int64(htlcAmt))
+			return txscript.NewEngine(
+				htlcPkScript, sweepTx, 0,
+				txscript.StandardVerifyFlags, nil, nil,
+				int64(htlcAmt),
+				txscript.NewCannedPrevOutputFetcher(
+					htlcPkScript, int64(htlcAmt),
+				),
+			)
 		}
 
 		assertEngineExecution(t, i, testCase.valid, newEngine)
@@ -1469,7 +1481,7 @@ func TestLeaseCommmitSpendToSelf(t *testing.T) {
 			// Bob can spend with his revocation key, but not
 			// without the proper tweak.
 			makeWitnessTestCase(t, func() (wire.TxWitness, error) {
-				sweepTxSigHashes := txscript.NewTxSigHashes(sweepTx)
+				sweepTxSigHashes := NewTxSigHashesV0Only(sweepTx)
 				signDesc := &SignDescriptor{
 					KeyDesc: keychain.KeyDescriptor{
 						PubKey: bobKeyPub,
@@ -1491,7 +1503,7 @@ func TestLeaseCommmitSpendToSelf(t *testing.T) {
 			// Bob can spend with his revocation key with the proper
 			// tweak.
 			makeWitnessTestCase(t, func() (wire.TxWitness, error) {
-				sweepTxSigHashes := txscript.NewTxSigHashes(sweepTx)
+				sweepTxSigHashes := NewTxSigHashesV0Only(sweepTx)
 				signDesc := &SignDescriptor{
 					KeyDesc: keychain.KeyDescriptor{
 						PubKey: bobKeyPub,
@@ -1518,7 +1530,7 @@ func TestLeaseCommmitSpendToSelf(t *testing.T) {
 				sweepTx.TxIn[0].Sequence = LockTimeToSequence(
 					false, csvDelay/2,
 				)
-				sweepTxSigHashes := txscript.NewTxSigHashes(sweepTx)
+				sweepTxSigHashes := NewTxSigHashesV0Only(sweepTx)
 				signDesc := &SignDescriptor{
 					KeyDesc: keychain.KeyDescriptor{
 						PubKey: aliceKeyPub,
@@ -1545,7 +1557,7 @@ func TestLeaseCommmitSpendToSelf(t *testing.T) {
 				sweepTx.TxIn[0].Sequence = LockTimeToSequence(
 					false, csvDelay,
 				)
-				sweepTxSigHashes := txscript.NewTxSigHashes(sweepTx)
+				sweepTxSigHashes := NewTxSigHashesV0Only(sweepTx)
 				signDesc := &SignDescriptor{
 					KeyDesc: keychain.KeyDescriptor{
 						PubKey: aliceKeyPub,
@@ -1572,7 +1584,7 @@ func TestLeaseCommmitSpendToSelf(t *testing.T) {
 				sweepTx.TxIn[0].Sequence = LockTimeToSequence(
 					false, csvDelay,
 				)
-				sweepTxSigHashes := txscript.NewTxSigHashes(sweepTx)
+				sweepTxSigHashes := NewTxSigHashesV0Only(sweepTx)
 				signDesc := &SignDescriptor{
 					KeyDesc: keychain.KeyDescriptor{
 						PubKey: aliceKeyPub,
@@ -1596,9 +1608,14 @@ func TestLeaseCommmitSpendToSelf(t *testing.T) {
 		sweepTx.TxIn[0].Witness = testCase.witness()
 
 		newEngine := func() (*txscript.Engine, error) {
-			return txscript.NewEngine(commitPkScript,
+			return txscript.NewEngine(
+				commitPkScript,
 				sweepTx, 0, txscript.StandardVerifyFlags, nil,
-				nil, int64(outputVal))
+				nil, int64(outputVal),
+				txscript.NewCannedPrevOutputFetcher(
+					commitPkScript, int64(outputVal),
+				),
+			)
 		}
 
 		assertEngineExecution(t, i, testCase.valid, newEngine)
@@ -1616,21 +1633,15 @@ func TestCommitSpendToRemoteConfirmed(t *testing.T) {
 	aliceKeyPriv, aliceKeyPub := btcec.PrivKeyFromBytes(testWalletPrivKey)
 
 	txid, err := chainhash.NewHash(testHdSeed.CloneBytes())
-	if err != nil {
-		t.Fatalf("unable to create txid: %v", err)
-	}
+	require.NoError(t, err, "unable to create txid")
 	commitOut := &wire.OutPoint{
 		Hash:  *txid,
 		Index: 0,
 	}
 	commitScript, err := CommitScriptToRemoteConfirmed(aliceKeyPub)
-	if err != nil {
-		t.Fatalf("unable to create htlc script: %v", err)
-	}
+	require.NoError(t, err, "unable to create htlc script")
 	commitPkScript, err := WitnessScriptHash(commitScript)
-	if err != nil {
-		t.Fatalf("unable to create htlc output: %v", err)
-	}
+	require.NoError(t, err, "unable to create htlc output")
 
 	commitOutput := &wire.TxOut{
 		PkScript: commitPkScript,
@@ -1656,7 +1667,7 @@ func TestCommitSpendToRemoteConfirmed(t *testing.T) {
 			// Alice can spend after the a CSV delay has passed.
 			makeWitnessTestCase(t, func() (wire.TxWitness, error) {
 				sweepTx.TxIn[0].Sequence = LockTimeToSequence(false, 1)
-				sweepTxSigHashes := txscript.NewTxSigHashes(sweepTx)
+				sweepTxSigHashes := NewTxSigHashesV0Only(sweepTx)
 
 				signDesc := &SignDescriptor{
 					KeyDesc: keychain.KeyDescriptor{
@@ -1678,7 +1689,7 @@ func TestCommitSpendToRemoteConfirmed(t *testing.T) {
 			// Alice cannot spend output without sequence set.
 			makeWitnessTestCase(t, func() (wire.TxWitness, error) {
 				sweepTx.TxIn[0].Sequence = wire.MaxTxInSequenceNum
-				sweepTxSigHashes := txscript.NewTxSigHashes(sweepTx)
+				sweepTxSigHashes := NewTxSigHashesV0Only(sweepTx)
 
 				signDesc := &SignDescriptor{
 					KeyDesc: keychain.KeyDescriptor{
@@ -1702,9 +1713,14 @@ func TestCommitSpendToRemoteConfirmed(t *testing.T) {
 		sweepTx.TxIn[0].Witness = testCase.witness()
 
 		newEngine := func() (*txscript.Engine, error) {
-			return txscript.NewEngine(commitPkScript,
-				sweepTx, 0, txscript.StandardVerifyFlags, nil,
-				nil, int64(outputVal))
+			return txscript.NewEngine(
+				commitPkScript, sweepTx, 0,
+				txscript.StandardVerifyFlags, nil, nil,
+				int64(outputVal),
+				txscript.NewCannedPrevOutputFetcher(
+					commitPkScript, int64(outputVal),
+				),
+			)
 		}
 
 		assertEngineExecution(t, i, testCase.valid, newEngine)
@@ -1722,7 +1738,9 @@ func TestLeaseCommitSpendToRemoteConfirmed(t *testing.T) {
 		leaseExpiry = 1337
 	)
 
-	aliceKeyPriv, aliceKeyPub := btcec.PrivKeyFromBytes(testWalletPrivKey)
+	aliceKeyPriv, aliceKeyPub := btcec.PrivKeyFromBytes(
+		testWalletPrivKey,
+	)
 
 	txid, err := chainhash.NewHash(testHdSeed.CloneBytes())
 	require.NoError(t, err)
@@ -1765,7 +1783,7 @@ func TestLeaseCommitSpendToRemoteConfirmed(t *testing.T) {
 				sweepTx.TxIn[0].Sequence = LockTimeToSequence(
 					false, 1,
 				)
-				sweepTxSigHashes := txscript.NewTxSigHashes(sweepTx)
+				sweepTxSigHashes := NewTxSigHashesV0Only(sweepTx)
 
 				signDesc := &SignDescriptor{
 					KeyDesc: keychain.KeyDescriptor{
@@ -1790,7 +1808,7 @@ func TestLeaseCommitSpendToRemoteConfirmed(t *testing.T) {
 			makeWitnessTestCase(t, func() (wire.TxWitness, error) {
 				sweepTx.LockTime = leaseExpiry
 				sweepTx.TxIn[0].Sequence = wire.MaxTxInSequenceNum
-				sweepTxSigHashes := txscript.NewTxSigHashes(sweepTx)
+				sweepTxSigHashes := NewTxSigHashesV0Only(sweepTx)
 
 				signDesc := &SignDescriptor{
 					KeyDesc: keychain.KeyDescriptor{
@@ -1815,7 +1833,7 @@ func TestLeaseCommitSpendToRemoteConfirmed(t *testing.T) {
 			makeWitnessTestCase(t, func() (wire.TxWitness, error) {
 				sweepTx.LockTime = 0
 				sweepTx.TxIn[0].Sequence = wire.MaxTxInSequenceNum
-				sweepTxSigHashes := txscript.NewTxSigHashes(sweepTx)
+				sweepTxSigHashes := NewTxSigHashesV0Only(sweepTx)
 
 				signDesc := &SignDescriptor{
 					KeyDesc: keychain.KeyDescriptor{
@@ -1844,6 +1862,9 @@ func TestLeaseCommitSpendToRemoteConfirmed(t *testing.T) {
 				commitPkScript, sweepTx, 0,
 				txscript.StandardVerifyFlags, nil, nil,
 				int64(outputVal),
+				txscript.NewCannedPrevOutputFetcher(
+					commitPkScript, int64(outputVal),
+				),
 			)
 		}
 
@@ -1864,9 +1885,7 @@ func TestSpendAnchor(t *testing.T) {
 	// Create a fake anchor outpoint that we'll use to generate the
 	// sweeping transaction.
 	txid, err := chainhash.NewHash(testHdSeed.CloneBytes())
-	if err != nil {
-		t.Fatalf("unable to create txid: %v", err)
-	}
+	require.NoError(t, err, "unable to create txid")
 	anchorOutPoint := &wire.OutPoint{
 		Hash:  *txid,
 		Index: 0,
@@ -1884,13 +1903,9 @@ func TestSpendAnchor(t *testing.T) {
 	// Generate the anchor script that can be spent by Alice immediately,
 	// or by anyone after 16 blocks.
 	anchorScript, err := CommitScriptAnchor(aliceKeyPub)
-	if err != nil {
-		t.Fatalf("unable to create htlc script: %v", err)
-	}
+	require.NoError(t, err, "unable to create htlc script")
 	anchorPkScript, err := WitnessScriptHash(anchorScript)
-	if err != nil {
-		t.Fatalf("unable to create htlc output: %v", err)
-	}
+	require.NoError(t, err, "unable to create htlc output")
 
 	anchorOutput := &wire.TxOut{
 		PkScript: anchorPkScript,
@@ -1908,7 +1923,7 @@ func TestSpendAnchor(t *testing.T) {
 			// Alice can spend immediately.
 			makeWitnessTestCase(t, func() (wire.TxWitness, error) {
 				sweepTx.TxIn[0].Sequence = wire.MaxTxInSequenceNum
-				sweepTxSigHashes := txscript.NewTxSigHashes(sweepTx)
+				sweepTxSigHashes := NewTxSigHashesV0Only(sweepTx)
 
 				signDesc := &SignDescriptor{
 					KeyDesc: keychain.KeyDescriptor{
@@ -1948,9 +1963,14 @@ func TestSpendAnchor(t *testing.T) {
 		sweepTx.TxIn[0].Witness = testCase.witness()
 
 		newEngine := func() (*txscript.Engine, error) {
-			return txscript.NewEngine(anchorPkScript,
+			return txscript.NewEngine(
+				anchorPkScript,
 				sweepTx, 0, txscript.StandardVerifyFlags, nil,
-				nil, int64(anchorSize))
+				nil, int64(anchorSize),
+				txscript.NewCannedPrevOutputFetcher(
+					anchorPkScript, int64(anchorSize),
+				),
+			)
 		}
 
 		assertEngineExecution(t, i, testCase.valid, newEngine)
@@ -1968,21 +1988,13 @@ func TestSpecificationKeyDerivation(t *testing.T) {
 	)
 
 	baseSecret, err := privkeyFromHex(baseSecretHex)
-	if err != nil {
-		t.Fatalf("Failed to parse serialized privkey: %v", err)
-	}
+	require.NoError(t, err, "Failed to parse serialized privkey")
 	perCommitmentSecret, err := privkeyFromHex(perCommitmentSecretHex)
-	if err != nil {
-		t.Fatalf("Failed to parse serialized privkey: %v", err)
-	}
+	require.NoError(t, err, "Failed to parse serialized privkey")
 	basePoint, err := pubkeyFromHex(basePointHex)
-	if err != nil {
-		t.Fatalf("Failed to parse serialized pubkey: %v", err)
-	}
+	require.NoError(t, err, "Failed to parse serialized pubkey")
 	perCommitmentPoint, err := pubkeyFromHex(perCommitmentPointHex)
-	if err != nil {
-		t.Fatalf("Failed to parse serialized pubkey: %v", err)
-	}
+	require.NoError(t, err, "Failed to parse serialized pubkey")
 
 	// name: derivation of key from basepoint and per_commitment_point
 	const expectedLocalKeyHex = "0235f2dbfaa89b57ec7b055afe29849ef7ddfeb1cefdb9ebdc43f5494984db29e5"
@@ -2024,4 +2036,216 @@ func TestSpecificationKeyDerivation(t *testing.T) {
 			"expected %v, got %v", expectedRevocationPrivKeyHex,
 			actualRevocationPrivKeyHex)
 	}
+}
+
+// BenchmarkScriptBuilderAlloc benchmarks the script builder's default
+// allocation.
+func BenchmarkScriptBuilderAlloc(t *testing.B) {
+	dummyData := []byte("dummy data")
+	randomPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	randomPub := randomPriv.PubKey()
+	randomPubBytes := randomPub.SerializeCompressed()
+
+	t.ReportAllocs()
+	t.ResetTimer()
+
+	// We run each iteration 1000 times to make the script allocation stand
+	// out a bit more vs. the overhead of the rest of the function calls.
+	for i := 0; i < t.N*1000; i++ {
+		err := runScriptAllocTest(dummyData, randomPubBytes, randomPub)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestScriptBuilderAlloc makes sure the scripts generated by the utils have the
+// correct length.
+func TestScriptBuilderAlloc(t *testing.T) {
+	t.Parallel()
+
+	dummyData := []byte("dummy data")
+	randomPriv, err := btcec.NewPrivateKey()
+	require.NoError(t, err)
+	randomPub := randomPriv.PubKey()
+	randomPubBytes := randomPub.SerializeCompressed()
+
+	err = runScriptAllocTest(dummyData, randomPubBytes, randomPub)
+	require.NoError(t, err)
+}
+
+// runScriptAllocTest runs the script size test. We don't use the "require"
+// library to assert the length to not influence the benchmark too much.
+func runScriptAllocTest(dummyData, randomPubBytes []byte,
+	randomPub *btcec.PublicKey) error {
+
+	const (
+		maxCLTV = 500000000
+		maxCSV  = (1 << 31) - 1
+	)
+	script, err := WitnessScriptHash(dummyData)
+	if err != nil {
+		return err
+	}
+	if len(script) != P2WSHSize {
+		return fmt.Errorf("expected script size of %d", P2WSHSize)
+	}
+
+	script, err = WitnessPubKeyHash(randomPubBytes)
+	if err != nil {
+		return err
+	}
+	if len(script) != P2WPKHSize {
+		return fmt.Errorf("expected script size of %d", P2WPKHSize)
+	}
+
+	script, err = GenerateP2SH(dummyData)
+	if err != nil {
+		return err
+	}
+	if len(script) != NestedP2WPKHSize {
+		return fmt.Errorf("expected script size of %d",
+			NestedP2WPKHSize)
+	}
+
+	script, err = GenerateP2PKH(dummyData)
+	if err != nil {
+		return err
+	}
+	if len(script) != P2PKHSize {
+		return fmt.Errorf("expected script size of %d", P2PKHSize)
+	}
+
+	script, err = GenMultiSigScript(randomPubBytes, randomPubBytes)
+	if err != nil {
+		return err
+	}
+	if len(script) != MultiSigSize {
+		return fmt.Errorf("expected script size of %d", MultiSigSize)
+	}
+
+	script, err = SenderHTLCScript(
+		randomPub, randomPub, randomPub, dummyData, false,
+	)
+	if err != nil {
+		return err
+	}
+	if len(script) != OfferedHtlcScriptSize {
+		return fmt.Errorf("expected script size of %d",
+			OfferedHtlcScriptSize)
+	}
+
+	script, err = SenderHTLCScript(
+		randomPub, randomPub, randomPub, dummyData, true,
+	)
+	if err != nil {
+		return err
+	}
+	if len(script) != OfferedHtlcScriptSizeConfirmed {
+		return fmt.Errorf("expected script size of %d",
+			OfferedHtlcScriptSizeConfirmed)
+	}
+
+	script, err = ReceiverHTLCScript(
+		maxCLTV, randomPub, randomPub, randomPub, dummyData, false,
+	)
+	if err != nil {
+		return err
+	}
+	if len(script) != AcceptedHtlcScriptSize {
+		return fmt.Errorf("expected script size of %d",
+			AcceptedHtlcScriptSize)
+	}
+
+	script, err = ReceiverHTLCScript(
+		maxCLTV, randomPub, randomPub, randomPub, dummyData, true,
+	)
+	if err != nil {
+		return err
+	}
+	if len(script) != AcceptedHtlcScriptSizeConfirmed {
+		return fmt.Errorf("expected script size of %d",
+			AcceptedHtlcScriptSizeConfirmed)
+	}
+
+	script, err = SecondLevelHtlcScript(randomPub, randomPub, maxCSV)
+	if err != nil {
+		return err
+	}
+	if len(script) != ToLocalScriptSize {
+		return fmt.Errorf("expected script size of %d",
+			ToLocalScriptSize)
+	}
+
+	script, err = LeaseSecondLevelHtlcScript(
+		randomPub, randomPub, maxCSV, maxCLTV,
+	)
+	if err != nil {
+		return err
+	}
+	if len(script) != ToLocalScriptSize+LeaseWitnessScriptSizeOverhead {
+		return fmt.Errorf("expected script size of %d",
+			ToLocalScriptSize+LeaseWitnessScriptSizeOverhead)
+	}
+
+	script, err = CommitScriptToSelf(maxCSV, randomPub, randomPub)
+	if err != nil {
+		return err
+	}
+	if len(script) != ToLocalScriptSize {
+		return fmt.Errorf("expected script size of %d",
+			ToLocalScriptSize)
+	}
+
+	script, err = LeaseCommitScriptToSelf(
+		randomPub, randomPub, maxCSV, maxCLTV,
+	)
+	if err != nil {
+		return err
+	}
+	if len(script) != ToLocalScriptSize+LeaseWitnessScriptSizeOverhead {
+		return fmt.Errorf("expected script size of %d",
+			ToLocalScriptSize+LeaseWitnessScriptSizeOverhead)
+	}
+
+	script, err = CommitScriptUnencumbered(randomPub)
+	if err != nil {
+		return err
+	}
+	if len(script) != P2WPKHSize {
+		return fmt.Errorf("expected script size of %d", P2WPKHSize)
+	}
+
+	script, err = CommitScriptToRemoteConfirmed(randomPub)
+	if err != nil {
+		return err
+	}
+	if len(script) != ToRemoteConfirmedScriptSize {
+		return fmt.Errorf("expected script size of %d",
+			ToRemoteConfirmedScriptSize)
+	}
+
+	script, err = LeaseCommitScriptToRemoteConfirmed(randomPub, maxCSV)
+	if err != nil {
+		return err
+	}
+	if len(script) !=
+		ToRemoteConfirmedScriptSize+LeaseWitnessScriptSizeOverhead {
+
+		return fmt.Errorf("expected script size of %d",
+			ToRemoteConfirmedScriptSize+
+				LeaseWitnessScriptSizeOverhead)
+	}
+
+	script, err = CommitScriptAnchor(randomPub)
+	if err != nil {
+		return err
+	}
+	if len(script) != AnchorScriptSize {
+		return fmt.Errorf("expected script size of %d",
+			AnchorScriptSize)
+	}
+
+	return nil
 }

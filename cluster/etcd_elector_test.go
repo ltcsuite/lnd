@@ -5,7 +5,6 @@ package cluster
 
 import (
 	"context"
-	"io/ioutil"
 	"os"
 	"runtime/pprof"
 	"sync"
@@ -41,14 +40,11 @@ func TestEtcdElector(t *testing.T) {
 	guard := GuardTimeout(t, 5*time.Second)
 	defer guard()
 
-	tmpDir, err := ioutil.TempDir("", "etcd")
-	if err != nil {
-		t.Fatalf("unable to create temp dir: %v", err)
-	}
+	tmpDir := t.TempDir()
 
 	etcdCfg, cleanup, err := etcd.NewEmbeddedEtcdInstance(tmpDir, 0, 0, "")
 	require.NoError(t, err)
-	defer cleanup()
+	t.Cleanup(cleanup)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -57,15 +53,16 @@ func TestEtcdElector(t *testing.T) {
 		election = "/election/"
 		id1      = "e1"
 		id2      = "e2"
+		ttl      = 5
 	)
 
 	e1, err := newEtcdLeaderElector(
-		ctx, id1, election, etcdCfg,
+		ctx, id1, election, ttl, etcdCfg,
 	)
 	require.NoError(t, err)
 
 	e2, err := newEtcdLeaderElector(
-		ctx, id2, election, etcdCfg,
+		ctx, id2, election, ttl, etcdCfg,
 	)
 	require.NoError(t, err)
 

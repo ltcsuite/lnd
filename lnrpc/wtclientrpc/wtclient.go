@@ -1,10 +1,13 @@
 package wtclientrpc
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -265,32 +268,56 @@ func (c *WatchtowerClient) ListTowers(ctx context.Context,
 		return nil, err
 	}
 
-	anchorTowers, err := c.cfg.AnchorClient.RegisteredTowers()
+	opts, ackCounts, committedUpdateCounts := constructFunctionalOptions(
+		req.IncludeSessions, req.ExcludeExhaustedSessions,
+	)
+
+	anchorTowers, err := c.cfg.AnchorClient.RegisteredTowers(opts...)
 	if err != nil {
 		return nil, err
 	}
 
-	legacyTowers, err := c.cfg.Client.RegisteredTowers()
-	if err != nil {
-		return nil, err
-	}
-
-	// Filter duplicates.
-	towers := make(map[wtdb.TowerID]*wtclient.RegisteredTower)
+	// Collect all the anchor client towers.
+	rpcTowers := make(map[wtdb.TowerID]*Tower)
 	for _, tower := range anchorTowers {
-		towers[tower.Tower.ID] = tower
+		rpcTower := marshallTower(
+			tower, PolicyType_ANCHOR, req.IncludeSessions,
+			ackCounts, committedUpdateCounts,
+		)
+
+		rpcTowers[tower.ID] = rpcTower
 	}
+
+	legacyTowers, err := c.cfg.Client.RegisteredTowers(opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	// Collect all the legacy client towers. If it has any of the same
+	// towers that the anchors client has, then just add the session info
+	// for the legacy client to the existing tower.
 	for _, tower := range legacyTowers {
-		towers[tower.Tower.ID] = tower
+		rpcTower := marshallTower(
+			tower, PolicyType_LEGACY, req.IncludeSessions,
+			ackCounts, committedUpdateCounts,
+		)
+
+		t, ok := rpcTowers[tower.ID]
+		if !ok {
+			rpcTowers[tower.ID] = rpcTower
+			continue
+		}
+
+		t.SessionInfo = append(t.SessionInfo, rpcTower.SessionInfo...)
+		t.Sessions = append(t.Sessions, rpcTower.Sessions...)
 	}
 
-	rpcTowers := make([]*Tower, 0, len(towers))
-	for _, tower := range towers {
-		rpcTower := marshallTower(tower, req.IncludeSessions)
-		rpcTowers = append(rpcTowers, rpcTower)
+	towers := make([]*Tower, 0, len(rpcTowers))
+	for _, tower := range rpcTowers {
+		towers = append(towers, tower)
 	}
 
-	return &ListTowersResponse{Towers: rpcTowers}, nil
+	return &ListTowersResponse{Towers: towers}, nil
 }
 
 // GetTowerInfo retrieves information for a registered watchtower.
@@ -306,16 +333,92 @@ func (c *WatchtowerClient) GetTowerInfo(ctx context.Context,
 		return nil, err
 	}
 
-	var tower *wtclient.RegisteredTower
-	tower, err = c.cfg.Client.LookupTower(pubKey)
-	if err == wtdb.ErrTowerNotFound {
-		tower, err = c.cfg.AnchorClient.LookupTower(pubKey)
+	opts, ackCounts, committedUpdateCounts := constructFunctionalOptions(
+		req.IncludeSessions, req.ExcludeExhaustedSessions,
+	)
+
+	// Get the tower and its sessions from anchors client.
+	tower, err := c.cfg.AnchorClient.LookupTower(pubKey, opts...)
+	if err != nil {
+		return nil, err
 	}
+	rpcTower := marshallTower(
+		tower, PolicyType_ANCHOR, req.IncludeSessions, ackCounts,
+		committedUpdateCounts,
+	)
+
+	// Get the tower and its sessions from legacy client.
+	tower, err = c.cfg.Client.LookupTower(pubKey, opts...)
 	if err != nil {
 		return nil, err
 	}
 
-	return marshallTower(tower, req.IncludeSessions), nil
+	rpcLegacyTower := marshallTower(
+		tower, PolicyType_LEGACY, req.IncludeSessions, ackCounts,
+		committedUpdateCounts,
+	)
+
+	if !bytes.Equal(rpcTower.Pubkey, rpcLegacyTower.Pubkey) {
+		return nil, fmt.Errorf("legacy and anchor clients returned " +
+			"inconsistent results for the given tower")
+	}
+
+	rpcTower.SessionInfo = append(
+		rpcTower.SessionInfo, rpcLegacyTower.SessionInfo...,
+	)
+	rpcTower.Sessions = append(
+		rpcTower.Sessions, rpcLegacyTower.Sessions...,
+	)
+
+	return rpcTower, nil
+}
+
+// constructFunctionalOptions is a helper function that constructs a list of
+// functional options to be used when fetching a tower from the DB. It also
+// returns a map of acked-update counts and one for un-acked-update counts that
+// will be populated once the db call has been made.
+func constructFunctionalOptions(includeSessions,
+	excludeExhaustedSessions bool) ([]wtdb.ClientSessionListOption,
+	map[wtdb.SessionID]uint16, map[wtdb.SessionID]uint16) {
+
+	var (
+		opts                  []wtdb.ClientSessionListOption
+		committedUpdateCounts = make(map[wtdb.SessionID]uint16)
+		ackCounts             = make(map[wtdb.SessionID]uint16)
+	)
+	if !includeSessions {
+		return opts, ackCounts, committedUpdateCounts
+	}
+
+	perNumRogueUpdates := func(s *wtdb.ClientSession, numUpdates uint16) {
+		ackCounts[s.ID] += numUpdates
+	}
+
+	perNumAckedUpdates := func(s *wtdb.ClientSession, id lnwire.ChannelID,
+		numUpdates uint16) {
+
+		ackCounts[s.ID] += numUpdates
+	}
+
+	perCommittedUpdate := func(s *wtdb.ClientSession,
+		u *wtdb.CommittedUpdate) {
+
+		committedUpdateCounts[s.ID]++
+	}
+
+	opts = []wtdb.ClientSessionListOption{
+		wtdb.WithPerNumAckedUpdates(perNumAckedUpdates),
+		wtdb.WithPerCommittedUpdate(perCommittedUpdate),
+		wtdb.WithPerRogueUpdateCount(perNumRogueUpdates),
+	}
+
+	if excludeExhaustedSessions {
+		opts = append(opts, wtdb.WithPostEvalFilterFn(
+			wtclient.ExhaustedSessionFilter(),
+		))
+	}
+
+	return opts, ackCounts, committedUpdateCounts
 }
 
 // Stats returns the in-memory statistics of the client since startup.
@@ -387,7 +490,10 @@ func (c *WatchtowerClient) Policy(ctx context.Context,
 
 // marshallTower converts a client registered watchtower into its corresponding
 // RPC type.
-func marshallTower(tower *wtclient.RegisteredTower, includeSessions bool) *Tower {
+func marshallTower(tower *wtclient.RegisteredTower, policyType PolicyType,
+	includeSessions bool, ackCounts map[wtdb.SessionID]uint16,
+	pendingCounts map[wtdb.SessionID]uint16) *Tower {
+
 	rpcAddrs := make([]string, 0, len(tower.Addresses))
 	for _, addr := range tower.Addresses {
 		rpcAddrs = append(rpcAddrs, addr.String())
@@ -395,12 +501,28 @@ func marshallTower(tower *wtclient.RegisteredTower, includeSessions bool) *Tower
 
 	var rpcSessions []*TowerSession
 	if includeSessions {
-		rpcSessions = make([]*TowerSession, 0, len(tower.Sessions))
+		// To ensure that the output order is deterministic for a given
+		// set of sessions, we put the sessions into a slice and order
+		// them based on session ID.
+		sessions := make([]*wtdb.ClientSession, 0, len(tower.Sessions))
 		for _, session := range tower.Sessions {
+			sessions = append(sessions, session)
+		}
+
+		sort.Slice(sessions, func(i, j int) bool {
+			id1 := sessions[i].ID
+			id2 := sessions[j].ID
+
+			return binary.BigEndian.Uint64(id1[:]) <
+				binary.BigEndian.Uint64(id2[:])
+		})
+
+		rpcSessions = make([]*TowerSession, 0, len(tower.Sessions))
+		for _, session := range sessions {
 			satPerVByte := session.Policy.SweepFeeRate.FeePerKVByte() / 1000
 			rpcSessions = append(rpcSessions, &TowerSession{
-				NumBackups:        uint32(len(session.AckedUpdates)),
-				NumPendingBackups: uint32(len(session.CommittedUpdates)),
+				NumBackups:        uint32(ackCounts[session.ID]),
+				NumPendingBackups: uint32(pendingCounts[session.ID]),
 				MaxBackups:        uint32(session.Policy.MaxUpdates),
 				SweepSatPerVbyte:  uint32(satPerVByte),
 
@@ -410,11 +532,22 @@ func marshallTower(tower *wtclient.RegisteredTower, includeSessions bool) *Tower
 		}
 	}
 
-	return &Tower{
-		Pubkey:                 tower.IdentityKey.SerializeCompressed(),
-		Addresses:              rpcAddrs,
+	rpcTower := &Tower{
+		Pubkey:    tower.IdentityKey.SerializeCompressed(),
+		Addresses: rpcAddrs,
+		SessionInfo: []*TowerSessionInfo{{
+			PolicyType:             policyType,
+			ActiveSessionCandidate: tower.ActiveSessionCandidate,
+			NumSessions:            uint32(len(tower.Sessions)),
+			Sessions:               rpcSessions,
+		}},
+		// The below fields are populated for backwards compatibility
+		// but will be removed in a future commit when the proto fields
+		// are removed.
 		ActiveSessionCandidate: tower.ActiveSessionCandidate,
 		NumSessions:            uint32(len(tower.Sessions)),
 		Sessions:               rpcSessions,
 	}
+
+	return rpcTower
 }

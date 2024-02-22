@@ -5,15 +5,20 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
-	"io/ioutil"
+	mrand "math/rand"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
+	"github.com/go-errors/errors"
+	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb/models"
+	"github.com/ltcsuite/lnd/contractcourt"
 	"github.com/ltcsuite/lnd/htlcswitch/hodl"
 	"github.com/ltcsuite/lnd/htlcswitch/hop"
+	"github.com/ltcsuite/lnd/lntest/mock"
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/ticker"
@@ -21,7 +26,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var zeroCircuit = channeldb.CircuitKey{}
+var zeroCircuit = models.CircuitKey{}
+var emptyScid = lnwire.ShortChannelID{}
 
 func genPreimage() ([32]byte, error) {
 	var preimage [32]byte
@@ -32,48 +38,31 @@ func genPreimage() ([32]byte, error) {
 }
 
 // TestSwitchAddDuplicateLink tests that the switch will reject duplicate links
-// for both pending and live links. It also tests that we can successfully
-// add a link after having removed it.
+// for live links. It also tests that we can successfully add a link after
+// having removed it.
 func TestSwitchAddDuplicateLink(t *testing.T) {
 	t.Parallel()
 
 	alicePeer, err := newMockServer(
 		t, "alice", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create alice server: %v", err)
-	}
+	require.NoError(t, err, "unable to create alice server")
 
-	s, err := initSwitchWithDB(testStartingHeight, nil)
-	if err != nil {
-		t.Fatalf("unable to init switch: %v", err)
-	}
+	s, err := initSwitchWithTempDB(t, testStartingHeight)
+	require.NoError(t, err, "unable to init switch")
 	if err := s.Start(); err != nil {
 		t.Fatalf("unable to start switch: %v", err)
 	}
 	defer s.Stop()
 
-	chanID1, _, aliceChanID, _ := genIDs()
-
-	pendingChanID := lnwire.ShortChannelID{}
+	chanID1, aliceScid := genID()
 
 	aliceChannelLink := newMockChannelLink(
-		s, chanID1, pendingChanID, alicePeer, false,
+		s, chanID1, aliceScid, emptyScid, alicePeer, false, false,
+		false, false,
 	)
 	if err := s.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add alice link: %v", err)
-	}
-
-	// Alice should have a pending link, adding again should fail.
-	if err := s.AddLink(aliceChannelLink); err == nil {
-		t.Fatalf("adding duplicate link should have failed")
-	}
-
-	// Update the short chan id of the channel, so that the link goes live.
-	aliceChannelLink.setLiveShortChanID(aliceChanID)
-	err = s.UpdateShortChanID(chanID1)
-	if err != nil {
-		t.Fatalf("unable to update alice short_chan_id: %v", err)
 	}
 
 	// Alice should have a live link, adding again should fail.
@@ -93,32 +82,27 @@ func TestSwitchAddDuplicateLink(t *testing.T) {
 // TestSwitchHasActiveLink tests the behavior of HasActiveLink, and asserts that
 // it only returns true if a link's short channel id has confirmed (meaning the
 // channel is no longer pending) and it's EligibleToForward method returns true,
-// i.e. it has received FundingLocked from the remote peer.
+// i.e. it has received ChannelReady from the remote peer.
 func TestSwitchHasActiveLink(t *testing.T) {
 	t.Parallel()
 
 	alicePeer, err := newMockServer(
 		t, "alice", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create alice server: %v", err)
-	}
+	require.NoError(t, err, "unable to create alice server")
 
-	s, err := initSwitchWithDB(testStartingHeight, nil)
-	if err != nil {
-		t.Fatalf("unable to init switch: %v", err)
-	}
+	s, err := initSwitchWithTempDB(t, testStartingHeight)
+	require.NoError(t, err, "unable to init switch")
 	if err := s.Start(); err != nil {
 		t.Fatalf("unable to start switch: %v", err)
 	}
 	defer s.Stop()
 
-	chanID1, _, aliceChanID, _ := genIDs()
-
-	pendingChanID := lnwire.ShortChannelID{}
+	chanID1, aliceScid := genID()
 
 	aliceChannelLink := newMockChannelLink(
-		s, chanID1, pendingChanID, alicePeer, false,
+		s, chanID1, aliceScid, emptyScid, alicePeer, false, false,
+		false, false,
 	)
 	if err := s.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add alice link: %v", err)
@@ -131,27 +115,7 @@ func TestSwitchHasActiveLink(t *testing.T) {
 		t.Fatalf("link should not be active yet, still pending")
 	}
 
-	// Update the short chan id of the channel, so that the link goes live.
-	aliceChannelLink.setLiveShortChanID(aliceChanID)
-	err = s.UpdateShortChanID(chanID1)
-	if err != nil {
-		t.Fatalf("unable to update alice short_chan_id: %v", err)
-	}
-
-	// UpdateShortChanID will cause the mock link to become eligible to
-	// forward. However, we can simulate the event where the short chan id
-	// is confirmed, but funding locked has yet to be received by resetting
-	// the mock link's eligibility to false.
-	aliceChannelLink.eligible = false
-
-	// Now, even though the link has been added to the linkIndex because the
-	// short channel id has confirmed, we should still see HasActiveLink
-	// fail because EligibleToForward should return false.
-	if s.HasActiveLink(chanID1) {
-		t.Fatalf("link should not be active yet, still ineligible")
-	}
-
-	// Finally, simulate the link receiving funding locked by setting its
+	// Finally, simulate the link receiving channel_ready by setting its
 	// eligibility to true.
 	aliceChannelLink.eligible = true
 
@@ -163,28 +127,22 @@ func TestSwitchHasActiveLink(t *testing.T) {
 }
 
 // TestSwitchSendPending checks the inability of htlc switch to forward adds
-// over pending links, and the UpdateShortChanID makes a pending link live.
+// over pending links.
 func TestSwitchSendPending(t *testing.T) {
 	t.Parallel()
 
 	alicePeer, err := newMockServer(
 		t, "alice", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create alice server: %v", err)
-	}
+	require.NoError(t, err, "unable to create alice server")
 
 	bobPeer, err := newMockServer(
 		t, "bob", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create bob server: %v", err)
-	}
+	require.NoError(t, err, "unable to create bob server")
 
-	s, err := initSwitchWithDB(testStartingHeight, nil)
-	if err != nil {
-		t.Fatalf("unable to init switch: %v", err)
-	}
+	s, err := initSwitchWithTempDB(t, testStartingHeight)
+	require.NoError(t, err, "unable to init switch")
 	if err := s.Start(); err != nil {
 		t.Fatalf("unable to start switch: %v", err)
 	}
@@ -195,14 +153,16 @@ func TestSwitchSendPending(t *testing.T) {
 	pendingChanID := lnwire.ShortChannelID{}
 
 	aliceChannelLink := newMockChannelLink(
-		s, chanID1, pendingChanID, alicePeer, false,
+		s, chanID1, pendingChanID, emptyScid, alicePeer, false, false,
+		false, false,
 	)
 	if err := s.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add alice link: %v", err)
 	}
 
 	bobChannelLink := newMockChannelLink(
-		s, chanID2, bobChanID, bobPeer, true,
+		s, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
 	)
 	if err := s.AddLink(bobChannelLink); err != nil {
 		t.Fatalf("unable to add bob link: %v", err)
@@ -211,9 +171,7 @@ func TestSwitchSendPending(t *testing.T) {
 	// Create request which should is being forwarded from Bob channel
 	// link to Alice channel link.
 	preimage, err := genPreimage()
-	if err != nil {
-		t.Fatalf("unable to generate preimage: %v", err)
-	}
+	require.NoError(t, err, "unable to generate preimage")
 	rhash := sha256.Sum256(preimage[:])
 	packet := &htlcPacket{
 		incomingChanID: bobChanID,
@@ -260,30 +218,651 @@ func TestSwitchSendPending(t *testing.T) {
 	if s.circuits.NumOpen() != 0 {
 		t.Fatal("wrong amount of circuits")
 	}
+}
 
-	// Now, update Alice's link with her final short channel id. This should
-	// move the link to the live state.
-	aliceChannelLink.setLiveShortChanID(aliceChanID)
-	err = s.UpdateShortChanID(chanID1)
-	if err != nil {
-		t.Fatalf("unable to update alice short_chan_id: %v", err)
+// TestSwitchForwardMapping checks that the Switch properly consults its maps
+// when forwarding packets.
+func TestSwitchForwardMapping(t *testing.T) {
+	tests := []struct {
+		name string
+
+		// If this is true, then Alice's channel will be private.
+		alicePrivate bool
+
+		// If this is true, then Alice's channel will be a zero-conf
+		// channel.
+		zeroConf bool
+
+		// If this is true, then Alice's channel will be an
+		// option-scid-alias feature-bit, non-zero-conf channel.
+		optionScid bool
+
+		// If this is true, then an alias will be used for forwarding.
+		useAlias bool
+
+		// This is Alice's channel alias. This may not be set if this
+		// is not an option_scid_alias channel (feature bit).
+		aliceAlias lnwire.ShortChannelID
+
+		// This is Alice's confirmed SCID. This may not be set if this
+		// is a zero-conf channel before confirmation.
+		aliceReal lnwire.ShortChannelID
+
+		// If this is set, we expect Bob forwarding to Alice to fail.
+		expectErr bool
+	}{
+		{
+			name:         "private unconfirmed zero-conf",
+			alicePrivate: true,
+			zeroConf:     true,
+			useAlias:     true,
+			aliceAlias: lnwire.ShortChannelID{
+				BlockHeight: 16_000_002,
+				TxIndex:     2,
+				TxPosition:  2,
+			},
+			aliceReal: lnwire.ShortChannelID{},
+			expectErr: false,
+		},
+		{
+			name:         "private confirmed zero-conf",
+			alicePrivate: true,
+			zeroConf:     true,
+			useAlias:     true,
+			aliceAlias: lnwire.ShortChannelID{
+				BlockHeight: 16_000_003,
+				TxIndex:     3,
+				TxPosition:  3,
+			},
+			aliceReal: lnwire.ShortChannelID{
+				BlockHeight: 300000,
+				TxIndex:     3,
+				TxPosition:  3,
+			},
+			expectErr: false,
+		},
+		{
+			name:         "private confirmed zero-conf failure",
+			alicePrivate: true,
+			zeroConf:     true,
+			useAlias:     false,
+			aliceAlias: lnwire.ShortChannelID{
+				BlockHeight: 16_000_004,
+				TxIndex:     4,
+				TxPosition:  4,
+			},
+			aliceReal: lnwire.ShortChannelID{
+				BlockHeight: 300002,
+				TxIndex:     4,
+				TxPosition:  4,
+			},
+			expectErr: true,
+		},
+		{
+			name:         "public unconfirmed zero-conf",
+			alicePrivate: false,
+			zeroConf:     true,
+			useAlias:     true,
+			aliceAlias: lnwire.ShortChannelID{
+				BlockHeight: 16_000_005,
+				TxIndex:     5,
+				TxPosition:  5,
+			},
+			aliceReal: lnwire.ShortChannelID{},
+			expectErr: false,
+		},
+		{
+			name:         "public confirmed zero-conf w/ alias",
+			alicePrivate: false,
+			zeroConf:     true,
+			useAlias:     true,
+			aliceAlias: lnwire.ShortChannelID{
+				BlockHeight: 16_000_006,
+				TxIndex:     6,
+				TxPosition:  6,
+			},
+			aliceReal: lnwire.ShortChannelID{
+				BlockHeight: 500000,
+				TxIndex:     6,
+				TxPosition:  6,
+			},
+			expectErr: false,
+		},
+		{
+			name:         "public confirmed zero-conf w/ real",
+			alicePrivate: false,
+			zeroConf:     true,
+			useAlias:     false,
+			aliceAlias: lnwire.ShortChannelID{
+				BlockHeight: 16_000_007,
+				TxIndex:     7,
+				TxPosition:  7,
+			},
+			aliceReal: lnwire.ShortChannelID{
+				BlockHeight: 502000,
+				TxIndex:     7,
+				TxPosition:  7,
+			},
+			expectErr: false,
+		},
+		{
+			name:         "private non-option channel",
+			alicePrivate: true,
+			aliceAlias:   lnwire.ShortChannelID{},
+			aliceReal: lnwire.ShortChannelID{
+				BlockHeight: 505000,
+				TxIndex:     8,
+				TxPosition:  8,
+			},
+		},
+		{
+			name:         "private option channel w/ alias",
+			alicePrivate: true,
+			optionScid:   true,
+			useAlias:     true,
+			aliceAlias: lnwire.ShortChannelID{
+				BlockHeight: 16_000_015,
+				TxIndex:     9,
+				TxPosition:  9,
+			},
+			aliceReal: lnwire.ShortChannelID{
+				BlockHeight: 506000,
+				TxIndex:     10,
+				TxPosition:  10,
+			},
+			expectErr: false,
+		},
+		{
+			name:         "private option channel failure",
+			alicePrivate: true,
+			optionScid:   true,
+			useAlias:     false,
+			aliceAlias: lnwire.ShortChannelID{
+				BlockHeight: 16_000_016,
+				TxIndex:     16,
+				TxPosition:  16,
+			},
+			aliceReal: lnwire.ShortChannelID{
+				BlockHeight: 507000,
+				TxIndex:     17,
+				TxPosition:  17,
+			},
+			expectErr: true,
+		},
+		{
+			name:         "public non-option channel",
+			alicePrivate: false,
+			useAlias:     false,
+			aliceAlias:   lnwire.ShortChannelID{},
+			aliceReal: lnwire.ShortChannelID{
+				BlockHeight: 508000,
+				TxIndex:     17,
+				TxPosition:  17,
+			},
+			expectErr: false,
+		},
+		{
+			name:         "public option channel w/ alias",
+			alicePrivate: false,
+			optionScid:   true,
+			useAlias:     true,
+			aliceAlias: lnwire.ShortChannelID{
+				BlockHeight: 16_000_018,
+				TxIndex:     18,
+				TxPosition:  18,
+			},
+			aliceReal: lnwire.ShortChannelID{
+				BlockHeight: 509000,
+				TxIndex:     19,
+				TxPosition:  19,
+			},
+			expectErr: false,
+		},
+		{
+			name:         "public option channel w/ real",
+			alicePrivate: false,
+			optionScid:   true,
+			useAlias:     false,
+			aliceAlias: lnwire.ShortChannelID{
+				BlockHeight: 16_000_019,
+				TxIndex:     19,
+				TxPosition:  19,
+			},
+			aliceReal: lnwire.ShortChannelID{
+				BlockHeight: 510000,
+				TxIndex:     20,
+				TxPosition:  20,
+			},
+			expectErr: false,
+		},
 	}
 
-	// Increment the packet's HTLC index, so that it does not collide with
-	// the prior attempt.
-	packet.incomingHTLCID++
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			testSwitchForwardMapping(
+				t, test.alicePrivate, test.zeroConf,
+				test.useAlias, test.optionScid,
+				test.aliceAlias, test.aliceReal,
+				test.expectErr,
+			)
+		})
+	}
+}
 
-	// Handle the request and checks that bob channel link received it.
-	if err := s.ForwardPackets(nil, packet); err != nil {
-		t.Fatalf("unexpected forward failure: %v", err)
+func testSwitchForwardMapping(t *testing.T, alicePrivate, aliceZeroConf,
+	useAlias, optionScid bool, aliceAlias, aliceReal lnwire.ShortChannelID,
+	expectErr bool) {
+
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
+	require.NoError(t, err)
+
+	bobPeer, err := newMockServer(
+		t, "bob", testStartingHeight, nil, testDefaultDelta,
+	)
+	require.NoError(t, err)
+
+	s, err := initSwitchWithTempDB(t, testStartingHeight)
+	require.NoError(t, err)
+	err = s.Start()
+	require.NoError(t, err)
+	defer func() { _ = s.Stop() }()
+
+	// Create the lnwire.ChannelIDs that we'll use.
+	chanID1, chanID2, _, _ := genIDs()
+
+	var aliceChannelLink *mockChannelLink
+
+	if aliceZeroConf {
+		aliceChannelLink = newMockChannelLink(
+			s, chanID1, aliceAlias, aliceReal, alicePeer, true,
+			alicePrivate, true, false,
+		)
+	} else {
+		aliceChannelLink = newMockChannelLink(
+			s, chanID1, aliceReal, emptyScid, alicePeer, true,
+			alicePrivate, false, optionScid,
+		)
+
+		if optionScid {
+			aliceChannelLink.addAlias(aliceAlias)
+		}
 	}
 
-	// Since Alice's link is now active, this packet should succeed.
-	select {
-	case <-aliceChannelLink.packets:
-	case <-time.After(time.Second):
-		t.Fatal("request was not propagated to alice")
+	err = s.AddLink(aliceChannelLink)
+	require.NoError(t, err)
+
+	// Bob will just have a non-option_scid_alias channel so no mapping is
+	// necessary.
+	bobScid := lnwire.ShortChannelID{
+		BlockHeight: 501000,
+		TxIndex:     200,
+		TxPosition:  2,
 	}
+
+	bobChannelLink := newMockChannelLink(
+		s, chanID2, bobScid, emptyScid, bobPeer, true, false, false,
+		false,
+	)
+	err = s.AddLink(bobChannelLink)
+	require.NoError(t, err)
+
+	// Generate preimage.
+	preimage, err := genPreimage()
+	require.NoError(t, err, "unable to generate preimage")
+	rhash := sha256.Sum256(preimage[:])
+
+	// Determine the outgoing SCID to use.
+	outgoingSCID := aliceReal
+	if useAlias {
+		outgoingSCID = aliceAlias
+	}
+
+	packet := &htlcPacket{
+		incomingChanID: bobScid,
+		incomingHTLCID: 0,
+		outgoingChanID: outgoingSCID,
+		obfuscator:     NewMockObfuscator(),
+		htlc: &lnwire.UpdateAddHTLC{
+			PaymentHash: rhash,
+			Amount:      1,
+		},
+	}
+	err = s.ForwardPackets(nil, packet)
+	require.NoError(t, err)
+
+	// If we expect a forwarding error, then assert that we receive one.
+	// option_scid_alias forwards may fail if forwarding would be a privacy
+	// leak.
+	if expectErr {
+		select {
+		case <-bobChannelLink.packets:
+		case <-time.After(time.Second * 5):
+			t.Fatal("expected a forwarding error")
+		}
+
+		select {
+		case <-aliceChannelLink.packets:
+			t.Fatal("did not expect a packet")
+		case <-time.After(time.Second * 5):
+		}
+	} else {
+		select {
+		case <-bobChannelLink.packets:
+			t.Fatal("did not expect a forwarding error")
+		case <-time.After(time.Second * 5):
+		}
+
+		select {
+		case <-aliceChannelLink.packets:
+		case <-time.After(time.Second * 5):
+			t.Fatal("expected alice to receive packet")
+		}
+	}
+}
+
+// TestSwitchSendHTLCMapping tests that SendHTLC will properly route packets to
+// zero-conf or option-scid-alias (feature-bit) channels if the confirmed SCID
+// is used. It also tests that nothing breaks with the mapping change.
+func TestSwitchSendHTLCMapping(t *testing.T) {
+	tests := []struct {
+		name string
+
+		// If this is true, the channel will be zero-conf.
+		zeroConf bool
+
+		// Denotes whether the channel is option-scid-alias, non
+		// zero-conf feature bit.
+		optionFeature bool
+
+		// If this is true, then the alias will be used in the packet.
+		useAlias bool
+
+		// This will be the channel alias if there is a mapping.
+		alias lnwire.ShortChannelID
+
+		// This will be the confirmed SCID if the channel is confirmed.
+		real lnwire.ShortChannelID
+	}{
+		{
+			name:          "non-zero-conf real scid w/ option",
+			zeroConf:      false,
+			optionFeature: true,
+			useAlias:      false,
+			alias: lnwire.ShortChannelID{
+				BlockHeight: 10010,
+				TxIndex:     10,
+				TxPosition:  10,
+			},
+			real: lnwire.ShortChannelID{
+				BlockHeight: 500000,
+				TxIndex:     50,
+				TxPosition:  50,
+			},
+		},
+		{
+			name:     "non-zero-conf real scid no option",
+			zeroConf: false,
+			useAlias: false,
+			alias:    lnwire.ShortChannelID{},
+			real: lnwire.ShortChannelID{
+				BlockHeight: 400000,
+				TxIndex:     50,
+				TxPosition:  50,
+			},
+		},
+		{
+			name:     "zero-conf alias scid w/ conf",
+			zeroConf: true,
+			useAlias: true,
+			alias: lnwire.ShortChannelID{
+				BlockHeight: 10020,
+				TxIndex:     20,
+				TxPosition:  20,
+			},
+			real: lnwire.ShortChannelID{
+				BlockHeight: 450000,
+				TxIndex:     50,
+				TxPosition:  50,
+			},
+		},
+		{
+			name:     "zero-conf alias scid no conf",
+			zeroConf: true,
+			useAlias: true,
+			alias: lnwire.ShortChannelID{
+				BlockHeight: 10015,
+				TxIndex:     25,
+				TxPosition:  35,
+			},
+			real: lnwire.ShortChannelID{},
+		},
+		{
+			name:     "zero-conf real scid",
+			zeroConf: true,
+			useAlias: false,
+			alias: lnwire.ShortChannelID{
+				BlockHeight: 10035,
+				TxIndex:     35,
+				TxPosition:  35,
+			},
+			real: lnwire.ShortChannelID{
+				BlockHeight: 470000,
+				TxIndex:     35,
+				TxPosition:  45,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			testSwitchSendHtlcMapping(
+				t, test.zeroConf, test.useAlias, test.alias,
+				test.real, test.optionFeature,
+			)
+		})
+	}
+}
+
+func testSwitchSendHtlcMapping(t *testing.T, zeroConf, useAlias bool, alias,
+	realScid lnwire.ShortChannelID, optionFeature bool) {
+
+	peer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
+	require.NoError(t, err)
+
+	s, err := initSwitchWithTempDB(t, testStartingHeight)
+	require.NoError(t, err)
+	err = s.Start()
+	require.NoError(t, err)
+	defer func() { _ = s.Stop() }()
+
+	// Create the lnwire.ChannelID that we'll use.
+	chanID, _ := genID()
+
+	var link *mockChannelLink
+
+	if zeroConf {
+		link = newMockChannelLink(
+			s, chanID, alias, realScid, peer, true, false, true,
+			false,
+		)
+	} else {
+		link = newMockChannelLink(
+			s, chanID, realScid, emptyScid, peer, true, false,
+			false, true,
+		)
+
+		if optionFeature {
+			link.addAlias(alias)
+		}
+	}
+
+	err = s.AddLink(link)
+	require.NoError(t, err)
+
+	// Generate preimage.
+	preimage, err := genPreimage()
+	require.NoError(t, err)
+	rhash := sha256.Sum256(preimage[:])
+
+	// Determine the outgoing SCID to use.
+	outgoingSCID := realScid
+	if useAlias {
+		outgoingSCID = alias
+	}
+
+	// Send the HTLC and assert that we don't get an error.
+	htlc := &lnwire.UpdateAddHTLC{
+		PaymentHash: rhash,
+		Amount:      1,
+	}
+
+	err = s.SendHTLC(outgoingSCID, 0, htlc)
+	require.NoError(t, err)
+}
+
+// TestSwitchUpdateScid verifies that zero-conf and non-zero-conf
+// option-scid-alias (feature bit) channels will have the expected entries in
+// the aliasToReal and baseIndex maps.
+func TestSwitchUpdateScid(t *testing.T) {
+	t.Parallel()
+
+	peer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
+	require.NoError(t, err, "unable to create alice server")
+
+	s, err := initSwitchWithTempDB(t, testStartingHeight)
+	require.NoError(t, err)
+	err = s.Start()
+	require.NoError(t, err)
+	defer func() { _ = s.Stop() }()
+
+	// Create the IDs that we'll use.
+	chanID, chanID2, _, _ := genIDs()
+
+	alias := lnwire.ShortChannelID{
+		BlockHeight: 16_000_000,
+		TxIndex:     0,
+		TxPosition:  0,
+	}
+	alias2 := alias
+	alias2.TxPosition = 1
+
+	realScid := lnwire.ShortChannelID{
+		BlockHeight: 500000,
+		TxIndex:     0,
+		TxPosition:  0,
+	}
+
+	link := newMockChannelLink(
+		s, chanID, alias, emptyScid, peer, true, false, true, false,
+	)
+	link.addAlias(alias2)
+
+	err = s.AddLink(link)
+	require.NoError(t, err)
+
+	// Assert that the zero-conf link does not have entries in the
+	// aliasToReal map.
+	s.indexMtx.RLock()
+	_, ok := s.aliasToReal[alias]
+	require.False(t, ok)
+	_, ok = s.aliasToReal[alias2]
+	require.False(t, ok)
+
+	// Assert that both aliases point to the "base" SCID, which is actually
+	// just the first alias.
+	baseScid, ok := s.baseIndex[alias]
+	require.True(t, ok)
+	require.Equal(t, alias, baseScid)
+
+	baseScid, ok = s.baseIndex[alias2]
+	require.True(t, ok)
+	require.Equal(t, alias, baseScid)
+
+	s.indexMtx.RUnlock()
+
+	// We'll set the mock link's confirmed SCID so that UpdateShortChanID
+	// populates aliasToReal and adds an entry to baseIndex.
+	link.realScid = realScid
+	link.confirmedZC = true
+
+	err = s.UpdateShortChanID(chanID)
+	require.NoError(t, err)
+
+	// Assert that aliasToReal is populated and there is an entry in
+	// baseIndex for realScid.
+	s.indexMtx.RLock()
+	realMapping, ok := s.aliasToReal[alias]
+	require.True(t, ok)
+	require.Equal(t, realScid, realMapping)
+
+	realMapping, ok = s.aliasToReal[alias2]
+	require.True(t, ok)
+	require.Equal(t, realScid, realMapping)
+
+	baseScid, ok = s.baseIndex[realScid]
+	require.True(t, ok)
+	require.Equal(t, alias, baseScid)
+
+	s.indexMtx.RUnlock()
+
+	// Now we'll perform the same checks with a non-zero-conf
+	// option-scid-alias channel (feature-bit).
+	optionReal := lnwire.ShortChannelID{
+		BlockHeight: 600000,
+		TxIndex:     0,
+		TxPosition:  0,
+	}
+	optionAlias := lnwire.ShortChannelID{
+		BlockHeight: 12000,
+		TxIndex:     0,
+		TxPosition:  0,
+	}
+	optionAlias2 := optionAlias
+	optionAlias2.TxPosition = 1
+	link2 := newMockChannelLink(
+		s, chanID2, optionReal, emptyScid, peer, true, false, false,
+		true,
+	)
+	link2.addAlias(optionAlias)
+	link2.addAlias(optionAlias2)
+
+	err = s.AddLink(link2)
+	require.NoError(t, err)
+
+	// Assert that the option-scid-alias link does have entries in the
+	// aliasToReal and baseIndex maps.
+	s.indexMtx.RLock()
+	realMapping, ok = s.aliasToReal[optionAlias]
+	require.True(t, ok)
+	require.Equal(t, optionReal, realMapping)
+
+	realMapping, ok = s.aliasToReal[optionAlias2]
+	require.True(t, ok)
+	require.Equal(t, optionReal, realMapping)
+
+	baseScid, ok = s.baseIndex[optionReal]
+	require.True(t, ok)
+	require.Equal(t, optionReal, baseScid)
+
+	baseScid, ok = s.baseIndex[optionAlias]
+	require.True(t, ok)
+	require.Equal(t, optionReal, baseScid)
+
+	baseScid, ok = s.baseIndex[optionAlias2]
+	require.True(t, ok)
+	require.Equal(t, optionReal, baseScid)
+
+	s.indexMtx.RUnlock()
 }
 
 // TestSwitchForward checks the ability of htlc switch to forward add/settle
@@ -304,7 +883,7 @@ func TestSwitchForward(t *testing.T) {
 		t.Fatalf("unable to create bob server: %v", err)
 	}
 
-	s, err := initSwitchWithDB(testStartingHeight, nil)
+	s, err := initSwitchWithTempDB(t, testStartingHeight)
 	if err != nil {
 		t.Fatalf("unable to init switch: %v", err)
 	}
@@ -316,10 +895,12 @@ func TestSwitchForward(t *testing.T) {
 	chanID1, chanID2, aliceChanID, bobChanID := genIDs()
 
 	aliceChannelLink := newMockChannelLink(
-		s, chanID1, aliceChanID, alicePeer, true,
+		s, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
 	)
 	bobChannelLink := newMockChannelLink(
-		s, chanID2, bobChanID, bobPeer, true,
+		s, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
 	)
 	if err := s.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add alice link: %v", err)
@@ -413,24 +994,16 @@ func TestSwitchForwardFailAfterFullAdd(t *testing.T) {
 	bobPeer, err := newMockServer(
 		t, "bob", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create bob server: %v", err)
-	}
+	require.NoError(t, err, "unable to create bob server")
 
-	tempPath, err := ioutil.TempDir("", "circuitdb")
-	if err != nil {
-		t.Fatalf("unable to temporary path: %v", err)
-	}
+	tempPath := t.TempDir()
 
 	cdb, err := channeldb.Open(tempPath)
-	if err != nil {
-		t.Fatalf("unable to open channeldb: %v", err)
-	}
+	require.NoError(t, err, "unable to open channeldb")
+	t.Cleanup(func() { cdb.Close() })
 
 	s, err := initSwitchWithDB(testStartingHeight, cdb)
-	if err != nil {
-		t.Fatalf("unable to init switch: %v", err)
-	}
+	require.NoError(t, err, "unable to init switch")
 	if err := s.Start(); err != nil {
 		t.Fatalf("unable to start switch: %v", err)
 	}
@@ -441,10 +1014,12 @@ func TestSwitchForwardFailAfterFullAdd(t *testing.T) {
 	defer s.Stop()
 
 	aliceChannelLink := newMockChannelLink(
-		s, chanID1, aliceChanID, alicePeer, true,
+		s, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
 	)
 	bobChannelLink := newMockChannelLink(
-		s, chanID2, bobChanID, bobPeer, true,
+		s, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
 	)
 	if err := s.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add alice link: %v", err)
@@ -518,14 +1093,11 @@ func TestSwitchForwardFailAfterFullAdd(t *testing.T) {
 	}
 
 	cdb2, err := channeldb.Open(tempPath)
-	if err != nil {
-		t.Fatalf("unable to reopen channeldb: %v", err)
-	}
+	require.NoError(t, err, "unable to reopen channeldb")
+	t.Cleanup(func() { cdb2.Close() })
 
 	s2, err := initSwitchWithDB(testStartingHeight, cdb2)
-	if err != nil {
-		t.Fatalf("unable reinit switch: %v", err)
-	}
+	require.NoError(t, err, "unable reinit switch")
 	if err := s2.Start(); err != nil {
 		t.Fatalf("unable to restart switch: %v", err)
 	}
@@ -536,10 +1108,12 @@ func TestSwitchForwardFailAfterFullAdd(t *testing.T) {
 	defer s2.Stop()
 
 	aliceChannelLink = newMockChannelLink(
-		s2, chanID1, aliceChanID, alicePeer, true,
+		s2, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
 	)
 	bobChannelLink = newMockChannelLink(
-		s2, chanID2, bobChanID, bobPeer, true,
+		s2, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
 	)
 	if err := s2.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add alice link: %v", err)
@@ -606,30 +1180,20 @@ func TestSwitchForwardSettleAfterFullAdd(t *testing.T) {
 	alicePeer, err := newMockServer(
 		t, "alice", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create alice server: %v", err)
-	}
+	require.NoError(t, err, "unable to create alice server")
 	bobPeer, err := newMockServer(
 		t, "bob", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create bob server: %v", err)
-	}
+	require.NoError(t, err, "unable to create bob server")
 
-	tempPath, err := ioutil.TempDir("", "circuitdb")
-	if err != nil {
-		t.Fatalf("unable to temporary path: %v", err)
-	}
+	tempPath := t.TempDir()
 
 	cdb, err := channeldb.Open(tempPath)
-	if err != nil {
-		t.Fatalf("unable to open channeldb: %v", err)
-	}
+	require.NoError(t, err, "unable to open channeldb")
+	t.Cleanup(func() { cdb.Close() })
 
 	s, err := initSwitchWithDB(testStartingHeight, cdb)
-	if err != nil {
-		t.Fatalf("unable to init switch: %v", err)
-	}
+	require.NoError(t, err, "unable to init switch")
 	if err := s.Start(); err != nil {
 		t.Fatalf("unable to start switch: %v", err)
 	}
@@ -640,10 +1204,12 @@ func TestSwitchForwardSettleAfterFullAdd(t *testing.T) {
 	defer s.Stop()
 
 	aliceChannelLink := newMockChannelLink(
-		s, chanID1, aliceChanID, alicePeer, true,
+		s, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
 	)
 	bobChannelLink := newMockChannelLink(
-		s, chanID2, bobChanID, bobPeer, true,
+		s, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
 	)
 	if err := s.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add alice link: %v", err)
@@ -717,14 +1283,11 @@ func TestSwitchForwardSettleAfterFullAdd(t *testing.T) {
 	}
 
 	cdb2, err := channeldb.Open(tempPath)
-	if err != nil {
-		t.Fatalf("unable to reopen channeldb: %v", err)
-	}
+	require.NoError(t, err, "unable to reopen channeldb")
+	t.Cleanup(func() { cdb2.Close() })
 
 	s2, err := initSwitchWithDB(testStartingHeight, cdb2)
-	if err != nil {
-		t.Fatalf("unable reinit switch: %v", err)
-	}
+	require.NoError(t, err, "unable reinit switch")
 	if err := s2.Start(); err != nil {
 		t.Fatalf("unable to restart switch: %v", err)
 	}
@@ -735,10 +1298,12 @@ func TestSwitchForwardSettleAfterFullAdd(t *testing.T) {
 	defer s2.Stop()
 
 	aliceChannelLink = newMockChannelLink(
-		s2, chanID1, aliceChanID, alicePeer, true,
+		s2, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
 	)
 	bobChannelLink = newMockChannelLink(
-		s2, chanID2, bobChanID, bobPeer, true,
+		s2, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
 	)
 	if err := s2.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add alice link: %v", err)
@@ -808,30 +1373,20 @@ func TestSwitchForwardDropAfterFullAdd(t *testing.T) {
 	alicePeer, err := newMockServer(
 		t, "alice", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create alice server: %v", err)
-	}
+	require.NoError(t, err, "unable to create alice server")
 	bobPeer, err := newMockServer(
 		t, "bob", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create bob server: %v", err)
-	}
+	require.NoError(t, err, "unable to create bob server")
 
-	tempPath, err := ioutil.TempDir("", "circuitdb")
-	if err != nil {
-		t.Fatalf("unable to temporary path: %v", err)
-	}
+	tempPath := t.TempDir()
 
 	cdb, err := channeldb.Open(tempPath)
-	if err != nil {
-		t.Fatalf("unable to open channeldb: %v", err)
-	}
+	require.NoError(t, err, "unable to open channeldb")
+	t.Cleanup(func() { cdb.Close() })
 
 	s, err := initSwitchWithDB(testStartingHeight, cdb)
-	if err != nil {
-		t.Fatalf("unable to init switch: %v", err)
-	}
+	require.NoError(t, err, "unable to init switch")
 	if err := s.Start(); err != nil {
 		t.Fatalf("unable to start switch: %v", err)
 	}
@@ -842,10 +1397,12 @@ func TestSwitchForwardDropAfterFullAdd(t *testing.T) {
 	defer s.Stop()
 
 	aliceChannelLink := newMockChannelLink(
-		s, chanID1, aliceChanID, alicePeer, true,
+		s, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
 	)
 	bobChannelLink := newMockChannelLink(
-		s, chanID2, bobChanID, bobPeer, true,
+		s, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
 	)
 	if err := s.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add alice link: %v", err)
@@ -911,14 +1468,11 @@ func TestSwitchForwardDropAfterFullAdd(t *testing.T) {
 	}
 
 	cdb2, err := channeldb.Open(tempPath)
-	if err != nil {
-		t.Fatalf("unable to reopen channeldb: %v", err)
-	}
+	require.NoError(t, err, "unable to reopen channeldb")
+	t.Cleanup(func() { cdb2.Close() })
 
 	s2, err := initSwitchWithDB(testStartingHeight, cdb2)
-	if err != nil {
-		t.Fatalf("unable reinit switch: %v", err)
-	}
+	require.NoError(t, err, "unable reinit switch")
 	if err := s2.Start(); err != nil {
 		t.Fatalf("unable to restart switch: %v", err)
 	}
@@ -929,10 +1483,12 @@ func TestSwitchForwardDropAfterFullAdd(t *testing.T) {
 	defer s2.Stop()
 
 	aliceChannelLink = newMockChannelLink(
-		s2, chanID1, aliceChanID, alicePeer, true,
+		s2, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
 	)
 	bobChannelLink = newMockChannelLink(
-		s2, chanID2, bobChanID, bobPeer, true,
+		s2, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
 	)
 	if err := s2.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add alice link: %v", err)
@@ -973,30 +1529,20 @@ func TestSwitchForwardFailAfterHalfAdd(t *testing.T) {
 	alicePeer, err := newMockServer(
 		t, "alice", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create alice server: %v", err)
-	}
+	require.NoError(t, err, "unable to create alice server")
 	bobPeer, err := newMockServer(
 		t, "bob", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create bob server: %v", err)
-	}
+	require.NoError(t, err, "unable to create bob server")
 
-	tempPath, err := ioutil.TempDir("", "circuitdb")
-	if err != nil {
-		t.Fatalf("unable to temporary path: %v", err)
-	}
+	tempPath := t.TempDir()
 
 	cdb, err := channeldb.Open(tempPath)
-	if err != nil {
-		t.Fatalf("unable to open channeldb: %v", err)
-	}
+	require.NoError(t, err, "unable to open channeldb")
+	t.Cleanup(func() { cdb.Close() })
 
 	s, err := initSwitchWithDB(testStartingHeight, cdb)
-	if err != nil {
-		t.Fatalf("unable to init switch: %v", err)
-	}
+	require.NoError(t, err, "unable to init switch")
 	if err := s.Start(); err != nil {
 		t.Fatalf("unable to start switch: %v", err)
 	}
@@ -1007,10 +1553,12 @@ func TestSwitchForwardFailAfterHalfAdd(t *testing.T) {
 	defer s.Stop()
 
 	aliceChannelLink := newMockChannelLink(
-		s, chanID1, aliceChanID, alicePeer, true,
+		s, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
 	)
 	bobChannelLink := newMockChannelLink(
-		s, chanID2, bobChanID, bobPeer, true,
+		s, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
 	)
 	if err := s.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add alice link: %v", err)
@@ -1071,14 +1619,11 @@ func TestSwitchForwardFailAfterHalfAdd(t *testing.T) {
 	}
 
 	cdb2, err := channeldb.Open(tempPath)
-	if err != nil {
-		t.Fatalf("unable to reopen channeldb: %v", err)
-	}
+	require.NoError(t, err, "unable to reopen channeldb")
+	t.Cleanup(func() { cdb2.Close() })
 
 	s2, err := initSwitchWithDB(testStartingHeight, cdb2)
-	if err != nil {
-		t.Fatalf("unable reinit switch: %v", err)
-	}
+	require.NoError(t, err, "unable reinit switch")
 	if err := s2.Start(); err != nil {
 		t.Fatalf("unable to restart switch: %v", err)
 	}
@@ -1089,10 +1634,12 @@ func TestSwitchForwardFailAfterHalfAdd(t *testing.T) {
 	defer s2.Stop()
 
 	aliceChannelLink = newMockChannelLink(
-		s2, chanID1, aliceChanID, alicePeer, true,
+		s2, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
 	)
 	bobChannelLink = newMockChannelLink(
-		s2, chanID2, bobChanID, bobPeer, true,
+		s2, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
 	)
 	if err := s2.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add alice link: %v", err)
@@ -1139,30 +1686,20 @@ func TestSwitchForwardCircuitPersistence(t *testing.T) {
 	alicePeer, err := newMockServer(
 		t, "alice", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create alice server: %v", err)
-	}
+	require.NoError(t, err, "unable to create alice server")
 	bobPeer, err := newMockServer(
 		t, "bob", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create bob server: %v", err)
-	}
+	require.NoError(t, err, "unable to create bob server")
 
-	tempPath, err := ioutil.TempDir("", "circuitdb")
-	if err != nil {
-		t.Fatalf("unable to temporary path: %v", err)
-	}
+	tempPath := t.TempDir()
 
 	cdb, err := channeldb.Open(tempPath)
-	if err != nil {
-		t.Fatalf("unable to open channeldb: %v", err)
-	}
+	require.NoError(t, err, "unable to open channeldb")
+	t.Cleanup(func() { cdb.Close() })
 
 	s, err := initSwitchWithDB(testStartingHeight, cdb)
-	if err != nil {
-		t.Fatalf("unable to init switch: %v", err)
-	}
+	require.NoError(t, err, "unable to init switch")
 	if err := s.Start(); err != nil {
 		t.Fatalf("unable to start switch: %v", err)
 	}
@@ -1173,10 +1710,12 @@ func TestSwitchForwardCircuitPersistence(t *testing.T) {
 	defer s.Stop()
 
 	aliceChannelLink := newMockChannelLink(
-		s, chanID1, aliceChanID, alicePeer, true,
+		s, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
 	)
 	bobChannelLink := newMockChannelLink(
-		s, chanID2, bobChanID, bobPeer, true,
+		s, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
 	)
 	if err := s.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add alice link: %v", err)
@@ -1236,14 +1775,11 @@ func TestSwitchForwardCircuitPersistence(t *testing.T) {
 	}
 
 	cdb2, err := channeldb.Open(tempPath)
-	if err != nil {
-		t.Fatalf("unable to reopen channeldb: %v", err)
-	}
+	require.NoError(t, err, "unable to reopen channeldb")
+	t.Cleanup(func() { cdb2.Close() })
 
 	s2, err := initSwitchWithDB(testStartingHeight, cdb2)
-	if err != nil {
-		t.Fatalf("unable reinit switch: %v", err)
-	}
+	require.NoError(t, err, "unable reinit switch")
 	if err := s2.Start(); err != nil {
 		t.Fatalf("unable to restart switch: %v", err)
 	}
@@ -1254,10 +1790,12 @@ func TestSwitchForwardCircuitPersistence(t *testing.T) {
 	defer s2.Stop()
 
 	aliceChannelLink = newMockChannelLink(
-		s2, chanID1, aliceChanID, alicePeer, true,
+		s2, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
 	)
 	bobChannelLink = newMockChannelLink(
-		s2, chanID2, bobChanID, bobPeer, true,
+		s2, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
 	)
 	if err := s2.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add alice link: %v", err)
@@ -1329,24 +1867,23 @@ func TestSwitchForwardCircuitPersistence(t *testing.T) {
 	}
 
 	cdb3, err := channeldb.Open(tempPath)
-	if err != nil {
-		t.Fatalf("unable to reopen channeldb: %v", err)
-	}
+	require.NoError(t, err, "unable to reopen channeldb")
+	t.Cleanup(func() { cdb3.Close() })
 
 	s3, err := initSwitchWithDB(testStartingHeight, cdb3)
-	if err != nil {
-		t.Fatalf("unable reinit switch: %v", err)
-	}
+	require.NoError(t, err, "unable reinit switch")
 	if err := s3.Start(); err != nil {
 		t.Fatalf("unable to restart switch: %v", err)
 	}
 	defer s3.Stop()
 
 	aliceChannelLink = newMockChannelLink(
-		s3, chanID1, aliceChanID, alicePeer, true,
+		s3, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
 	)
 	bobChannelLink = newMockChannelLink(
-		s3, chanID2, bobChanID, bobPeer, true,
+		s3, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
 	)
 	if err := s3.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add alice link: %v", err)
@@ -1412,7 +1949,7 @@ func TestCircularForwards(t *testing.T) {
 					err)
 			}
 
-			s, err := initSwitchWithDB(testStartingHeight, nil)
+			s, err := initSwitchWithTempDB(t, testStartingHeight)
 			if err != nil {
 				t.Fatalf("unable to init switch: %v", err)
 			}
@@ -1426,7 +1963,8 @@ func TestCircularForwards(t *testing.T) {
 			s.cfg.AllowCircularRoute = test.allowCircularPayment
 
 			aliceChannelLink := newMockChannelLink(
-				s, chanID1, aliceChanID, alicePeer, true,
+				s, chanID1, aliceChanID, emptyScid, alicePeer,
+				true, false, false, false,
 			)
 
 			if err := s.AddLink(aliceChannelLink); err != nil {
@@ -1478,6 +2016,10 @@ func TestCheckCircularForward(t *testing.T) {
 	tests := []struct {
 		name string
 
+		// aliasMapping determines whether the test should add an alias
+		// mapping to Switch alias maps before checkCircularForward.
+		aliasMapping bool
+
 		// allowCircular determines whether we should allow circular
 		// forwards.
 		allowCircular bool
@@ -1494,6 +2036,7 @@ func TestCheckCircularForward(t *testing.T) {
 	}{
 		{
 			name:          "not circular, allowed in config",
+			aliasMapping:  false,
 			allowCircular: true,
 			incomingLink:  lnwire.NewShortChanIDFromInt(123),
 			outgoingLink:  lnwire.NewShortChanIDFromInt(321),
@@ -1501,6 +2044,7 @@ func TestCheckCircularForward(t *testing.T) {
 		},
 		{
 			name:          "not circular, not allowed in config",
+			aliasMapping:  false,
 			allowCircular: false,
 			incomingLink:  lnwire.NewShortChanIDFromInt(123),
 			outgoingLink:  lnwire.NewShortChanIDFromInt(321),
@@ -1508,6 +2052,7 @@ func TestCheckCircularForward(t *testing.T) {
 		},
 		{
 			name:          "circular, allowed in config",
+			aliasMapping:  false,
 			allowCircular: true,
 			incomingLink:  lnwire.NewShortChanIDFromInt(123),
 			outgoingLink:  lnwire.NewShortChanIDFromInt(123),
@@ -1515,6 +2060,7 @@ func TestCheckCircularForward(t *testing.T) {
 		},
 		{
 			name:          "circular, not allowed in config",
+			aliasMapping:  false,
 			allowCircular: false,
 			incomingLink:  lnwire.NewShortChanIDFromInt(123),
 			outgoingLink:  lnwire.NewShortChanIDFromInt(123),
@@ -1522,6 +2068,52 @@ func TestCheckCircularForward(t *testing.T) {
 				lnwire.NewTemporaryChannelFailure(nil),
 				OutgoingFailureCircularRoute,
 			),
+		},
+		{
+			name:          "circular with map, not allowed",
+			aliasMapping:  true,
+			allowCircular: false,
+			incomingLink:  lnwire.NewShortChanIDFromInt(1 << 60),
+			outgoingLink:  lnwire.NewShortChanIDFromInt(1 << 55),
+			expectedErr: NewDetailedLinkError(
+				lnwire.NewTemporaryChannelFailure(nil),
+				OutgoingFailureCircularRoute,
+			),
+		},
+		{
+			name:          "circular with map, not allowed 2",
+			aliasMapping:  true,
+			allowCircular: false,
+			incomingLink:  lnwire.NewShortChanIDFromInt(1 << 55),
+			outgoingLink:  lnwire.NewShortChanIDFromInt(1 << 60),
+			expectedErr: NewDetailedLinkError(
+				lnwire.NewTemporaryChannelFailure(nil),
+				OutgoingFailureCircularRoute,
+			),
+		},
+		{
+			name:          "circular with map, allowed",
+			aliasMapping:  true,
+			allowCircular: true,
+			incomingLink:  lnwire.NewShortChanIDFromInt(1 << 60),
+			outgoingLink:  lnwire.NewShortChanIDFromInt(1 << 55),
+			expectedErr:   nil,
+		},
+		{
+			name:          "circular with map, allowed 2",
+			aliasMapping:  true,
+			allowCircular: true,
+			incomingLink:  lnwire.NewShortChanIDFromInt(1 << 55),
+			outgoingLink:  lnwire.NewShortChanIDFromInt(1 << 61),
+			expectedErr:   nil,
+		},
+		{
+			name:          "not circular, both confirmed SCID",
+			aliasMapping:  false,
+			allowCircular: false,
+			incomingLink:  lnwire.NewShortChanIDFromInt(1 << 60),
+			outgoingLink:  lnwire.NewShortChanIDFromInt(1 << 61),
+			expectedErr:   nil,
 		},
 	}
 
@@ -1531,9 +2123,26 @@ func TestCheckCircularForward(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
+			s, err := initSwitchWithTempDB(t, testStartingHeight)
+			require.NoError(t, err)
+			err = s.Start()
+			require.NoError(t, err)
+			defer func() { _ = s.Stop() }()
+
+			if test.aliasMapping {
+				// Make the incoming and outgoing point to the
+				// same base SCID.
+				inScid := test.incomingLink
+				outScid := test.outgoingLink
+				s.indexMtx.Lock()
+				s.baseIndex[inScid] = outScid
+				s.baseIndex[outScid] = outScid
+				s.indexMtx.Unlock()
+			}
+
 			// Check for a circular forward, the hash passed can
 			// be nil because it is only used for logging.
-			err := checkCircularForward(
+			err = s.checkCircularForward(
 				test.incomingLink, test.outgoingLink,
 				test.allowCircular, lntypes.Hash{},
 			)
@@ -1546,7 +2155,7 @@ func TestCheckCircularForward(t *testing.T) {
 }
 
 // TestSkipIneligibleLinksMultiHopForward tests that if a multi-hop HTLC comes
-// along, then we won't attempt to froward it down al ink that isn't yet able
+// along, then we won't attempt to forward it down al ink that isn't yet able
 // to forward any HTLC's.
 func TestSkipIneligibleLinksMultiHopForward(t *testing.T) {
 	tests := []multiHopFwdTest{
@@ -1601,7 +2210,7 @@ func TestSkipIneligibleLinksMultiHopForward(t *testing.T) {
 }
 
 // testSkipIneligibleLinksMultiHopForward tests that if a multi-hop HTLC comes
-// along, then we won't attempt to froward it down al ink that isn't yet able
+// along, then we won't attempt to forward it down al ink that isn't yet able
 // to forward any HTLC's.
 func testSkipIneligibleLinksMultiHopForward(t *testing.T,
 	testCase *multiHopFwdTest) {
@@ -1613,20 +2222,14 @@ func testSkipIneligibleLinksMultiHopForward(t *testing.T,
 	alicePeer, err := newMockServer(
 		t, "alice", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create alice server: %v", err)
-	}
+	require.NoError(t, err, "unable to create alice server")
 	bobPeer, err := newMockServer(
 		t, "bob", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create bob server: %v", err)
-	}
+	require.NoError(t, err, "unable to create bob server")
 
-	s, err := initSwitchWithDB(testStartingHeight, nil)
-	if err != nil {
-		t.Fatalf("unable to init switch: %v", err)
-	}
+	s, err := initSwitchWithTempDB(t, testStartingHeight)
+	require.NoError(t, err, "unable to init switch")
 	if err := s.Start(); err != nil {
 		t.Fatalf("unable to start switch: %v", err)
 	}
@@ -1634,20 +2237,23 @@ func testSkipIneligibleLinksMultiHopForward(t *testing.T,
 
 	chanID1, aliceChanID := genID()
 	aliceChannelLink := newMockChannelLink(
-		s, chanID1, aliceChanID, alicePeer, true,
+		s, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
 	)
 
 	// We'll create a link for Bob, but mark the link as unable to forward
 	// any new outgoing HTLC's.
 	chanID2, bobChanID2 := genID()
 	bobChannelLink1 := newMockChannelLink(
-		s, chanID2, bobChanID2, bobPeer, testCase.eligible1,
+		s, chanID2, bobChanID2, emptyScid, bobPeer, testCase.eligible1,
+		false, false, false,
 	)
 	bobChannelLink1.checkHtlcForwardResult = testCase.failure1
 
 	chanID3, bobChanID3 := genID()
 	bobChannelLink2 := newMockChannelLink(
-		s, chanID3, bobChanID3, bobPeer, testCase.eligible2,
+		s, chanID3, bobChanID3, emptyScid, bobPeer, testCase.eligible2,
+		false, false, false,
 	)
 	bobChannelLink2.checkHtlcForwardResult = testCase.failure2
 
@@ -1743,14 +2349,10 @@ func testSkipLinkLocalForward(t *testing.T, eligible bool,
 	alicePeer, err := newMockServer(
 		t, "alice", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create alice server: %v", err)
-	}
+	require.NoError(t, err, "unable to create alice server")
 
-	s, err := initSwitchWithDB(testStartingHeight, nil)
-	if err != nil {
-		t.Fatalf("unable to init switch: %v", err)
-	}
+	s, err := initSwitchWithTempDB(t, testStartingHeight)
+	require.NoError(t, err, "unable to init switch")
 	if err := s.Start(); err != nil {
 		t.Fatalf("unable to start switch: %v", err)
 	}
@@ -1759,7 +2361,8 @@ func testSkipLinkLocalForward(t *testing.T, eligible bool,
 	chanID1, _, aliceChanID, _ := genIDs()
 
 	aliceChannelLink := newMockChannelLink(
-		s, chanID1, aliceChanID, alicePeer, eligible,
+		s, chanID1, aliceChanID, emptyScid, alicePeer, eligible, false,
+		false, false,
 	)
 	aliceChannelLink.checkHtlcTransitResult = NewLinkError(
 		policyResult,
@@ -1769,9 +2372,7 @@ func testSkipLinkLocalForward(t *testing.T, eligible bool,
 	}
 
 	preimage, err := genPreimage()
-	if err != nil {
-		t.Fatalf("unable to generate preimage: %v", err)
-	}
+	require.NoError(t, err, "unable to generate preimage")
 	rhash := sha256.Sum256(preimage[:])
 	addMsg := &lnwire.UpdateAddHTLC{
 		PaymentHash: rhash,
@@ -1799,20 +2400,14 @@ func TestSwitchCancel(t *testing.T) {
 	alicePeer, err := newMockServer(
 		t, "alice", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create alice server: %v", err)
-	}
+	require.NoError(t, err, "unable to create alice server")
 	bobPeer, err := newMockServer(
 		t, "bob", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create bob server: %v", err)
-	}
+	require.NoError(t, err, "unable to create bob server")
 
-	s, err := initSwitchWithDB(testStartingHeight, nil)
-	if err != nil {
-		t.Fatalf("unable to init switch: %v", err)
-	}
+	s, err := initSwitchWithTempDB(t, testStartingHeight)
+	require.NoError(t, err, "unable to init switch")
 	if err := s.Start(); err != nil {
 		t.Fatalf("unable to start switch: %v", err)
 	}
@@ -1821,10 +2416,12 @@ func TestSwitchCancel(t *testing.T) {
 	chanID1, chanID2, aliceChanID, bobChanID := genIDs()
 
 	aliceChannelLink := newMockChannelLink(
-		s, chanID1, aliceChanID, alicePeer, true,
+		s, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
 	)
 	bobChannelLink := newMockChannelLink(
-		s, chanID2, bobChanID, bobPeer, true,
+		s, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
 	)
 	if err := s.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add alice link: %v", err)
@@ -1836,9 +2433,7 @@ func TestSwitchCancel(t *testing.T) {
 	// Create request which should be forwarder from alice channel link
 	// to bob channel link.
 	preimage, err := genPreimage()
-	if err != nil {
-		t.Fatalf("unable to generate preimage: %v", err)
-	}
+	require.NoError(t, err, "unable to generate preimage")
 	rhash := sha256.Sum256(preimage[:])
 	request := &htlcPacket{
 		incomingChanID: aliceChannelLink.ShortChanID(),
@@ -1916,30 +2511,26 @@ func TestSwitchAddSamePayment(t *testing.T) {
 	alicePeer, err := newMockServer(
 		t, "alice", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create alice server: %v", err)
-	}
+	require.NoError(t, err, "unable to create alice server")
 	bobPeer, err := newMockServer(
 		t, "bob", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create bob server: %v", err)
-	}
+	require.NoError(t, err, "unable to create bob server")
 
-	s, err := initSwitchWithDB(testStartingHeight, nil)
-	if err != nil {
-		t.Fatalf("unable to init switch: %v", err)
-	}
+	s, err := initSwitchWithTempDB(t, testStartingHeight)
+	require.NoError(t, err, "unable to init switch")
 	if err := s.Start(); err != nil {
 		t.Fatalf("unable to start switch: %v", err)
 	}
 	defer s.Stop()
 
 	aliceChannelLink := newMockChannelLink(
-		s, chanID1, aliceChanID, alicePeer, true,
+		s, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
 	)
 	bobChannelLink := newMockChannelLink(
-		s, chanID2, bobChanID, bobPeer, true,
+		s, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
 	)
 	if err := s.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add alice link: %v", err)
@@ -1951,9 +2542,7 @@ func TestSwitchAddSamePayment(t *testing.T) {
 	// Create request which should be forwarder from alice channel link
 	// to bob channel link.
 	preimage, err := genPreimage()
-	if err != nil {
-		t.Fatalf("unable to generate preimage: %v", err)
-	}
+	require.NoError(t, err, "unable to generate preimage")
 	rhash := sha256.Sum256(preimage[:])
 	request := &htlcPacket{
 		incomingChanID: aliceChannelLink.ShortChanID(),
@@ -2079,14 +2668,10 @@ func TestSwitchSendPayment(t *testing.T) {
 	alicePeer, err := newMockServer(
 		t, "alice", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create alice server: %v", err)
-	}
+	require.NoError(t, err, "unable to create alice server")
 
-	s, err := initSwitchWithDB(testStartingHeight, nil)
-	if err != nil {
-		t.Fatalf("unable to init switch: %v", err)
-	}
+	s, err := initSwitchWithTempDB(t, testStartingHeight)
+	require.NoError(t, err, "unable to init switch")
 	if err := s.Start(); err != nil {
 		t.Fatalf("unable to start switch: %v", err)
 	}
@@ -2095,7 +2680,8 @@ func TestSwitchSendPayment(t *testing.T) {
 	chanID1, _, aliceChanID, _ := genIDs()
 
 	aliceChannelLink := newMockChannelLink(
-		s, chanID1, aliceChanID, alicePeer, true,
+		s, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
 	)
 	if err := s.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add link: %v", err)
@@ -2104,9 +2690,7 @@ func TestSwitchSendPayment(t *testing.T) {
 	// Create request which should be forwarder from alice channel link
 	// to bob channel link.
 	preimage, err := genPreimage()
-	if err != nil {
-		t.Fatalf("unable to generate preimage: %v", err)
-	}
+	require.NoError(t, err, "unable to generate preimage")
 	rhash := sha256.Sum256(preimage[:])
 	update := &lnwire.UpdateAddHTLC{
 		PaymentHash: rhash,
@@ -2116,7 +2700,7 @@ func TestSwitchSendPayment(t *testing.T) {
 
 	// First check that the switch will correctly respond that this payment
 	// ID is unknown.
-	_, err = s.GetPaymentResult(
+	_, err = s.GetAttemptResult(
 		paymentID, rhash, newMockDeobfuscator(),
 	)
 	if err != ErrPaymentIDNotFound {
@@ -2134,7 +2718,7 @@ func TestSwitchSendPayment(t *testing.T) {
 			return
 		}
 
-		resultChan, err := s.GetPaymentResult(
+		resultChan, err := s.GetAttemptResult(
 			paymentID, rhash, newMockDeobfuscator(),
 		)
 		if err != nil {
@@ -2179,9 +2763,7 @@ func TestSwitchSendPayment(t *testing.T) {
 	obfuscator := NewMockObfuscator()
 	failure := lnwire.NewFailIncorrectDetails(update.Amount, 100)
 	reason, err := obfuscator.EncryptFirstHop(failure)
-	if err != nil {
-		t.Fatalf("unable obfuscate failure: %v", err)
-	}
+	require.NoError(t, err, "unable obfuscate failure")
 
 	if s.IsForwardedHTLC(aliceChannelLink.ShortChanID(), update.ID) {
 		t.Fatal("htlc should be identified as not forwarded")
@@ -2217,13 +2799,10 @@ func TestLocalPaymentNoForwardingEvents(t *testing.T) {
 	// First, we'll create our traditional three hop network. We'll only be
 	// interacting with and asserting the state of the first end point for
 	// this test.
-	channels, cleanUp, _, err := createClusterChannels(
-		ltcutil.SatoshiPerBitcoin*3,
-		ltcutil.SatoshiPerBitcoin*5)
-	if err != nil {
-		t.Fatalf("unable to create channel: %v", err)
-	}
-	defer cleanUp()
+	channels, _, err := createClusterChannels(
+		t, ltcutil.SatoshiPerBitcoin*3, ltcutil.SatoshiPerBitcoin*5,
+	)
+	require.NoError(t, err, "unable to create channel")
 
 	n := newThreeHopNetwork(t, channels.aliceToBob, channels.bobToAlice,
 		channels.bobToCarol, channels.carolToBob, testStartingHeight)
@@ -2246,9 +2825,7 @@ func TestLocalPaymentNoForwardingEvents(t *testing.T) {
 		n.aliceServer, receiver, firstHop, hops, amount, htlcAmt,
 		totalTimelock,
 	).Wait(30 * time.Second)
-	if err != nil {
-		t.Fatalf("unable to make the payment: %v", err)
-	}
+	require.NoError(t, err, "unable to make the payment")
 
 	// At this point, we'll forcibly stop the three hop network. Doing
 	// this will cause any pending forwarding events to be flushed by the
@@ -2279,13 +2856,10 @@ func TestMultiHopPaymentForwardingEvents(t *testing.T) {
 	t.Parallel()
 
 	// First, we'll create our traditional three hop network.
-	channels, cleanUp, _, err := createClusterChannels(
-		ltcutil.SatoshiPerBitcoin*3,
-		ltcutil.SatoshiPerBitcoin*5)
-	if err != nil {
-		t.Fatalf("unable to create channel: %v", err)
-	}
-	defer cleanUp()
+	channels, _, err := createClusterChannels(
+		t, ltcutil.SatoshiPerBitcoin*3, ltcutil.SatoshiPerBitcoin*5,
+	)
+	require.NoError(t, err, "unable to create channel")
 
 	n := newThreeHopNetwork(t, channels.aliceToBob, channels.bobToAlice,
 		channels.bobToCarol, channels.carolToBob, testStartingHeight)
@@ -2436,13 +3010,10 @@ func TestUpdateFailMalformedHTLCErrorConversion(t *testing.T) {
 	t.Parallel()
 
 	// First, we'll create our traditional three hop network.
-	channels, cleanUp, _, err := createClusterChannels(
-		ltcutil.SatoshiPerBitcoin*3, ltcutil.SatoshiPerBitcoin*5,
+	channels, _, err := createClusterChannels(
+		t, ltcutil.SatoshiPerBitcoin*3, ltcutil.SatoshiPerBitcoin*5,
 	)
-	if err != nil {
-		t.Fatalf("unable to create channel: %v", err)
-	}
-	defer cleanUp()
+	require.NoError(t, err, "unable to create channel")
 
 	n := newThreeHopNetwork(
 		t, channels.aliceToBob, channels.bobToAlice,
@@ -2502,21 +3073,19 @@ func TestUpdateFailMalformedHTLCErrorConversion(t *testing.T) {
 	})
 }
 
-// TestSwitchGetPaymentResult tests that the switch interacts as expected with
+// TestSwitchGetAttemptResult tests that the switch interacts as expected with
 // the circuit map and network result store when looking up the result of a
 // payment ID. This is important for not to lose results under concurrent
 // lookup and receiving results.
-func TestSwitchGetPaymentResult(t *testing.T) {
+func TestSwitchGetAttemptResult(t *testing.T) {
 	t.Parallel()
 
 	const paymentID = 123
 	var preimg lntypes.Preimage
 	preimg[0] = 3
 
-	s, err := initSwitchWithDB(testStartingHeight, nil)
-	if err != nil {
-		t.Fatalf("unable to init switch: %v", err)
-	}
+	s, err := initSwitchWithTempDB(t, testStartingHeight)
+	require.NoError(t, err, "unable to init switch")
 	if err := s.Start(); err != nil {
 		t.Fatalf("unable to start switch: %v", err)
 	}
@@ -2532,7 +3101,7 @@ func TestSwitchGetPaymentResult(t *testing.T) {
 	// added anything to the store yet, ErrPaymentIDNotFound should be
 	// returned.
 	lookup <- nil
-	_, err = s.GetPaymentResult(
+	_, err = s.GetAttemptResult(
 		paymentID, lntypes.Hash{}, newMockDeobfuscator(),
 	)
 	if err != ErrPaymentIDNotFound {
@@ -2542,12 +3111,10 @@ func TestSwitchGetPaymentResult(t *testing.T) {
 	// Next let the lookup find the circuit in the circuit map. It should
 	// subscribe to payment results, and return the result when available.
 	lookup <- &PaymentCircuit{}
-	resultChan, err := s.GetPaymentResult(
+	resultChan, err := s.GetAttemptResult(
 		paymentID, lntypes.Hash{}, newMockDeobfuscator(),
 	)
-	if err != nil {
-		t.Fatalf("unable to get payment result: %v", err)
-	}
+	require.NoError(t, err, "unable to get payment result")
 
 	// Add the result to the store.
 	n := &networkResult{
@@ -2559,11 +3126,9 @@ func TestSwitchGetPaymentResult(t *testing.T) {
 	}
 
 	err = s.networkResults.storeResult(paymentID, n)
-	if err != nil {
-		t.Fatalf("unable to store result: %v", err)
-	}
+	require.NoError(t, err, "unable to store result")
 
-	// The result should be availble.
+	// The result should be available.
 	select {
 	case res, ok := <-resultChan:
 		if !ok {
@@ -2587,12 +3152,10 @@ func TestSwitchGetPaymentResult(t *testing.T) {
 	// in the circuit map, it should be immediately available from the
 	// store.
 	lookup <- nil
-	resultChan, err = s.GetPaymentResult(
+	resultChan, err = s.GetAttemptResult(
 		paymentID, lntypes.Hash{}, newMockDeobfuscator(),
 	)
-	if err != nil {
-		t.Fatalf("unable to get payment result: %v", err)
-	}
+	require.NoError(t, err, "unable to get payment result")
 
 	select {
 	case res, ok := <-resultChan:
@@ -2622,14 +3185,10 @@ func TestInvalidFailure(t *testing.T) {
 	alicePeer, err := newMockServer(
 		t, "alice", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create alice server: %v", err)
-	}
+	require.NoError(t, err, "unable to create alice server")
 
-	s, err := initSwitchWithDB(testStartingHeight, nil)
-	if err != nil {
-		t.Fatalf("unable to init switch: %v", err)
-	}
+	s, err := initSwitchWithTempDB(t, testStartingHeight)
+	require.NoError(t, err, "unable to init switch")
 	if err := s.Start(); err != nil {
 		t.Fatalf("unable to start switch: %v", err)
 	}
@@ -2639,7 +3198,8 @@ func TestInvalidFailure(t *testing.T) {
 
 	// Set up a mock channel link.
 	aliceChannelLink := newMockChannelLink(
-		s, chanID1, aliceChanID, alicePeer, true,
+		s, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
 	)
 	if err := s.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add link: %v", err)
@@ -2647,9 +3207,7 @@ func TestInvalidFailure(t *testing.T) {
 
 	// Create a request which should be forwarded to the mock channel link.
 	preimage, err := genPreimage()
-	if err != nil {
-		t.Fatalf("unable to generate preimage: %v", err)
-	}
+	require.NoError(t, err, "unable to generate preimage")
 	rhash := sha256.Sum256(preimage[:])
 	update := &lnwire.UpdateAddHTLC{
 		PaymentHash: rhash,
@@ -2662,9 +3220,7 @@ func TestInvalidFailure(t *testing.T) {
 	err = s.SendHTLC(
 		aliceChannelLink.ShortChanID(), paymentID, update,
 	)
-	if err != nil {
-		t.Fatalf("unable to send payment: %v", err)
-	}
+	require.NoError(t, err, "unable to send payment")
 
 	// Catch the packet and complete the circuit so that the switch is ready
 	// for a response.
@@ -2702,7 +3258,7 @@ func TestInvalidFailure(t *testing.T) {
 		},
 	}
 
-	resultChan, err := s.GetPaymentResult(
+	resultChan, err := s.GetAttemptResult(
 		paymentID, rhash, &deobfuscator,
 	)
 	if err != nil {
@@ -2728,7 +3284,7 @@ func TestInvalidFailure(t *testing.T) {
 		},
 	}
 
-	resultChan, err = s.GetPaymentResult(
+	resultChan, err = s.GetAttemptResult(
 		paymentID, rhash, &deobfuscator,
 	)
 	if err != nil {
@@ -2853,13 +3409,10 @@ func testHtcNotifier(t *testing.T, testOpts []serverOption, iterations int,
 
 	// First, we'll create our traditional three hop
 	// network.
-	channels, cleanUp, _, err := createClusterChannels(
-		ltcutil.SatoshiPerBitcoin*3,
-		ltcutil.SatoshiPerBitcoin*5)
-	if err != nil {
-		t.Fatalf("unable to create channel: %v", err)
-	}
-	defer cleanUp()
+	channels, _, err := createClusterChannels(
+		t, ltcutil.SatoshiPerBitcoin*3, ltcutil.SatoshiPerBitcoin*5,
+	)
+	require.NoError(t, err, "unable to create channel")
 
 	// Mock time so that all events are reported with a static timestamp.
 	now := time.Now()
@@ -2873,31 +3426,31 @@ func testHtcNotifier(t *testing.T, testOpts []serverOption, iterations int,
 	if err := aliceNotifier.Start(); err != nil {
 		t.Fatalf("could not start alice notifier")
 	}
-	defer func() {
+	t.Cleanup(func() {
 		if err := aliceNotifier.Stop(); err != nil {
 			t.Fatalf("failed to stop alice notifier: %v", err)
 		}
-	}()
+	})
 
 	bobNotifier := NewHtlcNotifier(mockTime)
 	if err := bobNotifier.Start(); err != nil {
 		t.Fatalf("could not start bob notifier")
 	}
-	defer func() {
+	t.Cleanup(func() {
 		if err := bobNotifier.Stop(); err != nil {
 			t.Fatalf("failed to stop bob notifier: %v", err)
 		}
-	}()
+	})
 
 	carolNotifier := NewHtlcNotifier(mockTime)
 	if err := carolNotifier.Start(); err != nil {
 		t.Fatalf("could not start carol notifier")
 	}
-	defer func() {
+	t.Cleanup(func() {
 		if err := carolNotifier.Stop(); err != nil {
 			t.Fatalf("failed to stop carol notifier: %v", err)
 		}
-	}()
+	})
 
 	// Create a notifier server option which will set our htlc notifiers
 	// for the three hop network.
@@ -2907,7 +3460,7 @@ func testHtcNotifier(t *testing.T, testOpts []serverOption, iterations int,
 
 	// Add the htlcNotifier option to any other options
 	// set in the test.
-	options := append(testOpts, notifierOption)
+	options := append(testOpts, notifierOption) // nolint:gocritic
 
 	n := newThreeHopNetwork(
 		t, channels.aliceToBob,
@@ -2919,7 +3472,7 @@ func testHtcNotifier(t *testing.T, testOpts []serverOption, iterations int,
 		t.Fatalf("unable to start three hop "+
 			"network: %v", err)
 	}
-	defer n.stop()
+	t.Cleanup(n.stop)
 
 	// Before we forward anything, subscribe to htlc events
 	// from each notifier.
@@ -2928,21 +3481,21 @@ func testHtcNotifier(t *testing.T, testOpts []serverOption, iterations int,
 		t.Fatalf("could not subscribe to alice's"+
 			" events: %v", err)
 	}
-	defer aliceEvents.Cancel()
+	t.Cleanup(aliceEvents.Cancel)
 
 	bobEvents, err := bobNotifier.SubscribeHtlcEvents()
 	if err != nil {
 		t.Fatalf("could not subscribe to bob's"+
 			" events: %v", err)
 	}
-	defer bobEvents.Cancel()
+	t.Cleanup(bobEvents.Cancel)
 
 	carolEvents, err := carolNotifier.SubscribeHtlcEvents()
 	if err != nil {
 		t.Fatalf("could not subscribe to carol's"+
 			" events: %v", err)
 	}
-	defer carolEvents.Cancel()
+	t.Cleanup(carolEvents.Cancel)
 
 	// Send multiple payments, as specified by the test to test incrementing
 	// of htlc ids.
@@ -2959,7 +3512,6 @@ func testHtcNotifier(t *testing.T, testOpts []serverOption, iterations int,
 		checkHtlcEvents(t, aliceEvents.Updates(), alice)
 		checkHtlcEvents(t, bobEvents.Updates(), bob)
 		checkHtlcEvents(t, carolEvents.Updates(), carol)
-
 	}
 }
 
@@ -2981,6 +3533,13 @@ func checkHtlcEvents(t *testing.T, events <-chan interface{},
 		case <-time.After(5 * time.Second):
 			t.Fatalf("expected event: %v", expected)
 		}
+	}
+
+	// Check that there are no unexpected events following.
+	select {
+	case event := <-events:
+		t.Fatalf("unexpected event: %v", event)
+	default:
 	}
 }
 
@@ -3006,9 +3565,7 @@ func (n *threeHopNetwork) sendThreeHopPayment(t *testing.T) (*lnwire.UpdateAddHT
 	}
 
 	err = n.carolServer.registry.AddInvoice(*invoice, htlc.PaymentHash)
-	if err != nil {
-		t.Fatalf("unable to add invoice in carol registry: %v", err)
-	}
+	require.NoError(t, err, "unable to add invoice in carol registry")
 
 	if err := n.aliceServer.htlcSwitch.SendHTLC(
 		n.firstBobChannelLink.ShortChanID(), pid, htlc,
@@ -3029,7 +3586,7 @@ func getThreeHopEvents(channels *clusterChannels, htlcID uint64,
 
 	aliceKey := HtlcKey{
 		IncomingCircuit: zeroCircuit,
-		OutgoingCircuit: channeldb.CircuitKey{
+		OutgoingCircuit: models.CircuitKey{
 			ChanID: channels.aliceToBob.ShortChanID(),
 			HtlcID: htlcID,
 		},
@@ -3050,11 +3607,11 @@ func getThreeHopEvents(channels *clusterChannels, htlcID uint64,
 	}
 
 	bobKey := HtlcKey{
-		IncomingCircuit: channeldb.CircuitKey{
+		IncomingCircuit: models.CircuitKey{
 			ChanID: channels.bobToAlice.ShortChanID(),
 			HtlcID: htlcID,
 		},
-		OutgoingCircuit: channeldb.CircuitKey{
+		OutgoingCircuit: models.CircuitKey{
 			ChanID: channels.bobToCarol.ShortChanID(),
 			HtlcID: htlcID,
 		},
@@ -3087,6 +3644,12 @@ func getThreeHopEvents(channels *clusterChannels, htlcID uint64,
 				Incoming:      false,
 				Timestamp:     ts,
 			},
+			&FinalHtlcEvent{
+				CircuitKey: bobKey.IncomingCircuit,
+				Settled:    false,
+				Offchain:   true,
+				Timestamp:  ts,
+			},
 		}
 
 		return aliceEvents, bobEvents, nil
@@ -3118,12 +3681,18 @@ func getThreeHopEvents(channels *clusterChannels, htlcID uint64,
 			HtlcEventType: HtlcEventTypeForward,
 			Timestamp:     ts,
 		},
+		&FinalHtlcEvent{
+			CircuitKey: bobKey.IncomingCircuit,
+			Settled:    true,
+			Offchain:   true,
+			Timestamp:  ts,
+		},
 	}
 
 	carolEvents := []interface{}{
 		&SettleEvent{
 			HtlcKey: HtlcKey{
-				IncomingCircuit: channeldb.CircuitKey{
+				IncomingCircuit: models.CircuitKey{
 					ChanID: channels.carolToBob.ShortChanID(),
 					HtlcID: htlcID,
 				},
@@ -3132,6 +3701,14 @@ func getThreeHopEvents(channels *clusterChannels, htlcID uint64,
 			Preimage:      *preimage,
 			HtlcEventType: HtlcEventTypeReceive,
 			Timestamp:     ts,
+		}, &FinalHtlcEvent{
+			CircuitKey: models.CircuitKey{
+				ChanID: channels.carolToBob.ShortChanID(),
+				HtlcID: htlcID,
+			},
+			Settled:   true,
+			Offchain:  true,
+			Timestamp: ts,
 		},
 	}
 
@@ -3139,38 +3716,46 @@ func getThreeHopEvents(channels *clusterChannels, htlcID uint64,
 }
 
 type mockForwardInterceptor struct {
-	intercepted InterceptedForward
+	t *testing.T
+
+	interceptedChan chan InterceptedPacket
 }
 
-func (m *mockForwardInterceptor) InterceptForwardHtlc(intercepted InterceptedForward) bool {
+func (m *mockForwardInterceptor) InterceptForwardHtlc(
+	intercepted InterceptedPacket) error {
 
-	m.intercepted = intercepted
-	return true
+	m.interceptedChan <- intercepted
+
+	return nil
 }
 
-func (m *mockForwardInterceptor) settle(preimage lntypes.Preimage) error {
-	return m.intercepted.Settle(preimage)
-}
+func (m *mockForwardInterceptor) getIntercepted() InterceptedPacket {
+	m.t.Helper()
 
-func (m *mockForwardInterceptor) fail() error {
-	return m.intercepted.Fail()
-}
+	select {
+	case p := <-m.interceptedChan:
+		return p
 
-func (m *mockForwardInterceptor) resume() error {
-	return m.intercepted.Resume()
+	case <-time.After(time.Second):
+		require.Fail(m.t, "timeout")
+
+		return InterceptedPacket{}
+	}
 }
 
 func assertNumCircuits(t *testing.T, s *Switch, pending, opened int) {
 	if s.circuits.NumPending() != pending {
-		t.Fatal("wrong amount of half circuits")
+		t.Fatalf("wrong amount of half circuits, expected %v but "+
+			"got %v", pending, s.circuits.NumPending())
 	}
 	if s.circuits.NumOpen() != opened {
-		t.Fatal("wrong amount of circuits")
+		t.Fatalf("wrong amount of circuits, expected %v but got %v",
+			opened, s.circuits.NumOpen())
 	}
 }
 
 func assertOutgoingLinkReceive(t *testing.T, targetLink *mockChannelLink,
-	expectReceive bool) {
+	expectReceive bool) *htlcPacket {
 
 	// Pull packet from targetLink link.
 	select {
@@ -3181,60 +3766,78 @@ func assertOutgoingLinkReceive(t *testing.T, targetLink *mockChannelLink,
 			t.Fatalf("unable to complete payment circuit: %v", err)
 		}
 
+		return packet
+
 	case <-time.After(time.Second):
 		if expectReceive {
 			t.Fatal("request was not propagated to destination")
 		}
 	}
+
+	return nil
 }
 
-func TestSwitchHoldForward(t *testing.T) {
-	t.Parallel()
+func assertOutgoingLinkReceiveIntercepted(t *testing.T,
+	targetLink *mockChannelLink) {
+
+	t.Helper()
+
+	select {
+	case <-targetLink.packets:
+	case <-time.After(time.Second):
+		t.Fatal("request was not propagated to destination")
+	}
+}
+
+type interceptableSwitchTestContext struct {
+	t *testing.T
+
+	preimage           [sha256.Size]byte
+	rhash              [32]byte
+	onionBlob          [1366]byte
+	incomingHtlcID     uint64
+	cltvRejectDelta    uint32
+	cltvInterceptDelta uint32
+
+	forwardInterceptor *mockForwardInterceptor
+	aliceChannelLink   *mockChannelLink
+	bobChannelLink     *mockChannelLink
+	s                  *Switch
+}
+
+func newInterceptableSwitchTestContext(
+	t *testing.T) *interceptableSwitchTestContext {
 
 	chanID1, chanID2, aliceChanID, bobChanID := genIDs()
 
 	alicePeer, err := newMockServer(
 		t, "alice", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create alice server: %v", err)
-	}
+	require.NoError(t, err, "unable to create alice server")
 	bobPeer, err := newMockServer(
 		t, "bob", testStartingHeight, nil, testDefaultDelta,
 	)
-	if err != nil {
-		t.Fatalf("unable to create bob server: %v", err)
-	}
+	require.NoError(t, err, "unable to create bob server")
 
-	tempPath, err := ioutil.TempDir("", "circuitdb")
-	if err != nil {
-		t.Fatalf("unable to temporary path: %v", err)
-	}
+	tempPath := t.TempDir()
 
 	cdb, err := channeldb.Open(tempPath)
-	if err != nil {
-		t.Fatalf("unable to open channeldb: %v", err)
-	}
+	require.NoError(t, err, "unable to open channeldb")
+	t.Cleanup(func() { cdb.Close() })
 
 	s, err := initSwitchWithDB(testStartingHeight, cdb)
-	if err != nil {
-		t.Fatalf("unable to init switch: %v", err)
-	}
+	require.NoError(t, err, "unable to init switch")
 	if err := s.Start(); err != nil {
 		t.Fatalf("unable to start switch: %v", err)
 	}
 
-	defer func() {
-		if err := s.Stop(); err != nil {
-			t.Fatalf(err.Error())
-		}
-	}()
-
 	aliceChannelLink := newMockChannelLink(
-		s, chanID1, aliceChanID, alicePeer, true,
+		s, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
 	)
 	bobChannelLink := newMockChannelLink(
-		s, chanID2, bobChanID, bobPeer, true,
+		s, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
 	)
 	if err := s.AddLink(aliceChannelLink); err != nil {
 		t.Fatalf("unable to add alice link: %v", err)
@@ -3243,82 +3846,413 @@ func TestSwitchHoldForward(t *testing.T) {
 		t.Fatalf("unable to add bob link: %v", err)
 	}
 
-	// Create request which should be forwarded from Alice channel link to
-	// bob channel link.
 	preimage := [sha256.Size]byte{1}
-	rhash := sha256.Sum256(preimage[:])
-	ogPacket := &htlcPacket{
-		incomingChanID: aliceChannelLink.ShortChanID(),
-		incomingHTLCID: 0,
-		outgoingChanID: bobChannelLink.ShortChanID(),
-		obfuscator:     NewMockObfuscator(),
+
+	ctx := &interceptableSwitchTestContext{
+		t:                  t,
+		preimage:           preimage,
+		rhash:              sha256.Sum256(preimage[:]),
+		onionBlob:          [1366]byte{4, 5, 6},
+		incomingHtlcID:     uint64(0),
+		cltvRejectDelta:    10,
+		cltvInterceptDelta: 13,
+		forwardInterceptor: &mockForwardInterceptor{
+			t:               t,
+			interceptedChan: make(chan InterceptedPacket),
+		},
+		aliceChannelLink: aliceChannelLink,
+		bobChannelLink:   bobChannelLink,
+		s:                s,
+	}
+
+	return ctx
+}
+
+func (c *interceptableSwitchTestContext) createTestPacket() *htlcPacket {
+	c.incomingHtlcID++
+
+	return &htlcPacket{
+		incomingChanID:  c.aliceChannelLink.ShortChanID(),
+		incomingHTLCID:  c.incomingHtlcID,
+		incomingTimeout: testStartingHeight + c.cltvInterceptDelta + 1,
+		outgoingChanID:  c.bobChannelLink.ShortChanID(),
+		obfuscator:      NewMockObfuscator(),
 		htlc: &lnwire.UpdateAddHTLC{
-			PaymentHash: rhash,
+			PaymentHash: c.rhash,
 			Amount:      1,
+			OnionBlob:   c.onionBlob,
 		},
 	}
+}
 
-	forwardInterceptor := &mockForwardInterceptor{}
-	switchForwardInterceptor := NewInterceptableSwitch(s)
-	switchForwardInterceptor.SetInterceptor(forwardInterceptor.InterceptForwardHtlc)
-	linkQuit := make(chan struct{})
-
-	// Test resume a hold forward
-	assertNumCircuits(t, s, 0, 0)
-	if err := switchForwardInterceptor.ForwardPackets(linkQuit, ogPacket); err != nil {
-		t.Fatalf("can't forward htlc packet: %v", err)
+func (c *interceptableSwitchTestContext) finish() {
+	if err := c.s.Stop(); err != nil {
+		c.t.Fatalf(err.Error())
 	}
-	assertNumCircuits(t, s, 0, 0)
-	assertOutgoingLinkReceive(t, bobChannelLink, false)
+}
 
-	if err := forwardInterceptor.resume(); err != nil {
-		t.Fatalf("failed to resume forward")
-	}
-	assertOutgoingLinkReceive(t, bobChannelLink, true)
-	assertNumCircuits(t, s, 1, 1)
+func (c *interceptableSwitchTestContext) createSettlePacket(
+	outgoingHTLCID uint64) *htlcPacket {
 
-	// settling the htlc to close the circuit.
-	settle := &htlcPacket{
-		outgoingChanID: bobChannelLink.ShortChanID(),
-		outgoingHTLCID: 0,
+	return &htlcPacket{
+		outgoingChanID: c.bobChannelLink.ShortChanID(),
+		outgoingHTLCID: outgoingHTLCID,
 		amount:         1,
 		htlc: &lnwire.UpdateFulfillHTLC{
-			PaymentPreimage: preimage,
+			PaymentPreimage: c.preimage,
 		},
 	}
-	if err := switchForwardInterceptor.ForwardPackets(linkQuit, settle); err != nil {
-		t.Fatalf("can't forward htlc packet: %v", err)
+}
+
+func TestSwitchHoldForward(t *testing.T) {
+	t.Parallel()
+
+	c := newInterceptableSwitchTestContext(t)
+	defer c.finish()
+
+	notifier := &mock.ChainNotifier{
+		EpochChan: make(chan *chainntnfs.BlockEpoch, 1),
 	}
-	assertOutgoingLinkReceive(t, aliceChannelLink, true)
-	assertNumCircuits(t, s, 0, 0)
+	notifier.EpochChan <- &chainntnfs.BlockEpoch{Height: testStartingHeight}
+
+	switchForwardInterceptor, err := NewInterceptableSwitch(
+		&InterceptableSwitchConfig{
+			Switch:             c.s,
+			CltvRejectDelta:    c.cltvRejectDelta,
+			CltvInterceptDelta: c.cltvInterceptDelta,
+			Notifier:           notifier,
+		},
+	)
+	require.NoError(t, err)
+	require.NoError(t, switchForwardInterceptor.Start())
+
+	switchForwardInterceptor.SetInterceptor(c.forwardInterceptor.InterceptForwardHtlc)
+	linkQuit := make(chan struct{})
+
+	// Test a forward that expires too soon.
+	packet := c.createTestPacket()
+	packet.incomingTimeout = testStartingHeight + c.cltvRejectDelta - 1
+
+	err = switchForwardInterceptor.ForwardPackets(linkQuit, false, packet)
+	require.NoError(t, err, "can't forward htlc packet")
+	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
+	assertOutgoingLinkReceiveIntercepted(t, c.aliceChannelLink)
+	assertNumCircuits(t, c.s, 0, 0)
+
+	// Test a forward that expires too soon and can't be failed.
+	packet = c.createTestPacket()
+	packet.incomingTimeout = testStartingHeight + c.cltvRejectDelta - 1
+
+	// Simulate an error during the composition of the failure message.
+	currentCallback := c.s.cfg.FetchLastChannelUpdate
+	c.s.cfg.FetchLastChannelUpdate = func(
+		lnwire.ShortChannelID) (*lnwire.ChannelUpdate, error) {
+
+		return nil, errors.New("cannot fetch update")
+	}
+
+	err = switchForwardInterceptor.ForwardPackets(linkQuit, false, packet)
+	require.NoError(t, err, "can't forward htlc packet")
+	receivedPkt := assertOutgoingLinkReceive(t, c.bobChannelLink, true)
+	assertNumCircuits(t, c.s, 1, 1)
+
+	require.NoError(t, switchForwardInterceptor.ForwardPackets(
+		linkQuit, false,
+		c.createSettlePacket(receivedPkt.outgoingHTLCID),
+	))
+
+	assertOutgoingLinkReceive(t, c.aliceChannelLink, true)
+	assertNumCircuits(t, c.s, 0, 0)
+
+	c.s.cfg.FetchLastChannelUpdate = currentCallback
+
+	// Test resume a hold forward.
+	assertNumCircuits(t, c.s, 0, 0)
+	err = switchForwardInterceptor.ForwardPackets(
+		linkQuit, false, c.createTestPacket(),
+	)
+	require.NoError(t, err)
+
+	assertNumCircuits(t, c.s, 0, 0)
+	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
+
+	require.NoError(t, switchForwardInterceptor.Resolve(&FwdResolution{
+		Action: FwdActionResume,
+		Key:    c.forwardInterceptor.getIntercepted().IncomingCircuit,
+	}))
+	receivedPkt = assertOutgoingLinkReceive(t, c.bobChannelLink, true)
+	assertNumCircuits(t, c.s, 1, 1)
+
+	// settling the htlc to close the circuit.
+	err = switchForwardInterceptor.ForwardPackets(
+		linkQuit, false,
+		c.createSettlePacket(receivedPkt.outgoingHTLCID),
+	)
+	require.NoError(t, err)
+
+	assertOutgoingLinkReceive(t, c.aliceChannelLink, true)
+	assertNumCircuits(t, c.s, 0, 0)
+
+	// Test resume a hold forward after disconnection.
+	require.NoError(t, switchForwardInterceptor.ForwardPackets(
+		linkQuit, false, c.createTestPacket(),
+	))
+
+	// Wait until the packet is offered to the interceptor.
+	_ = c.forwardInterceptor.getIntercepted()
+
+	// No forward expected yet.
+	assertNumCircuits(t, c.s, 0, 0)
+	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
+
+	// Disconnect should resume the forwarding.
+	switchForwardInterceptor.SetInterceptor(nil)
+
+	receivedPkt = assertOutgoingLinkReceive(t, c.bobChannelLink, true)
+	assertNumCircuits(t, c.s, 1, 1)
+
+	// Settle the htlc to close the circuit.
+	require.NoError(t, switchForwardInterceptor.ForwardPackets(
+		linkQuit, false,
+		c.createSettlePacket(receivedPkt.outgoingHTLCID),
+	))
+
+	assertOutgoingLinkReceive(t, c.aliceChannelLink, true)
+	assertNumCircuits(t, c.s, 0, 0)
 
 	// Test failing a hold forward
-	if err := switchForwardInterceptor.ForwardPackets(linkQuit, ogPacket); err != nil {
-		t.Fatalf("can't forward htlc packet: %v", err)
-	}
-	assertNumCircuits(t, s, 0, 0)
-	assertOutgoingLinkReceive(t, bobChannelLink, false)
+	switchForwardInterceptor.SetInterceptor(
+		c.forwardInterceptor.InterceptForwardHtlc,
+	)
 
-	if err := forwardInterceptor.fail(); err != nil {
-		t.Fatalf("failed to cancel forward %v", err)
+	require.NoError(t, switchForwardInterceptor.ForwardPackets(
+		linkQuit, false, c.createTestPacket(),
+	))
+	assertNumCircuits(t, c.s, 0, 0)
+	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
+
+	require.NoError(t, switchForwardInterceptor.Resolve(&FwdResolution{
+		Action:      FwdActionFail,
+		Key:         c.forwardInterceptor.getIntercepted().IncomingCircuit,
+		FailureCode: lnwire.CodeTemporaryChannelFailure,
+	}))
+	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
+	assertOutgoingLinkReceive(t, c.aliceChannelLink, true)
+	assertNumCircuits(t, c.s, 0, 0)
+
+	// Test failing a hold forward with a failure message.
+	require.NoError(t,
+		switchForwardInterceptor.ForwardPackets(
+			linkQuit, false, c.createTestPacket(),
+		),
+	)
+	assertNumCircuits(t, c.s, 0, 0)
+	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
+
+	reason := lnwire.OpaqueReason([]byte{1, 2, 3})
+	require.NoError(t, switchForwardInterceptor.Resolve(&FwdResolution{
+		Action:         FwdActionFail,
+		Key:            c.forwardInterceptor.getIntercepted().IncomingCircuit,
+		FailureMessage: reason,
+	}))
+
+	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
+	packet = assertOutgoingLinkReceive(t, c.aliceChannelLink, true)
+
+	require.Equal(t, reason, packet.htlc.(*lnwire.UpdateFailHTLC).Reason)
+
+	assertNumCircuits(t, c.s, 0, 0)
+
+	// Test failing a hold forward with a malformed htlc failure.
+	err = switchForwardInterceptor.ForwardPackets(
+		linkQuit, false, c.createTestPacket(),
+	)
+	require.NoError(t, err)
+
+	assertNumCircuits(t, c.s, 0, 0)
+	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
+
+	code := lnwire.CodeInvalidOnionKey
+	require.NoError(t, switchForwardInterceptor.Resolve(&FwdResolution{
+		Action:      FwdActionFail,
+		Key:         c.forwardInterceptor.getIntercepted().IncomingCircuit,
+		FailureCode: code,
+	}))
+
+	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
+	packet = assertOutgoingLinkReceive(t, c.aliceChannelLink, true)
+	failPacket := packet.htlc.(*lnwire.UpdateFailHTLC)
+
+	shaOnionBlob := sha256.Sum256(c.onionBlob[:])
+	expectedFailure := &lnwire.FailInvalidOnionKey{
+		OnionSHA256: shaOnionBlob,
 	}
-	assertOutgoingLinkReceive(t, bobChannelLink, false)
-	assertOutgoingLinkReceive(t, aliceChannelLink, true)
-	assertNumCircuits(t, s, 0, 0)
+
+	fwdErr, err := newMockDeobfuscator().DecryptError(failPacket.Reason)
+	require.NoError(t, err)
+	require.Equal(t, expectedFailure, fwdErr.WireMessage())
+
+	assertNumCircuits(t, c.s, 0, 0)
 
 	// Test settling a hold forward
-	if err := switchForwardInterceptor.ForwardPackets(linkQuit, ogPacket); err != nil {
-		t.Fatalf("can't forward htlc packet: %v", err)
-	}
-	assertNumCircuits(t, s, 0, 0)
-	assertOutgoingLinkReceive(t, bobChannelLink, false)
+	require.NoError(t, switchForwardInterceptor.ForwardPackets(
+		linkQuit, false, c.createTestPacket(),
+	))
+	assertNumCircuits(t, c.s, 0, 0)
+	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
 
-	if err := forwardInterceptor.settle(preimage); err != nil {
-		t.Fatal("failed to cancel forward")
+	require.NoError(t, switchForwardInterceptor.Resolve(&FwdResolution{
+		Key:      c.forwardInterceptor.getIntercepted().IncomingCircuit,
+		Action:   FwdActionSettle,
+		Preimage: c.preimage,
+	}))
+	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
+	assertOutgoingLinkReceive(t, c.aliceChannelLink, true)
+	assertNumCircuits(t, c.s, 0, 0)
+
+	require.NoError(t, switchForwardInterceptor.Stop())
+
+	// Test always-on interception.
+	notifier = &mock.ChainNotifier{
+		EpochChan: make(chan *chainntnfs.BlockEpoch, 1),
 	}
-	assertOutgoingLinkReceive(t, bobChannelLink, false)
-	assertOutgoingLinkReceive(t, aliceChannelLink, true)
-	assertNumCircuits(t, s, 0, 0)
+	notifier.EpochChan <- &chainntnfs.BlockEpoch{Height: testStartingHeight}
+
+	switchForwardInterceptor, err = NewInterceptableSwitch(
+		&InterceptableSwitchConfig{
+			Switch:             c.s,
+			CltvRejectDelta:    c.cltvRejectDelta,
+			CltvInterceptDelta: c.cltvInterceptDelta,
+			RequireInterceptor: true,
+			Notifier:           notifier,
+		},
+	)
+	require.NoError(t, err)
+	require.NoError(t, switchForwardInterceptor.Start())
+
+	// Forward a fresh packet. It is expected to be failed immediately,
+	// because there is no interceptor registered.
+	require.NoError(t, switchForwardInterceptor.ForwardPackets(
+		linkQuit, false, c.createTestPacket(),
+	))
+
+	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
+	assertOutgoingLinkReceive(t, c.aliceChannelLink, true)
+	assertNumCircuits(t, c.s, 0, 0)
+
+	// Forward a replayed packet. It is expected to be held until the
+	// interceptor connects. To continue the test, it needs to be ran in a
+	// goroutine.
+	errChan := make(chan error)
+	go func() {
+		errChan <- switchForwardInterceptor.ForwardPackets(
+			linkQuit, true, c.createTestPacket(),
+		)
+	}()
+
+	// Assert that nothing is forward to the switch.
+	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
+	assertNumCircuits(t, c.s, 0, 0)
+
+	// Register an interceptor.
+	switchForwardInterceptor.SetInterceptor(
+		c.forwardInterceptor.InterceptForwardHtlc,
+	)
+
+	// Expect the ForwardPackets call to unblock.
+	require.NoError(t, <-errChan)
+
+	// Now expect the queued packet to come through.
+	c.forwardInterceptor.getIntercepted()
+
+	// Disconnect and reconnect interceptor.
+	switchForwardInterceptor.SetInterceptor(nil)
+	switchForwardInterceptor.SetInterceptor(
+		c.forwardInterceptor.InterceptForwardHtlc,
+	)
+
+	// A replay of the held packet is expected.
+	intercepted := c.forwardInterceptor.getIntercepted()
+
+	// Settle the packet.
+	require.NoError(t, switchForwardInterceptor.Resolve(&FwdResolution{
+		Key:      intercepted.IncomingCircuit,
+		Action:   FwdActionSettle,
+		Preimage: c.preimage,
+	}))
+	assertOutgoingLinkReceive(t, c.bobChannelLink, false)
+	assertOutgoingLinkReceive(t, c.aliceChannelLink, true)
+	assertNumCircuits(t, c.s, 0, 0)
+
+	require.NoError(t, switchForwardInterceptor.Stop())
+
+	select {
+	case <-c.forwardInterceptor.interceptedChan:
+		require.Fail(t, "unexpected interception")
+
+	default:
+	}
+}
+
+func TestInterceptableSwitchWatchDog(t *testing.T) {
+	t.Parallel()
+
+	c := newInterceptableSwitchTestContext(t)
+	defer c.finish()
+
+	// Start interceptable switch.
+	notifier := &mock.ChainNotifier{
+		EpochChan: make(chan *chainntnfs.BlockEpoch, 1),
+	}
+	notifier.EpochChan <- &chainntnfs.BlockEpoch{Height: testStartingHeight}
+
+	switchForwardInterceptor, err := NewInterceptableSwitch(
+		&InterceptableSwitchConfig{
+			Switch:             c.s,
+			CltvRejectDelta:    c.cltvRejectDelta,
+			CltvInterceptDelta: c.cltvInterceptDelta,
+			Notifier:           notifier,
+		},
+	)
+	require.NoError(t, err)
+	require.NoError(t, switchForwardInterceptor.Start())
+
+	// Set interceptor.
+	switchForwardInterceptor.SetInterceptor(
+		c.forwardInterceptor.InterceptForwardHtlc,
+	)
+
+	// Receive a packet.
+	linkQuit := make(chan struct{})
+
+	packet := c.createTestPacket()
+
+	err = switchForwardInterceptor.ForwardPackets(linkQuit, false, packet)
+	require.NoError(t, err, "can't forward htlc packet")
+
+	// Intercept the packet.
+	intercepted := c.forwardInterceptor.getIntercepted()
+
+	require.Equal(t,
+		int32(packet.incomingTimeout-c.cltvRejectDelta),
+		intercepted.AutoFailHeight,
+	)
+
+	// Htlc expires before a resolution from the interceptor.
+	notifier.EpochChan <- &chainntnfs.BlockEpoch{
+		Height: int32(packet.incomingTimeout) -
+			int32(c.cltvRejectDelta),
+	}
+
+	// Expect the htlc to be failed back.
+	assertOutgoingLinkReceive(t, c.aliceChannelLink, true)
+
+	// It is too late now to resolve. Expect an error.
+	require.Error(t, switchForwardInterceptor.Resolve(&FwdResolution{
+		Action:   FwdActionSettle,
+		Key:      intercepted.IncomingCircuit,
+		Preimage: c.preimage,
+	}))
 }
 
 // TestSwitchDustForwarding tests that the switch properly fails HTLC's which
@@ -3331,11 +4265,10 @@ func TestSwitchDustForwarding(t *testing.T) {
 	// - Bob has a dust limit of 800sats with Alice
 	// - Bob has a dust limit of 200sats with Carol
 	// - Carol has a dust limit of 800sats with Bob
-	channels, cleanUp, _, err := createClusterChannels(
-		ltcutil.SatoshiPerBitcoin, ltcutil.SatoshiPerBitcoin,
+	channels, _, err := createClusterChannels(
+		t, ltcutil.SatoshiPerBitcoin, ltcutil.SatoshiPerBitcoin,
 	)
 	require.NoError(t, err)
-	defer cleanUp()
 
 	n := newThreeHopNetwork(
 		t, channels.aliceToBob, channels.bobToAlice,
@@ -3351,8 +4284,6 @@ func TestSwitchDustForwarding(t *testing.T) {
 
 	// We'll test that once the default threshold is exceeded on the
 	// Alice -> Bob channel, either side's calls to SendHTLC will fail.
-	// This does not rely on the mailbox sum since there's no intermediate
-	// hop.
 	//
 	// Alice will send 357 HTLC's of 700sats. Bob will also send 357 HTLC's
 	// of 700sats. If either side attempts to send a dust HTLC, it will
@@ -3380,6 +4311,47 @@ func TestSwitchDustForwarding(t *testing.T) {
 		Expiry:      timelock,
 		OnionBlob:   blob,
 	}
+
+	checkAlmostDust := func(link *channelLink, mbox MailBox,
+		remote bool) bool {
+
+		timeout := time.After(15 * time.Second)
+		pollInterval := 300 * time.Millisecond
+		expectedDust := 357 * 2 * amt
+
+		for {
+			<-time.After(pollInterval)
+
+			select {
+			case <-timeout:
+				return false
+			default:
+			}
+
+			linkDust := link.getDustSum(remote)
+			localMailDust, remoteMailDust := mbox.DustPackets()
+
+			totalDust := linkDust
+			if remote {
+				totalDust += remoteMailDust
+			} else {
+				totalDust += localMailDust
+			}
+
+			if totalDust == expectedDust {
+				break
+			}
+		}
+
+		return true
+	}
+
+	// Wait until Bob is almost at the dust threshold.
+	bobMbox := n.bobServer.htlcSwitch.mailOrchestrator.GetOrCreateMailBox(
+		n.firstBobChannelLink.ChanID(),
+		n.firstBobChannelLink.ShortChanID(),
+	)
+	require.True(t, checkAlmostDust(n.firstBobChannelLink, bobMbox, false))
 
 	// Assert that the HTLC is failed due to the dust threshold.
 	err = n.bobServer.htlcSwitch.SendHTLC(
@@ -3444,7 +4416,7 @@ func TestSwitchDustForwarding(t *testing.T) {
 	require.NoError(t, err)
 	carolAttemptID++
 
-	carolResultChan, err := n.carolServer.htlcSwitch.GetPaymentResult(
+	carolResultChan, err := n.carolServer.htlcSwitch.GetAttemptResult(
 		uint64(carolAttemptID-1), carolHash, newMockDeobfuscator(),
 	)
 	require.NoError(t, err)
@@ -3473,6 +4445,14 @@ func TestSwitchDustForwarding(t *testing.T) {
 		Expiry:      totalTimelock,
 		OnionBlob:   blob,
 	}
+
+	// Wait until Alice's expected dust for the remote commitment is just
+	// under the dust threshold.
+	aliceOrch := n.aliceServer.htlcSwitch.mailOrchestrator
+	aliceMbox := aliceOrch.GetOrCreateMailBox(
+		n.aliceChannelLink.ChanID(), n.aliceChannelLink.ShortChanID(),
+	)
+	require.True(t, checkAlmostDust(n.aliceChannelLink, aliceMbox, true))
 
 	err = n.aliceServer.htlcSwitch.SendHTLC(
 		n.aliceChannelLink.ShortChanID(), uint64(357),
@@ -3543,8 +4523,17 @@ func sendDustHtlcs(t *testing.T, n *threeHopNetwork, alice bool,
 			OnionBlob:   blob,
 		}
 
-		err = sendingSwitch.SendHTLC(sid, attemptID, htlc)
-		require.NoError(t, err)
+		for {
+			// It may be the case that the dust threshold is hit
+			// before all 357*2 HTLC's are sent due to double
+			// counting. Get around this by continuing to send
+			// until successful.
+			err = sendingSwitch.SendHTLC(sid, attemptID, htlc)
+			if err == nil {
+				break
+			}
+		}
+
 		attemptID++
 	}
 }
@@ -3570,7 +4559,7 @@ func TestSwitchMailboxDust(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	s, err := initSwitchWithDB(testStartingHeight, nil)
+	s, err := initSwitchWithTempDB(t, testStartingHeight)
 	require.NoError(t, err)
 	err = s.Start()
 	require.NoError(t, err)
@@ -3583,19 +4572,22 @@ func TestSwitchMailboxDust(t *testing.T) {
 	chanID3, carolChanID := genID()
 
 	aliceLink := newMockChannelLink(
-		s, chanID1, aliceChanID, alicePeer, true,
+		s, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
 	)
 	err = s.AddLink(aliceLink)
 	require.NoError(t, err)
 
 	bobLink := newMockChannelLink(
-		s, chanID2, bobChanID, bobPeer, true,
+		s, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
 	)
 	err = s.AddLink(bobLink)
 	require.NoError(t, err)
 
 	carolLink := newMockChannelLink(
-		s, chanID3, carolChanID, carolPeer, true,
+		s, chanID3, carolChanID, emptyScid, carolPeer, true, false,
+		false, false,
 	)
 	err = s.AddLink(carolLink)
 	require.NoError(t, err)
@@ -3674,4 +4666,872 @@ func TestSwitchMailboxDust(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no timely reply from switch")
 	}
+}
+
+// TestSwitchResolution checks the ability of the switch to persist and handle
+// resolution messages.
+func TestSwitchResolution(t *testing.T) {
+	t.Parallel()
+
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
+	require.NoError(t, err)
+
+	bobPeer, err := newMockServer(
+		t, "bob", testStartingHeight, nil, testDefaultDelta,
+	)
+	require.NoError(t, err)
+
+	s, err := initSwitchWithTempDB(t, testStartingHeight)
+	require.NoError(t, err)
+
+	// Even though we intend to Stop s later in the test, it is safe to
+	// defer this Stop since its execution it is protected by an atomic
+	// guard, guaranteeing it executes at most once.
+	t.Cleanup(func() { var _ = s.Stop() })
+
+	err = s.Start()
+	require.NoError(t, err)
+
+	chanID1, chanID2, aliceChanID, bobChanID := genIDs()
+
+	aliceChannelLink := newMockChannelLink(
+		s, chanID1, aliceChanID, emptyScid, alicePeer, true, false,
+		false, false,
+	)
+	bobChannelLink := newMockChannelLink(
+		s, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
+	)
+	err = s.AddLink(aliceChannelLink)
+	require.NoError(t, err)
+	err = s.AddLink(bobChannelLink)
+	require.NoError(t, err)
+
+	// Create an add htlcPacket that Alice will send to Bob.
+	preimage, err := genPreimage()
+	require.NoError(t, err)
+
+	rhash := sha256.Sum256(preimage[:])
+	packet := &htlcPacket{
+		incomingChanID: aliceChannelLink.ShortChanID(),
+		incomingHTLCID: 0,
+		outgoingChanID: bobChannelLink.ShortChanID(),
+		obfuscator:     NewMockObfuscator(),
+		htlc: &lnwire.UpdateAddHTLC{
+			PaymentHash: rhash,
+			Amount:      1,
+		},
+	}
+
+	err = s.ForwardPackets(nil, packet)
+	require.NoError(t, err)
+
+	// Bob will receive the packet and open the circuit.
+	select {
+	case <-bobChannelLink.packets:
+		err = bobChannelLink.completeCircuit(packet)
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("request was not propagated to destination")
+	}
+
+	// Check that only one circuit is open.
+	require.Equal(t, 1, s.circuits.NumOpen())
+
+	// We'll send a settle resolution to Switch that should go to Alice.
+	settleResMsg := contractcourt.ResolutionMsg{
+		SourceChan: bobChanID,
+		HtlcIndex:  0,
+		PreImage:   &preimage,
+	}
+
+	// Before the resolution is sent, remove alice's link so we can assert
+	// that the resolution is actually stored. Otherwise, it would be
+	// deleted shortly after being sent.
+	s.RemoveLink(chanID1)
+
+	// Send the resolution message.
+	err = s.ProcessContractResolution(settleResMsg)
+	require.NoError(t, err)
+
+	// Assert that the resolution store contains the settle reoslution.
+	resMsgs, err := s.resMsgStore.fetchAllResolutionMsg()
+	require.NoError(t, err)
+
+	require.Equal(t, 1, len(resMsgs))
+	require.Equal(t, settleResMsg.SourceChan, resMsgs[0].SourceChan)
+	require.Equal(t, settleResMsg.HtlcIndex, resMsgs[0].HtlcIndex)
+	require.Nil(t, resMsgs[0].Failure)
+	require.Equal(t, preimage, *resMsgs[0].PreImage)
+
+	// Now we'll restart Alice's link and delete the circuit.
+	err = s.AddLink(aliceChannelLink)
+	require.NoError(t, err)
+
+	// Alice will receive the packet and open the circuit.
+	select {
+	case alicePkt := <-aliceChannelLink.packets:
+		err = aliceChannelLink.completeCircuit(alicePkt)
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("request was not propagated to destination")
+	}
+
+	// Assert that there are no more circuits.
+	require.Equal(t, 0, s.circuits.NumOpen())
+
+	// We'll restart the Switch and assert that Alice does not receive
+	// another packet.
+	switchDB := s.cfg.DB.(*channeldb.DB)
+	err = s.Stop()
+	require.NoError(t, err)
+
+	s, err = initSwitchWithDB(testStartingHeight, switchDB)
+	require.NoError(t, err)
+
+	err = s.Start()
+	require.NoError(t, err)
+	defer func() {
+		_ = s.Stop()
+	}()
+
+	err = s.AddLink(aliceChannelLink)
+	require.NoError(t, err)
+	err = s.AddLink(bobChannelLink)
+	require.NoError(t, err)
+
+	// Alice should not receive a packet since the Switch should have
+	// deleted the resolution message since the circuit was closed.
+	select {
+	case alicePkt := <-aliceChannelLink.packets:
+		t.Fatalf("received erroneous packet: %v", alicePkt)
+	case <-time.After(time.Second * 5):
+	}
+
+	// Check that the resolution message no longer exists in the store.
+	resMsgs, err = s.resMsgStore.fetchAllResolutionMsg()
+	require.NoError(t, err)
+	require.Equal(t, 0, len(resMsgs))
+}
+
+// TestSwitchForwardFailAlias tests that if ForwardPackets returns a failure
+// before actually forwarding, the ChannelUpdate uses the SCID from the
+// incoming channel and does not leak private information like the UTXO.
+func TestSwitchForwardFailAlias(t *testing.T) {
+	tests := []struct {
+		name string
+
+		// Whether or not Alice will be a zero-conf channel or an
+		// option-scid-alias channel (feature-bit).
+		zeroConf bool
+	}{
+		{
+			name:     "option-scid-alias forwarding failure",
+			zeroConf: false,
+		},
+		{
+			name:     "zero-conf forwarding failure",
+			zeroConf: true,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			testSwitchForwardFailAlias(t, test.zeroConf)
+		})
+	}
+}
+
+func testSwitchForwardFailAlias(t *testing.T, zeroConf bool) {
+	t.Parallel()
+
+	chanID1, chanID2, aliceChanID, bobChanID := genIDs()
+
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
+	require.NoError(t, err)
+
+	bobPeer, err := newMockServer(
+		t, "bob", testStartingHeight, nil, testDefaultDelta,
+	)
+	require.NoError(t, err)
+
+	tempPath := t.TempDir()
+
+	cdb, err := channeldb.Open(tempPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { cdb.Close() })
+
+	s, err := initSwitchWithDB(testStartingHeight, cdb)
+	require.NoError(t, err)
+
+	err = s.Start()
+	require.NoError(t, err)
+
+	// Make Alice's channel zero-conf or option-scid-alias (feature bit).
+	aliceAlias := lnwire.ShortChannelID{
+		BlockHeight: 16_000_000,
+		TxIndex:     5,
+		TxPosition:  5,
+	}
+
+	var aliceLink *mockChannelLink
+	if zeroConf {
+		aliceLink = newMockChannelLink(
+			s, chanID1, aliceAlias, aliceChanID, alicePeer, true,
+			true, true, false,
+		)
+	} else {
+		aliceLink = newMockChannelLink(
+			s, chanID1, aliceChanID, emptyScid, alicePeer, true,
+			true, false, true,
+		)
+		aliceLink.addAlias(aliceAlias)
+	}
+	err = s.AddLink(aliceLink)
+	require.NoError(t, err)
+
+	bobLink := newMockChannelLink(
+		s, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
+	)
+	err = s.AddLink(bobLink)
+	require.NoError(t, err)
+
+	// Create a packet that will be sent from Alice to Bob via the switch.
+	preimage := [sha256.Size]byte{1}
+	rhash := sha256.Sum256(preimage[:])
+	ogPacket := &htlcPacket{
+		incomingChanID: aliceLink.ShortChanID(),
+		incomingHTLCID: 0,
+		outgoingChanID: bobLink.ShortChanID(),
+		obfuscator:     NewMockObfuscator(),
+		htlc: &lnwire.UpdateAddHTLC{
+			PaymentHash: rhash,
+			Amount:      1,
+		},
+	}
+
+	// Forward the packet and check that Bob's channel link received it.
+	err = s.ForwardPackets(nil, ogPacket)
+	require.NoError(t, err)
+
+	// Assert that the circuits are in the expected state.
+	require.Equal(t, 1, s.circuits.NumPending())
+	require.Equal(t, 0, s.circuits.NumOpen())
+
+	// Pull packet from Bob's link, and do nothing with it.
+	select {
+	case <-bobLink.packets:
+	case <-s.quit:
+		t.Fatal("switch shutting down, failed to forward packet")
+	}
+
+	// Now we will restart the Switch to trigger the LoadedFromDisk logic.
+	err = s.Stop()
+	require.NoError(t, err)
+
+	err = cdb.Close()
+	require.NoError(t, err)
+
+	cdb2, err := channeldb.Open(tempPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { cdb2.Close() })
+
+	s2, err := initSwitchWithDB(testStartingHeight, cdb2)
+	require.NoError(t, err)
+
+	err = s2.Start()
+	require.NoError(t, err)
+
+	defer func() {
+		_ = s2.Stop()
+	}()
+
+	var aliceLink2 *mockChannelLink
+	if zeroConf {
+		aliceLink2 = newMockChannelLink(
+			s2, chanID1, aliceAlias, aliceChanID, alicePeer, true,
+			true, true, false,
+		)
+	} else {
+		aliceLink2 = newMockChannelLink(
+			s2, chanID1, aliceChanID, emptyScid, alicePeer, true,
+			true, false, true,
+		)
+		aliceLink2.addAlias(aliceAlias)
+	}
+	err = s2.AddLink(aliceLink2)
+	require.NoError(t, err)
+
+	bobLink2 := newMockChannelLink(
+		s2, chanID2, bobChanID, emptyScid, bobPeer, true, false, false,
+		false,
+	)
+	err = s2.AddLink(bobLink2)
+	require.NoError(t, err)
+
+	// Reforward the ogPacket and wait for Alice to receive a failure
+	// packet.
+	err = s2.ForwardPackets(nil, ogPacket)
+	require.NoError(t, err)
+
+	select {
+	case failPacket := <-aliceLink2.packets:
+		// Assert that the failPacket does not leak UTXO information.
+		// This means checking that aliceChanID was not returned.
+		msg := failPacket.linkFailure.msg
+		failMsg, ok := msg.(*lnwire.FailTemporaryChannelFailure)
+		require.True(t, ok)
+		require.Equal(t, aliceAlias, failMsg.Update.ShortChannelID)
+	case <-s2.quit:
+		t.Fatal("switch shutting down, failed to forward packet")
+	}
+}
+
+// TestSwitchAliasFailAdd tests that the mailbox does not leak UTXO information
+// when failing back an HTLC due to the 5-second timeout. This is tested in the
+// switch rather than the mailbox because the mailbox tests do not have the
+// proper context (e.g. the Switch's failAliasUpdate function). The caveat here
+// is that if the private UTXO is already known, it is fine to send a failure
+// back. This tests option-scid-alias (feature-bit) and zero-conf channels.
+func TestSwitchAliasFailAdd(t *testing.T) {
+	tests := []struct {
+		name string
+
+		// Denotes whether the opened channel will be zero-conf.
+		zeroConf bool
+
+		// Denotes whether the opened channel will be private.
+		private bool
+
+		// Denotes whether an alias was used during forwarding.
+		useAlias bool
+	}{
+		{
+			name:     "public zero-conf using alias",
+			zeroConf: true,
+			private:  false,
+			useAlias: true,
+		},
+		{
+			name:     "public zero-conf using real",
+			zeroConf: true,
+			private:  false,
+			useAlias: true,
+		},
+		{
+			name:     "private zero-conf using alias",
+			zeroConf: true,
+			private:  true,
+			useAlias: true,
+		},
+		{
+			name:     "public option-scid-alias using alias",
+			zeroConf: false,
+			private:  false,
+			useAlias: true,
+		},
+		{
+			name:     "public option-scid-alias using real",
+			zeroConf: false,
+			private:  false,
+			useAlias: false,
+		},
+		{
+			name:     "private option-scid-alias using alias",
+			zeroConf: false,
+			private:  true,
+			useAlias: true,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			testSwitchAliasFailAdd(
+				t, test.zeroConf, test.private, test.useAlias,
+			)
+		})
+	}
+}
+
+func testSwitchAliasFailAdd(t *testing.T, zeroConf, private, useAlias bool) {
+	t.Parallel()
+
+	chanID1, chanID2, aliceChanID, bobChanID := genIDs()
+
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
+	require.NoError(t, err)
+
+	bobPeer, err := newMockServer(
+		t, "bob", testStartingHeight, nil, testDefaultDelta,
+	)
+	require.NoError(t, err)
+
+	tempPath := t.TempDir()
+
+	cdb, err := channeldb.Open(tempPath)
+	require.NoError(t, err)
+	defer cdb.Close()
+
+	s, err := initSwitchWithDB(testStartingHeight, cdb)
+	require.NoError(t, err)
+
+	// Change the mailOrchestrator's expiry to a second.
+	s.mailOrchestrator.cfg.expiry = time.Second
+
+	err = s.Start()
+	require.NoError(t, err)
+
+	defer func() {
+		_ = s.Stop()
+	}()
+
+	// Make Alice's channel zero-conf or option-scid-alias (feature bit).
+	aliceAlias := lnwire.ShortChannelID{
+		BlockHeight: 16_000_000,
+		TxIndex:     5,
+		TxPosition:  5,
+	}
+	aliceAlias2 := aliceAlias
+	aliceAlias2.TxPosition = 6
+
+	var aliceLink *mockChannelLink
+	if zeroConf {
+		aliceLink = newMockChannelLink(
+			s, chanID1, aliceAlias, aliceChanID, alicePeer, true,
+			private, true, false,
+		)
+		aliceLink.addAlias(aliceAlias2)
+	} else {
+		aliceLink = newMockChannelLink(
+			s, chanID1, aliceChanID, emptyScid, alicePeer, true,
+			private, false, true,
+		)
+		aliceLink.addAlias(aliceAlias)
+		aliceLink.addAlias(aliceAlias2)
+	}
+	err = s.AddLink(aliceLink)
+	require.NoError(t, err)
+
+	bobLink := newMockChannelLink(
+		s, chanID2, bobChanID, emptyScid, bobPeer, true, true, false,
+		false,
+	)
+	err = s.AddLink(bobLink)
+	require.NoError(t, err)
+
+	// Create a packet that Bob will send to Alice via ForwardPackets.
+	preimage := [sha256.Size]byte{1}
+	rhash := sha256.Sum256(preimage[:])
+	ogPacket := &htlcPacket{
+		incomingChanID: bobLink.ShortChanID(),
+		incomingHTLCID: 0,
+		obfuscator:     NewMockObfuscator(),
+		htlc: &lnwire.UpdateAddHTLC{
+			PaymentHash: rhash,
+			Amount:      1,
+		},
+	}
+
+	// Determine which outgoingChanID to set based on the useAlias boolean.
+	outgoingChanID := aliceChanID
+	if useAlias {
+		// Choose randomly from the 2 possible aliases.
+		aliases := aliceLink.getAliases()
+		idx := mrand.Intn(len(aliases))
+
+		outgoingChanID = aliases[idx]
+	}
+
+	ogPacket.outgoingChanID = outgoingChanID
+
+	// Forward the packet so Alice's mailbox fails it backwards.
+	err = s.ForwardPackets(nil, ogPacket)
+	require.NoError(t, err)
+
+	// Assert that the circuits are in the expected state.
+	require.Equal(t, 1, s.circuits.NumPending())
+	require.Equal(t, 0, s.circuits.NumOpen())
+
+	// Wait to receive the packet from Bob's mailbox.
+	select {
+	case failPacket := <-bobLink.packets:
+		// Assert that failPacket returns the expected SCID in the
+		// ChannelUpdate.
+		msg := failPacket.linkFailure.msg
+		failMsg, ok := msg.(*lnwire.FailTemporaryChannelFailure)
+		require.True(t, ok)
+		require.Equal(t, outgoingChanID, failMsg.Update.ShortChannelID)
+	case <-s.quit:
+		t.Fatal("switch shutting down, failed to receive fail packet")
+	}
+}
+
+// TestSwitchHandlePacketForwardAlias checks that handlePacketForward (which
+// calls CheckHtlcForward) does not leak the UTXO in a failure message for
+// alias channels. This test requires us to have a REAL link, which we also
+// must modify in order to test it properly (e.g. making it a private channel).
+// This doesn't lead to good code, but short of refactoring the link-generation
+// code there is not a good alternative.
+func TestSwitchHandlePacketForward(t *testing.T) {
+	tests := []struct {
+		name string
+
+		// Denotes whether or not the channel will be zero-conf.
+		zeroConf bool
+
+		// Denotes whether or not the channel will have negotiated the
+		// option-scid-alias feature-bit and is not zero-conf.
+		optionFeature bool
+
+		// Denotes whether or not the channel will be private.
+		private bool
+
+		// Denotes whether or not the alias will be used for
+		// forwarding.
+		useAlias bool
+	}{
+		{
+			name:     "public zero-conf using alias",
+			zeroConf: true,
+			private:  false,
+			useAlias: true,
+		},
+		{
+			name:     "public zero-conf using real",
+			zeroConf: true,
+			private:  false,
+			useAlias: false,
+		},
+		{
+			name:     "private zero-conf using alias",
+			zeroConf: true,
+			private:  true,
+			useAlias: true,
+		},
+		{
+			name:          "public option-scid-alias using alias",
+			zeroConf:      false,
+			optionFeature: true,
+			private:       false,
+			useAlias:      true,
+		},
+		{
+			name:          "public option-scid-alias using real",
+			zeroConf:      false,
+			optionFeature: true,
+			private:       false,
+			useAlias:      false,
+		},
+		{
+			name:          "private option-scid-alias using alias",
+			zeroConf:      false,
+			optionFeature: true,
+			private:       true,
+			useAlias:      true,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			testSwitchHandlePacketForward(
+				t, test.zeroConf, test.private, test.useAlias,
+				test.optionFeature,
+			)
+		})
+	}
+}
+
+func testSwitchHandlePacketForward(t *testing.T, zeroConf, private,
+	useAlias, optionFeature bool) {
+
+	t.Parallel()
+
+	// Create a link for Alice that we'll add to the switch.
+	aliceLink, _, _, _, _, err :=
+		newSingleLinkTestHarness(t, ltcutil.SatoshiPerBitcoin, 0)
+	require.NoError(t, err)
+
+	s, err := initSwitchWithTempDB(t, testStartingHeight)
+	if err != nil {
+		t.Fatalf("unable to init switch: %v", err)
+	}
+	if err := s.Start(); err != nil {
+		t.Fatalf("unable to start switch: %v", err)
+	}
+	defer func() {
+		_ = s.Stop()
+	}()
+
+	// Change Alice's ShortChanID and OtherShortChanID here.
+	aliceAlias := lnwire.ShortChannelID{
+		BlockHeight: 16_000_000,
+		TxIndex:     5,
+		TxPosition:  5,
+	}
+	aliceAlias2 := aliceAlias
+	aliceAlias2.TxPosition = 6
+
+	aliceChannelLink := aliceLink.(*channelLink)
+	aliceChannelState := aliceChannelLink.channel.State()
+
+	// Set the link's GetAliases function.
+	aliceChannelLink.cfg.GetAliases = func(
+		base lnwire.ShortChannelID) []lnwire.ShortChannelID {
+
+		return []lnwire.ShortChannelID{aliceAlias, aliceAlias2}
+	}
+
+	if !private {
+		// Change the channel to public depending on the test.
+		aliceChannelState.ChannelFlags = lnwire.FFAnnounceChannel
+	}
+
+	// If this is an option-scid-alias feature-bit non-zero-conf channel,
+	// we'll mark the channel as such.
+	if optionFeature {
+		aliceChannelState.ChanType |= channeldb.ScidAliasFeatureBit
+	}
+
+	// This is the ShortChannelID field in the OpenChannel struct.
+	aliceScid := aliceLink.ShortChanID()
+	if zeroConf {
+		// Store the alias in the shortChanID field and mark the real
+		// scid in the database.
+		aliceChannelLink.shortChanID = aliceAlias
+		err = aliceChannelState.MarkRealScid(aliceScid)
+		require.NoError(t, err)
+
+		aliceChannelState.ChanType |= channeldb.ZeroConfBit
+	}
+
+	err = s.AddLink(aliceLink)
+	require.NoError(t, err)
+
+	// Add a mockChannelLink for Bob.
+	bobChanID, bobScid := genID()
+	bobPeer, err := newMockServer(
+		t, "bob", testStartingHeight, nil, testDefaultDelta,
+	)
+	require.NoError(t, err)
+
+	bobLink := newMockChannelLink(
+		s, bobChanID, bobScid, emptyScid, bobPeer, true, false, false,
+		false,
+	)
+	err = s.AddLink(bobLink)
+	require.NoError(t, err)
+
+	preimage := [sha256.Size]byte{1}
+	rhash := sha256.Sum256(preimage[:])
+	ogPacket := &htlcPacket{
+		incomingChanID: bobLink.ShortChanID(),
+		incomingHTLCID: 0,
+		incomingAmount: 1000,
+		obfuscator:     NewMockObfuscator(),
+		htlc: &lnwire.UpdateAddHTLC{
+			PaymentHash: rhash,
+			Amount:      1,
+		},
+	}
+
+	// Determine which outgoingChanID to set based on the useAlias bool.
+	outgoingChanID := aliceScid
+	if useAlias {
+		// Choose from the possible aliases.
+		aliases := aliceLink.getAliases()
+		idx := mrand.Intn(len(aliases))
+
+		outgoingChanID = aliases[idx]
+	}
+
+	ogPacket.outgoingChanID = outgoingChanID
+
+	// Forward the packet to Alice and she should fail it back with an
+	// AmountBelowMinimum FailureMessage.
+	err = s.ForwardPackets(nil, ogPacket)
+	require.NoError(t, err)
+
+	select {
+	case failPacket := <-bobLink.packets:
+		// Assert that failPacket returns the expected ChannelUpdate.
+		msg := failPacket.linkFailure.msg
+		failMsg, ok := msg.(*lnwire.FailAmountBelowMinimum)
+		require.True(t, ok)
+		require.Equal(t, outgoingChanID, failMsg.Update.ShortChannelID)
+	case <-s.quit:
+		t.Fatal("switch shutting down, failed to receive failure")
+	}
+}
+
+// TestSwitchAliasInterceptFail tests that when the InterceptableSwitch fails
+// an incoming HTLC, it does not leak the on-chain UTXO for option-scid-alias
+// (feature bit) or zero-conf channels.
+func TestSwitchAliasInterceptFail(t *testing.T) {
+	tests := []struct {
+		name string
+
+		// Denotes whether or not the incoming channel is a zero-conf
+		// channel or an option-scid-alias channel instead (feature
+		// bit).
+		zeroConf bool
+	}{
+		{
+			name:     "option-scid-alias",
+			zeroConf: false,
+		},
+		{
+			name:     "zero-conf",
+			zeroConf: true,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+
+		t.Run(test.name, func(t *testing.T) {
+			testSwitchAliasInterceptFail(t, test.zeroConf)
+		})
+	}
+}
+
+func testSwitchAliasInterceptFail(t *testing.T, zeroConf bool) {
+	t.Parallel()
+
+	chanID, aliceScid := genID()
+
+	alicePeer, err := newMockServer(
+		t, "alice", testStartingHeight, nil, testDefaultDelta,
+	)
+	require.NoError(t, err)
+
+	tempPath := t.TempDir()
+
+	cdb, err := channeldb.Open(tempPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { cdb.Close() })
+
+	s, err := initSwitchWithDB(testStartingHeight, cdb)
+	require.NoError(t, err)
+
+	err = s.Start()
+	require.NoError(t, err)
+
+	defer func() {
+		_ = s.Stop()
+	}()
+
+	// Make Alice's alias here.
+	aliceAlias := lnwire.ShortChannelID{
+		BlockHeight: 16_000_000,
+		TxIndex:     5,
+		TxPosition:  5,
+	}
+	aliceAlias2 := aliceAlias
+	aliceAlias2.TxPosition = 6
+
+	var aliceLink *mockChannelLink
+	if zeroConf {
+		aliceLink = newMockChannelLink(
+			s, chanID, aliceAlias, aliceScid, alicePeer, true,
+			true, true, false,
+		)
+		aliceLink.addAlias(aliceAlias2)
+	} else {
+		aliceLink = newMockChannelLink(
+			s, chanID, aliceScid, emptyScid, alicePeer, true,
+			true, false, true,
+		)
+		aliceLink.addAlias(aliceAlias)
+		aliceLink.addAlias(aliceAlias2)
+	}
+	err = s.AddLink(aliceLink)
+	require.NoError(t, err)
+
+	// Now we'll create the packet that will be sent from the Alice link.
+	preimage := [sha256.Size]byte{1}
+	rhash := sha256.Sum256(preimage[:])
+	ogPacket := &htlcPacket{
+		incomingChanID:  aliceLink.ShortChanID(),
+		incomingTimeout: 1000,
+		incomingHTLCID:  0,
+		outgoingChanID:  lnwire.ShortChannelID{},
+		obfuscator:      NewMockObfuscator(),
+		htlc: &lnwire.UpdateAddHTLC{
+			PaymentHash: rhash,
+			Amount:      1,
+		},
+	}
+
+	// Now setup the interceptable switch so that we can reject this
+	// packet.
+	forwardInterceptor := &mockForwardInterceptor{
+		t:               t,
+		interceptedChan: make(chan InterceptedPacket),
+	}
+
+	notifier := &mock.ChainNotifier{
+		EpochChan: make(chan *chainntnfs.BlockEpoch, 1),
+	}
+	notifier.EpochChan <- &chainntnfs.BlockEpoch{Height: testStartingHeight}
+
+	interceptSwitch, err := NewInterceptableSwitch(
+		&InterceptableSwitchConfig{
+			Switch:             s,
+			Notifier:           notifier,
+			CltvRejectDelta:    10,
+			CltvInterceptDelta: 13,
+		},
+	)
+	require.NoError(t, err)
+	require.NoError(t, interceptSwitch.Start())
+	interceptSwitch.SetInterceptor(forwardInterceptor.InterceptForwardHtlc)
+
+	err = interceptSwitch.ForwardPackets(nil, false, ogPacket)
+	require.NoError(t, err)
+
+	inCircuit := forwardInterceptor.getIntercepted().IncomingCircuit
+	require.NoError(t, interceptSwitch.resolve(&FwdResolution{
+		Action:      FwdActionFail,
+		Key:         inCircuit,
+		FailureCode: lnwire.CodeTemporaryChannelFailure,
+	}))
+
+	select {
+	case failPacket := <-aliceLink.packets:
+		// Assert that failPacket returns the expected ChannelUpdate.
+		failHtlc, ok := failPacket.htlc.(*lnwire.UpdateFailHTLC)
+		require.True(t, ok)
+
+		fwdErr, err := newMockDeobfuscator().DecryptError(
+			failHtlc.Reason,
+		)
+		require.NoError(t, err)
+
+		failure := fwdErr.WireMessage()
+
+		failureMsg, ok := failure.(*lnwire.FailTemporaryChannelFailure)
+		require.True(t, ok)
+
+		failScid := failureMsg.Update.ShortChannelID
+		isAlias := failScid == aliceAlias || failScid == aliceAlias2
+		require.True(t, isAlias)
+
+	case <-s.quit:
+		t.Fatalf("switch shutting down, failed to receive failure")
+	}
+
+	require.NoError(t, interceptSwitch.Stop())
 }

@@ -76,7 +76,6 @@ func TestValidateCLTVLimit(t *testing.T) {
 // TestUpdateAdditionalEdge checks that we can update the additional edges as
 // expected.
 func TestUpdateAdditionalEdge(t *testing.T) {
-
 	var (
 		testChannelID  = uint64(12345)
 		oldFeeBaseMSat = uint32(1000)
@@ -210,10 +209,10 @@ func TestRequestRoute(t *testing.T) {
 	}
 
 	// Override pathfinder with a mock.
-	session.pathFinder = func(
-		g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
-		source, target route.Vertex, amt lnwire.MilliSatoshi,
-		finalHtlcExpiry int32) ([]*channeldb.CachedEdgePolicy, error) {
+	session.pathFinder = func(_ *graphParams, r *RestrictParams,
+		_ *PathFindingConfig, _, _ route.Vertex, _ lnwire.MilliSatoshi,
+		_ float64, _ int32) ([]*channeldb.CachedEdgePolicy, float64,
+		error) {
 
 		// We expect find path to receive a cltv limit excluding the
 		// final cltv delta (including the block padding).
@@ -232,7 +231,7 @@ func TestRequestRoute(t *testing.T) {
 			},
 		}
 
-		return path, nil
+		return path, 1.0, nil
 	}
 
 	route, err := session.RequestRoute(

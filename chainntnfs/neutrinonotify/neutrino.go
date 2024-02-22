@@ -37,7 +37,7 @@ const (
 // running full node.
 //
 // TODO(roasbeef): heavily consolidate with NeutrinoNotifier code
-//  * maybe combine into single package?
+//   - maybe combine into single package?
 type NeutrinoNotifier struct {
 	epochClientCounter uint64 // To be used atomically.
 
@@ -432,7 +432,9 @@ func (n *NeutrinoNotifier) notificationDispatcher() {
 				// chain asynchronously to prevent blocking
 				// potentially long rescans.
 				n.wg.Add(1)
-				go func() {
+
+				//nolint:lll
+				go func(msg *chainntnfs.HistoricalConfDispatch) {
 					defer n.wg.Done()
 
 					confDetails, err := n.historicalConfDetails(
@@ -457,7 +459,7 @@ func (n *NeutrinoNotifier) notificationDispatcher() {
 					if err != nil {
 						chainntnfs.Log.Error(err)
 					}
-				}()
+				}(msg)
 
 			case *blockEpochRegistration:
 				chainntnfs.Log.Infof("New block epoch subscription")
@@ -636,6 +638,7 @@ func (n *NeutrinoNotifier) historicalConfDetails(confRequest chainntnfs.ConfRequ
 				BlockHash:   blockHash,
 				BlockHeight: scanHeight,
 				TxIndex:     uint32(i),
+				Block:       block.MsgBlock(),
 			}, nil
 		}
 	}
@@ -649,11 +652,19 @@ func (n *NeutrinoNotifier) historicalConfDetails(confRequest chainntnfs.ConfRequ
 //
 // NOTE: This method must be called with the bestBlockMtx lock held.
 func (n *NeutrinoNotifier) handleBlockConnected(newBlock *filteredBlock) error {
-	// We'll extend the txNotifier's height with the information of this new
-	// block, which will handle all of the notification logic for us.
-	err := n.txNotifier.ConnectTip(
-		&newBlock.hash, newBlock.height, newBlock.txns,
-	)
+	// We'll extend the txNotifier's height with the information of this
+	// new block, which will handle all of the notification logic for us.
+	//
+	// We actually need the _full_ block here as well in order to be able
+	// to send the full block back up to the client. The neutrino client
+	// itself will only dispatch a block if one of the items we're looking
+	// for matches, so ultimately passing it the full block will still only
+	// result in the items we care about being dispatched.
+	rawBlock, err := n.GetBlock(newBlock.hash)
+	if err != nil {
+		return fmt.Errorf("unable to get full block: %v", err)
+	}
+	err = n.txNotifier.ConnectTip(rawBlock, newBlock.height)
 	if err != nil {
 		return fmt.Errorf("unable to connect tip: %v", err)
 	}
@@ -899,15 +910,15 @@ func (n *NeutrinoNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 // channel. Once it has reached all of its confirmations, a notification will be
 // sent across the 'Confirmed' channel.
 func (n *NeutrinoNotifier) RegisterConfirmationsNtfn(txid *chainhash.Hash,
-	pkScript []byte,
-	numConfs, heightHint uint32) (*chainntnfs.ConfirmationEvent, error) {
+	pkScript []byte, numConfs, heightHint uint32,
+	opts ...chainntnfs.NotifierOption) (*chainntnfs.ConfirmationEvent, error) {
 
 	// Register the conf notification with the TxNotifier. A non-nil value
 	// for `dispatch` will be returned if we are required to perform a
 	// manual scan for the confirmation. Otherwise the notifier will begin
 	// watching at tip for the transaction to confirm.
 	ntfn, err := n.txNotifier.RegisterConf(
-		txid, pkScript, numConfs, heightHint,
+		txid, pkScript, numConfs, heightHint, opts...,
 	)
 	if err != nil {
 		return nil, err

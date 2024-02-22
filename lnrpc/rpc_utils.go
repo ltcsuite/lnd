@@ -3,10 +3,14 @@ package lnrpc
 import (
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"sort"
 
 	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
+	"github.com/ltcsuite/lnd/sweep"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 const (
@@ -16,11 +20,78 @@ const (
 	RegisterRPCMiddlewareURI = "/lnrpc.Lightning/RegisterRPCMiddleware"
 )
 
+var (
+	// ProtoJSONMarshalOpts is a struct that holds the default marshal
+	// options for marshaling protobuf messages into JSON in a
+	// human-readable way. This should only be used in the CLI and in
+	// integration tests.
+	ProtoJSONMarshalOpts = &protojson.MarshalOptions{
+		EmitUnpopulated: true,
+		UseProtoNames:   true,
+		Indent:          "    ",
+		UseHexForBytes:  true,
+	}
+
+	// ProtoJSONUnmarshalOpts is a struct that holds the default unmarshal
+	// options for un-marshaling lncli JSON into protobuf messages. This
+	// should only be used in the CLI and in integration tests.
+	ProtoJSONUnmarshalOpts = &protojson.UnmarshalOptions{
+		AllowPartial:   false,
+		UseHexForBytes: true,
+	}
+
+	// RESTJsonMarshalOpts is a struct that holds the default marshal
+	// options for marshaling protobuf messages into REST JSON in a
+	// human-readable way. This should be used when interacting with the
+	// REST proxy only.
+	RESTJsonMarshalOpts = &protojson.MarshalOptions{
+		EmitUnpopulated: true,
+		UseProtoNames:   true,
+	}
+
+	// RESTJsonUnmarshalOpts is a struct that holds the default unmarshal
+	// options for un-marshaling REST JSON into protobuf messages. This
+	// should be used when interacting with the REST proxy only.
+	RESTJsonUnmarshalOpts = &protojson.UnmarshalOptions{
+		AllowPartial: false,
+	}
+)
+
 // RPCTransaction returns a rpc transaction.
 func RPCTransaction(tx *lnwallet.TransactionDetail) *Transaction {
 	var destAddresses []string
-	for _, destAddress := range tx.DestAddresses {
-		destAddresses = append(destAddresses, destAddress.EncodeAddress())
+	// Re-package destination output information.
+	var outputDetails []*OutputDetail
+	for _, o := range tx.OutputDetails {
+		// Note: DestAddresses is deprecated but we keep
+		// populating it with addresses for backwards
+		// compatibility.
+		for _, a := range o.Addresses {
+			destAddresses = append(destAddresses,
+				a.EncodeAddress())
+		}
+
+		var address string
+		if len(o.Addresses) == 1 {
+			address = o.Addresses[0].EncodeAddress()
+		}
+
+		outputDetails = append(outputDetails, &OutputDetail{
+			OutputType:   MarshallOutputType(o.OutputType),
+			Address:      address,
+			PkScript:     hex.EncodeToString(o.PkScript),
+			OutputIndex:  int64(o.OutputIndex),
+			Amount:       int64(o.Value),
+			IsOurAddress: o.IsOurAddress,
+		})
+	}
+
+	previousOutpoints := make([]*PreviousOutPoint, len(tx.PreviousOutpoints))
+	for idx, previousOutPoint := range tx.PreviousOutpoints {
+		previousOutpoints[idx] = &PreviousOutPoint{
+			Outpoint:    previousOutPoint.OutPoint,
+			IsOurOutput: previousOutPoint.IsOurOutput,
+		}
 	}
 
 	// We also get unconfirmed transactions, so BlockHash can be nil.
@@ -30,16 +101,18 @@ func RPCTransaction(tx *lnwallet.TransactionDetail) *Transaction {
 	}
 
 	return &Transaction{
-		TxHash:           tx.Hash.String(),
-		Amount:           int64(tx.Value),
-		NumConfirmations: tx.NumConfirmations,
-		BlockHash:        blockHash,
-		BlockHeight:      tx.BlockHeight,
-		TimeStamp:        tx.Timestamp,
-		TotalFees:        tx.TotalFees,
-		DestAddresses:    destAddresses,
-		RawTxHex:         hex.EncodeToString(tx.RawTx),
-		Label:            tx.Label,
+		TxHash:            tx.Hash.String(),
+		Amount:            int64(tx.Value),
+		NumConfirmations:  tx.NumConfirmations,
+		BlockHash:         blockHash,
+		BlockHeight:       tx.BlockHeight,
+		TimeStamp:         tx.Timestamp,
+		TotalFees:         tx.TotalFees,
+		DestAddresses:     destAddresses,
+		OutputDetails:     outputDetails,
+		RawTxHex:          hex.EncodeToString(tx.RawTx),
+		Label:             tx.Label,
+		PreviousOutpoints: previousOutpoints,
 	}
 }
 
@@ -122,4 +195,42 @@ func GetChanPointFundingTxid(chanPoint *ChannelPoint) (*chainhash.Hash, error) {
 	}
 
 	return chainhash.NewHash(txid)
+}
+
+// CalculateFeeRate uses either satPerByte or satPerVByte, but not both, from a
+// request to calculate the fee rate. It provides compatibility for the
+// deprecated field, satPerByte. Once the field is safe to be removed, the
+// check can then be deleted.
+func CalculateFeeRate(satPerByte, satPerVByte uint64, targetConf uint32,
+	estimator chainfee.Estimator) (chainfee.SatPerKWeight, error) {
+
+	var feeRate chainfee.SatPerKWeight
+
+	// We only allow using either the deprecated field or the new field.
+	if satPerByte != 0 && satPerVByte != 0 {
+		return feeRate, fmt.Errorf("either SatPerByte or " +
+			"SatPerVByte should be set, but not both")
+	}
+
+	// Default to satPerVByte, and overwrite it if satPerByte is set.
+	satPerKw := chainfee.SatPerKVByte(satPerVByte * 1000).FeePerKWeight()
+	if satPerByte != 0 {
+		satPerKw = chainfee.SatPerKVByte(
+			satPerByte * 1000,
+		).FeePerKWeight()
+	}
+
+	// Based on the passed fee related parameters, we'll determine an
+	// appropriate fee rate for this transaction.
+	feeRate, err := sweep.DetermineFeePerKw(
+		estimator, sweep.FeePreference{
+			ConfTarget: targetConf,
+			FeeRate:    satPerKw,
+		},
+	)
+	if err != nil {
+		return feeRate, err
+	}
+
+	return feeRate, nil
 }

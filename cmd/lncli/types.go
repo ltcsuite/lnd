@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/lnd/lnrpc"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 )
 
 // OutPoint displays an outpoint string in the form "<txid>:<output-index>".

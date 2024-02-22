@@ -6,8 +6,8 @@ import (
 	lnwallettest "github.com/ltcsuite/lnd/lnwallet/test"
 )
 
-// TestLightningWallet tests LightningWallet powered by btcd against our suite
+// TestLightningWallet tests LightningWallet powered by ltcd against our suite
 // of interface tests.
 func TestLightningWallet(t *testing.T) {
-	lnwallettest.TestLightningWallet(t, "btcd")
+	lnwallettest.TestLightningWallet(t, "ltcd")
 }

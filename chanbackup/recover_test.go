@@ -6,7 +6,9 @@ import (
 	"net"
 	"testing"
 
+	"github.com/ltcsuite/lnd/lnencrypt"
 	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/stretchr/testify/require"
 )
 
 type mockChannelRestorer struct {
@@ -48,7 +50,7 @@ func (m *mockPeerConnector) ConnectPeer(node *btcec.PublicKey,
 func TestUnpackAndRecoverSingles(t *testing.T) {
 	t.Parallel()
 
-	keyRing := &mockKeyRing{}
+	keyRing := &lnencrypt.MockKeyRing{}
 
 	// First, we'll create a number of single chan backups that we'll
 	// shortly back to so we can begin our recovery attempt.
@@ -108,9 +110,7 @@ func TestUnpackAndRecoverSingles(t *testing.T) {
 	err = UnpackAndRecoverSingles(
 		packedBackups, keyRing, &chanRestorer, &peerConnector,
 	)
-	if err != nil {
-		t.Fatalf("unable to recover chans: %v", err)
-	}
+	require.NoError(t, err, "unable to recover chans")
 
 	// Both the restorer, and connector should have been called 10 times,
 	// once for each backup.
@@ -124,7 +124,7 @@ func TestUnpackAndRecoverSingles(t *testing.T) {
 	}
 
 	// If we modify the keyRing, then unpacking should fail.
-	keyRing.fail = true
+	keyRing.Fail = true
 	err = UnpackAndRecoverSingles(
 		packedBackups, keyRing, &chanRestorer, &peerConnector,
 	)
@@ -140,7 +140,7 @@ func TestUnpackAndRecoverSingles(t *testing.T) {
 func TestUnpackAndRecoverMulti(t *testing.T) {
 	t.Parallel()
 
-	keyRing := &mockKeyRing{}
+	keyRing := &lnencrypt.MockKeyRing{}
 
 	// First, we'll create a number of single chan backups that we'll
 	// shortly back to so we can begin our recovery attempt.
@@ -204,9 +204,7 @@ func TestUnpackAndRecoverMulti(t *testing.T) {
 	err = UnpackAndRecoverMulti(
 		packedMulti, keyRing, &chanRestorer, &peerConnector,
 	)
-	if err != nil {
-		t.Fatalf("unable to recover chans: %v", err)
-	}
+	require.NoError(t, err, "unable to recover chans")
 
 	// Both the restorer, and connector should have been called 10 times,
 	// once for each backup.
@@ -220,7 +218,7 @@ func TestUnpackAndRecoverMulti(t *testing.T) {
 	}
 
 	// If we modify the keyRing, then unpacking should fail.
-	keyRing.fail = true
+	keyRing.Fail = true
 	err = UnpackAndRecoverMulti(
 		packedMulti, keyRing, &chanRestorer, &peerConnector,
 	)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/ltcsuite/lnd/buffer"
 	"github.com/ltcsuite/lnd/pool"
+	"github.com/stretchr/testify/require"
 )
 
 type workerPoolTest struct {
@@ -70,7 +71,9 @@ func testWorkerPool(t *testing.T, test workerPoolTest) {
 
 		p := test.newPool()
 		startGeneric(t, p)
-		defer stopGeneric(t, p)
+		t.Cleanup(func() {
+			stopGeneric(t, p)
+		})
 
 		submitNonblockingGeneric(t, p, test.numWorkers)
 	})
@@ -80,7 +83,9 @@ func testWorkerPool(t *testing.T, test workerPoolTest) {
 
 		p := test.newPool()
 		startGeneric(t, p)
-		defer stopGeneric(t, p)
+		t.Cleanup(func() {
+			stopGeneric(t, p)
+		})
 
 		submitBlockingGeneric(t, p, test.numWorkers)
 	})
@@ -90,7 +95,9 @@ func testWorkerPool(t *testing.T, test workerPoolTest) {
 
 		p := test.newPool()
 		startGeneric(t, p)
-		defer stopGeneric(t, p)
+		t.Cleanup(func() {
+			stopGeneric(t, p)
+		})
 
 		submitPartialBlockingGeneric(t, p, test.numWorkers)
 	})
@@ -256,9 +263,7 @@ func startGeneric(t *testing.T, p interface{}) {
 		t.Fatalf("unknown worker pool type: %T", p)
 	}
 
-	if err != nil {
-		t.Fatalf("unable to start worker pool: %v", err)
-	}
+	require.NoError(t, err, "unable to start worker pool")
 }
 
 func stopGeneric(t *testing.T, p interface{}) {
@@ -276,9 +281,7 @@ func stopGeneric(t *testing.T, p interface{}) {
 		t.Fatalf("unknown worker pool type: %T", p)
 	}
 
-	if err != nil {
-		t.Fatalf("unable to stop worker pool: %v", err)
-	}
+	require.NoError(t, err, "unable to stop worker pool")
 }
 
 func submitGeneric(p interface{}, sem <-chan struct{}) error {

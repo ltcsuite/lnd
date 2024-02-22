@@ -6,6 +6,7 @@ import (
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/netann"
+	"github.com/ltcsuite/lnd/routing"
 	"github.com/ltcsuite/lnd/routing/route"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 )
@@ -131,10 +132,24 @@ func (c *ChanSeries) UpdatesInHorizon(chain chainhash.Hash,
 
 		updates = append(updates, chanAnn)
 		if edge1 != nil {
-			updates = append(updates, edge1)
+			// We don't want to send channel updates that don't
+			// conform to the spec (anymore).
+			err := routing.ValidateChannelUpdateFields(0, edge1)
+			if err != nil {
+				log.Errorf("not sending invalid channel "+
+					"update %v: %v", edge1, err)
+			} else {
+				updates = append(updates, edge1)
+			}
 		}
 		if edge2 != nil {
-			updates = append(updates, edge2)
+			err := routing.ValidateChannelUpdateFields(0, edge2)
+			if err != nil {
+				log.Errorf("not sending invalid channel "+
+					"update %v: %v", edge2, err)
+			} else {
+				updates = append(updates, edge2)
+			}
 		}
 	}
 

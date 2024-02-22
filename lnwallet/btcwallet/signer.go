@@ -8,6 +8,7 @@ import (
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/btcec/v2/ecdsa"
+	"github.com/ltcsuite/ltcd/btcec/v2/schnorr"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/ltcutil/hdkeychain"
@@ -23,7 +24,9 @@ import (
 // of ErrNotMine should be returned instead.
 //
 // This is a part of the WalletController interface.
-func (b *BtcWallet) FetchInputInfo(prevOut *wire.OutPoint) (*lnwallet.Utxo, error) {
+func (b *BtcWallet) FetchInputInfo(prevOut *wire.OutPoint) (*lnwallet.Utxo,
+	error) {
+
 	prevTx, txOut, bip32, confirmations, err := b.wallet.FetchInputInfo(
 		prevOut,
 	)
@@ -38,6 +41,8 @@ func (b *BtcWallet) FetchInputInfo(prevOut *wire.OutPoint) (*lnwallet.Utxo, erro
 		addressType = lnwallet.WitnessPubKey
 	case txscript.IsPayToScriptHash(txOut.PkScript):
 		addressType = lnwallet.NestedWitnessPubKey
+	case txscript.IsPayToTaproot(txOut.PkScript):
+		addressType = lnwallet.TaprootPubkey
 	}
 
 	return &lnwallet.Utxo{
@@ -129,7 +134,8 @@ func (b *BtcWallet) deriveKeyByBIP32Path(path []uint32) (*btcec.PrivateKey,
 	// Is it a standard, BIP defined purpose that the wallet understands?
 	case waddrmgr.KeyScopeBIP0044.Purpose,
 		waddrmgr.KeyScopeBIP0049Plus.Purpose,
-		waddrmgr.KeyScopeBIP0084.Purpose:
+		waddrmgr.KeyScopeBIP0084.Purpose,
+		waddrmgr.KeyScopeBIP0086.Purpose:
 
 		// We're going to continue below the switch statement to avoid
 		// unnecessary indentation for this default case.
@@ -143,12 +149,12 @@ func (b *BtcWallet) deriveKeyByBIP32Path(path []uint32) (*btcec.PrivateKey,
 	}
 
 	// Okay, we made sure it's a BIP49/84 key, so we need to derive it now.
-	// Interestingly, the btcwallet never actually uses a coin type other
-	// than 0 for those keys, so we need to make sure this behavior is
+	// Interestingly, the ltcwallet never actually uses a coin type other
+	// than 2 for those keys, so we need to make sure this behavior is
 	// replicated here.
-	if coinType != 0 {
+	if coinType != 2 {
 		return nil, fmt.Errorf("invalid BIP32 derivation path, coin " +
-			"type must be 0 for BIP49/84 btcwallet keys")
+			"type must be 2 for BIP49/84 ltcwallet keys")
 	}
 
 	// We only expect to be asked to sign with key scopes that we know
@@ -353,6 +359,66 @@ func (b *BtcWallet) SignOutputRaw(tx *wire.MsgTx,
 	privKey, err = maybeTweakPrivKey(signDesc, privKey)
 	if err != nil {
 		return nil, err
+	}
+
+	// In case of a taproot output any signature is always a Schnorr
+	// signature, based on the new tapscript sighash algorithm.
+	if txscript.IsPayToTaproot(signDesc.Output.PkScript) {
+		sigHashes := txscript.NewTxSigHashes(
+			tx, signDesc.PrevOutputFetcher,
+		)
+
+		// Are we spending a script path or the key path? The API is
+		// slightly different, so we need to account for that to get the
+		// raw signature.
+		var rawSig []byte
+		switch signDesc.SignMethod {
+		case input.TaprootKeySpendBIP0086SignMethod,
+			input.TaprootKeySpendSignMethod:
+
+			// This function tweaks the private key using the tap
+			// root key supplied as the tweak.
+			rawSig, err = txscript.RawTxInTaprootSignature(
+				tx, sigHashes, signDesc.InputIndex,
+				signDesc.Output.Value, signDesc.Output.PkScript,
+				signDesc.TapTweak, signDesc.HashType,
+				privKey,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+		case input.TaprootScriptSpendSignMethod:
+			leaf := txscript.TapLeaf{
+				LeafVersion: txscript.BaseLeafVersion,
+				Script:      witnessScript,
+			}
+			rawSig, err = txscript.RawTxInTapscriptSignature(
+				tx, sigHashes, signDesc.InputIndex,
+				signDesc.Output.Value, signDesc.Output.PkScript,
+				leaf, signDesc.HashType, privKey,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+		default:
+			return nil, fmt.Errorf("unknown sign method: %v",
+				signDesc.SignMethod)
+		}
+
+		// The signature returned above might have a sighash flag
+		// attached if a non-default type was used. We'll slice this
+		// off if it exists to ensure we can properly parse the raw
+		// signature.
+		sig, err := schnorr.ParseSignature(
+			rawSig[:schnorr.SignatureSize],
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		return sig, nil
 	}
 
 	// TODO(roasbeef): generate sighash midstate if not present?

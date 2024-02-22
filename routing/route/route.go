@@ -127,6 +127,10 @@ type Hop struct {
 	// understand the new TLV payload, so we must instead use the legacy
 	// payload.
 	LegacyPayload bool
+
+	// Metadata is additional data that is sent along with the payment to
+	// the payee.
+	Metadata []byte
 }
 
 // Copy returns a deep copy of the Hop.
@@ -205,6 +209,13 @@ func (h *Hop) PackHopPayload(w io.Writer, nextChanID uint64) error {
 		}
 	}
 
+	// If metadata is specified, generate a tlv record for it.
+	if h.Metadata != nil {
+		records = append(records,
+			record.NewMetadataRecord(&h.Metadata),
+		)
+	}
+
 	// Append any custom types destined for this hop.
 	tlvRecords := tlv.MapToRecords(h.CustomRecords)
 	records = append(records, tlvRecords...)
@@ -257,6 +268,11 @@ func (h *Hop) PayloadSize(nextChanID uint64) uint64 {
 	// Add amp if present.
 	if h.AMP != nil {
 		addRecord(record.AMPOnionType, h.AMP.PayloadSize())
+	}
+
+	// Add metadata if present.
+	if h.Metadata != nil {
+		addRecord(record.MetadataOnionType, uint64(len(h.Metadata)))
 	}
 
 	// Add custom records.
@@ -404,9 +420,7 @@ func (r *Route) ToSphinxPath() (*sphinx.PaymentPath, error) {
 	// to an OnionHop with matching per-hop payload within the path as used
 	// by the sphinx package.
 	for i, hop := range r.Hops {
-		pub, err := btcec.ParsePubKey(
-			hop.PubKeyBytes[:],
-		)
+		pub, err := btcec.ParsePubKey(hop.PubKeyBytes[:])
 		if err != nil {
 			return nil, err
 		}
@@ -437,7 +451,7 @@ func (r *Route) ToSphinxPath() (*sphinx.PaymentPath, error) {
 				hopData.NextAddress[:], nextHop,
 			)
 
-			payload, err = sphinx.NewHopPayload(&hopData, nil)
+			payload, err = sphinx.NewLegacyHopPayload(&hopData)
 			if err != nil {
 				return nil, err
 			}
@@ -454,8 +468,7 @@ func (r *Route) ToSphinxPath() (*sphinx.PaymentPath, error) {
 				return nil, err
 			}
 
-			// TODO(roasbeef): make better API for NewHopPayload?
-			payload, err = sphinx.NewHopPayload(nil, b.Bytes())
+			payload, err = sphinx.NewTLVHopPayload(b.Bytes())
 			if err != nil {
 				return nil, err
 			}

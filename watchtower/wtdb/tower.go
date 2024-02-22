@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 
-	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
@@ -46,7 +45,7 @@ type Tower struct {
 
 // AddAddress adds the given address to the tower's in-memory list of addresses.
 // If the address's string is already present, the Tower will be left
-// unmodified. Otherwise, the adddress is prepended to the beginning of the
+// unmodified. Otherwise, the address is prepended to the beginning of the
 // Tower's addresses, on the assumption that it is fresher than the others.
 //
 // NOTE: This method is NOT safe for concurrent use.
@@ -75,23 +74,6 @@ func (t *Tower) RemoveAddress(addr net.Addr) {
 		t.Addresses = append(t.Addresses[:i], t.Addresses[i+1:]...)
 		return
 	}
-}
-
-// LNAddrs generates a list of lnwire.NetAddress from a Tower instance's
-// addresses. This can be used to have a client try multiple addresses for the
-// same Tower.
-//
-// NOTE: This method is NOT safe for concurrent use.
-func (t *Tower) LNAddrs() []*lnwire.NetAddress {
-	addrs := make([]*lnwire.NetAddress, 0, len(t.Addresses))
-	for _, addr := range t.Addresses {
-		addrs = append(addrs, &lnwire.NetAddress{
-			IdentityKey: t.IdentityKey,
-			Address:     addr,
-		})
-	}
-
-	return addrs
 }
 
 // String returns a user-friendly identifier of the tower.

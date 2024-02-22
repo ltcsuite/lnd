@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -43,6 +44,18 @@ var (
 			importPubKeyCommand,
 		},
 	}
+
+	// addressesCommand is a wallet subcommand that is responsible for
+	// address management operations.
+	addressesCommand = cli.Command{
+		Name:  "addresses",
+		Usage: "Interact with wallet addresses.",
+		Subcommands: []cli.Command{
+			listAddressesCommand,
+			signMessageWithAddrCommand,
+			verifyMessageWithAddrCommand,
+		},
+	}
 )
 
 // walletCommands will return the set of commands to enable for walletrpc
@@ -62,9 +75,12 @@ func walletCommands() []cli.Command {
 				labelTxCommand,
 				publishTxCommand,
 				releaseOutputCommand,
+				leaseOutputCommand,
 				listLeasesCommand,
 				psbtCommand,
 				accountsCommand,
+				requiredReserveCommand,
+				addressesCommand,
 			},
 		},
 	}
@@ -80,9 +96,11 @@ func parseAddrType(addrTypeStr string) (walletrpc.AddressType, error) {
 		return walletrpc.AddressType_NESTED_WITNESS_PUBKEY_HASH, nil
 	case "np2wkh-p2wkh":
 		return walletrpc.AddressType_HYBRID_NESTED_WITNESS_PUBKEY_HASH, nil
+	case "p2tr":
+		return walletrpc.AddressType_TAPROOT_PUBKEY, nil
 	default:
 		return 0, errors.New("invalid address type, supported address " +
-			"types are: p2wkh, np2wkh, and np2wkh-p2wkh")
+			"types are: p2wkh, p2tr, np2wkh, and np2wkh-p2wkh")
 	}
 }
 
@@ -153,7 +171,7 @@ var bumpFeeCommand = cli.Command{
 	rely on bumping the fee on a specific transaction, since transactions
 	can change at any point with the addition of new inputs. The list of
 	inputs that currently exist within lnd's central batching engine can be
-	retrieved through lncli pendingsweeps.
+	retrieved through lncli wallet pendingsweeps.
 
 	When bumping the fee of an input that currently exists within lnd's
 	central batching engine, a higher fee transaction will be created that
@@ -305,7 +323,9 @@ func bumpCloseFee(ctx *cli.Context) error {
 	defer cleanUp()
 
 	// Fetch waiting close channel commitments.
-	commitments, err := getWaitingCloseCommitments(client, channelPoint)
+	commitments, err := getWaitingCloseCommitments(
+		ctxc, client, channelPoint,
+	)
 	if err != nil {
 		return err
 	}
@@ -364,11 +384,9 @@ func bumpCloseFee(ctx *cli.Context) error {
 	return nil
 }
 
-func getWaitingCloseCommitments(client lnrpc.LightningClient,
-	channelPoint string) (*lnrpc.PendingChannelsResponse_Commitments,
-	error) {
-
-	ctxc := getContext()
+func getWaitingCloseCommitments(ctxc context.Context,
+	client lnrpc.LightningClient, channelPoint string) (
+	*lnrpc.PendingChannelsResponse_Commitments, error) {
 
 	req := &lnrpc.PendingChannelsRequest{}
 	resp, err := client.PendingChannels(ctxc, req)
@@ -548,6 +566,8 @@ type utxoLease struct {
 	ID         string   `json:"id"`
 	OutPoint   OutPoint `json:"outpoint"`
 	Expiration uint64   `json:"expiration"`
+	PkScript   []byte   `json:"pk_script"`
+	Value      uint64   `json:"value"`
 }
 
 // fundPsbtResponse is a struct that contains JSON annotations for nice result
@@ -562,7 +582,7 @@ var fundPsbtCommand = cli.Command{
 	Name:  "fund",
 	Usage: "Fund a Partially Signed Bitcoin Transaction (PSBT).",
 	ArgsUsage: "[--template_psbt=T | [--outputs=O [--inputs=I]]] " +
-		"[--conf_target=C | --sat_per_vbyte=S]",
+		"[--conf_target=C | --sat_per_vbyte=S] [--change_type=A]",
 	Description: `
 	The fund command creates a fully populated PSBT that contains enough
 	inputs to fund the outputs specified in either the PSBT or the
@@ -586,7 +606,14 @@ var fundPsbtCommand = cli.Command{
 	The optional 'inputs' flag decodes a JSON list of UTXO outpoints as
 	returned by the listunspent command for example:
 
-	    --inputs='["<txid1>:<output-index1>","<txid2>:<output-index2>",...]'
+	    --inputs='["<txid1>:<output-index1>","<txid2>:<output-index2>",...]
+
+	The optional '--change-type' flag permits to choose the address type
+	for the change for default accounts and single imported public keys.
+	The custom address type can only be p2tr at the moment (p2wkh will be
+	used by default). No custom address type should be provided for custom
+	accounts as we will always generate the change address using the coin
+	selection key scope.
 	`,
 	Flags: []cli.Flag{
 		cli.StringFlag{
@@ -622,6 +649,24 @@ var fundPsbtCommand = cli.Command{
 			Usage: "(optional) the name of the account to use to " +
 				"create/fund the PSBT",
 		},
+		cli.StringFlag{
+			Name: "change_type",
+			Usage: "(optional) the type of the change address to " +
+				"use to create/fund the PSBT. If no address " +
+				"type is provided, p2wpkh will be used for " +
+				"default accounts and single imported public " +
+				"keys. No custom address type should be " +
+				"provided for custom accounts as we will " +
+				"always use the coin selection key scope to " +
+				"generate the change address",
+		},
+		cli.Uint64Flag{
+			Name: "min_confs",
+			Usage: "(optional) the minimum number of " +
+				"confirmations each input used for the PSBT " +
+				"transaction must satisfy",
+			Value: defaultUtxoMinConf,
+		},
 	},
 	Action: actionDecorator(fundPsbt),
 }
@@ -635,8 +680,11 @@ func fundPsbt(ctx *cli.Context) error {
 		return cli.ShowCommandHelp(ctx, "fund")
 	}
 
+	minConfs := int32(ctx.Uint64("min_confs"))
 	req := &walletrpc.FundPsbtRequest{
-		Account: ctx.String("account"),
+		Account:          ctx.String("account"),
+		MinConfs:         minConfs,
+		SpendUnconfirmed: minConfs == 0,
 	}
 
 	// Parse template flags.
@@ -727,6 +775,21 @@ func fundPsbt(ctx *cli.Context) error {
 		}
 	}
 
+	if ctx.IsSet("change_type") {
+		switch addressType := ctx.String("change_type"); addressType {
+		case "p2tr":
+			//nolint:lll
+			req.ChangeType = walletrpc.ChangeAddressType_CHANGE_ADDRESS_TYPE_P2TR
+
+		default:
+			return fmt.Errorf("invalid type for the "+
+				"change type: %s. At the moment, the "+
+				"only address type supported is p2tr "+
+				"(default to p2wkh)",
+				addressType)
+		}
+	}
+
 	walletClient, cleanUp := getWalletClient(ctx)
 	defer cleanUp()
 
@@ -757,6 +820,8 @@ func marshallLocks(lockedUtxos []*walletrpc.UtxoLease) []*utxoLease {
 			ID:         hex.EncodeToString(lock.Id),
 			OutPoint:   NewOutPointFromProto(lock.Outpoint),
 			Expiration: lock.Expiration,
+			PkScript:   lock.PkScript,
+			Value:      lock.Value,
 		}
 	}
 
@@ -847,6 +912,81 @@ func finalizePsbt(ctx *cli.Context) error {
 	return nil
 }
 
+var leaseOutputCommand = cli.Command{
+	Name:  "leaseoutput",
+	Usage: "Lease an output.",
+	Description: `
+	The leaseoutput command locks an output, making it unavailable
+	for coin selection.
+
+	An app lock ID and expiration duration must be specified when locking
+	the output.
+	`,
+	Flags: []cli.Flag{
+		cli.StringFlag{
+			Name:  "outpoint",
+			Usage: "the output to lock",
+		},
+		cli.StringFlag{
+			Name:  "lockid",
+			Usage: "the hex-encoded app lock ID",
+		},
+		cli.Uint64Flag{
+			Name:  "expiry",
+			Usage: "expiration duration in seconds",
+		},
+	},
+	Action: actionDecorator(leaseOutput),
+}
+
+func leaseOutput(ctx *cli.Context) error {
+	ctxc := getContext()
+
+	// Display the command's help message if we do not have the expected
+	// number of arguments/flags.
+	if ctx.NArg() != 0 || ctx.NumFlags() == 0 {
+		return cli.ShowCommandHelp(ctx, "leaseoutput")
+	}
+
+	outpointStr := ctx.String("outpoint")
+	outpoint, err := NewProtoOutPoint(outpointStr)
+	if err != nil {
+		return fmt.Errorf("error parsing outpoint: %v", err)
+	}
+
+	lockIDStr := ctx.String("lockid")
+	if lockIDStr == "" {
+		return errors.New("lockid not specified")
+	}
+	lockID, err := hex.DecodeString(lockIDStr)
+	if err != nil {
+		return fmt.Errorf("error parsing lockid: %v", err)
+	}
+
+	expiry := ctx.Uint64("expiry")
+	if expiry == 0 {
+		return errors.New("expiry not specified or invalid")
+	}
+
+	req := &walletrpc.LeaseOutputRequest{
+		Outpoint:          outpoint,
+		Id:                lockID,
+		ExpirationSeconds: expiry,
+	}
+
+	walletClient, cleanUp := getWalletClient(ctx)
+	defer cleanUp()
+
+	response, err := walletClient.LeaseOutput(ctxc, req)
+	if err != nil {
+		return err
+	}
+
+	printRespJSON(response)
+
+	return nil
+}
+
 var releaseOutputCommand = cli.Command{
 	Name:      "releaseoutput",
 	Usage:     "Release an output previously locked by lnd.",
@@ -855,14 +995,18 @@ var releaseOutputCommand = cli.Command{
 	The releaseoutput command unlocks an output, allowing it to be available
 	for coin selection if it remains unspent.
 
-	The internal lnd app lock ID is used when releasing the output.
-	Therefore only UTXOs locked by the fundpsbt command can currently be
-	released with this command.
+	If no lock ID is specified, the internal lnd app lock ID is used when
+	releasing the output. With the internal ID, only UTXOs locked by the
+	fundpsbt command can be released.
 	`,
 	Flags: []cli.Flag{
 		cli.StringFlag{
 			Name:  "outpoint",
 			Usage: "the output to unlock",
+		},
+		cli.StringFlag{
+			Name:  "lockid",
+			Usage: "the hex-encoded app lock ID",
 		},
 	},
 	Action: actionDecorator(releaseOutput),
@@ -894,9 +1038,20 @@ func releaseOutput(ctx *cli.Context) error {
 	if err != nil {
 		return fmt.Errorf("error parsing outpoint: %v", err)
 	}
+
+	lockID := walletrpc.LndInternalLockID[:]
+	lockIDStr := ctx.String("lockid")
+	if lockIDStr != "" {
+		var err error
+		lockID, err = hex.DecodeString(lockIDStr)
+		if err != nil {
+			return fmt.Errorf("error parsing lockid: %v", err)
+		}
+	}
+
 	req := &walletrpc.ReleaseOutputRequest{
 		Outpoint: outpoint,
-		Id:       walletrpc.LndInternalLockID[:],
+		Id:       lockID,
 	}
 
 	walletClient, cleanUp := getWalletClient(ctx)
@@ -988,6 +1143,295 @@ func listAccounts(ctx *cli.Context) error {
 	return nil
 }
 
+var requiredReserveCommand = cli.Command{
+	Name:  "requiredreserve",
+	Usage: "Returns the wallet reserve.",
+	Description: `
+	Returns the minimum amount of satoshis that should be kept in the
+	wallet in order to fee bump anchor channels if necessary. The value
+	scales with the number of public anchor channels but is	capped at
+	a maximum.
+
+	Use the flag --additional_channels to get the reserve value based
+	on the additional channels you would like to open.
+	`,
+	Flags: []cli.Flag{
+		cli.Uint64Flag{
+			Name: "additional_channels",
+			Usage: "(optional) specify the additional public channels " +
+				"that you would like to open",
+		},
+	},
+	Action: actionDecorator(requiredReserve),
+}
+
+func requiredReserve(ctx *cli.Context) error {
+	ctxc := getContext()
+
+	// Display the command's help message if we do not have the expected
+	// number of arguments/flags.
+	if ctx.NArg() > 0 || ctx.NumFlags() > 1 {
+		return cli.ShowCommandHelp(ctx, "requiredreserve")
+	}
+
+	walletClient, cleanUp := getWalletClient(ctx)
+	defer cleanUp()
+
+	req := &walletrpc.RequiredReserveRequest{
+		AdditionalPublicChannels: uint32(ctx.Uint64("additional_channels")),
+	}
+	resp, err := walletClient.RequiredReserve(ctxc, req)
+	if err != nil {
+		return err
+	}
+
+	printRespJSON(resp)
+
+	return nil
+}
+
+var listAddressesCommand = cli.Command{
+	Name:  "list",
+	Usage: "Retrieve information of existing on-chain wallet addresses.",
+	Description: `
+	Retrieves information of existing on-chain wallet addresses along with
+	their type, internal/external and balance.
+	`,
+	Flags: []cli.Flag{
+		cli.StringFlag{
+			Name: "account_name",
+			Usage: "(optional) only addreses matching this account " +
+				"are returned",
+		},
+		cli.BoolFlag{
+			Name: "show_custom_accounts",
+			Usage: "(optional) set this to true to show lnd's " +
+				"custom accounts",
+		},
+	},
+	Action: actionDecorator(listAddresses),
+}
+
+func listAddresses(ctx *cli.Context) error {
+	ctxc := getContext()
+
+	// Display the command's help message if we do not have the expected
+	// number of arguments/flags.
+	if ctx.NArg() > 0 || ctx.NumFlags() > 2 {
+		return cli.ShowCommandHelp(ctx, "list")
+	}
+
+	walletClient, cleanUp := getWalletClient(ctx)
+	defer cleanUp()
+
+	req := &walletrpc.ListAddressesRequest{
+		AccountName:        ctx.String("account_name"),
+		ShowCustomAccounts: ctx.Bool("show_custom_accounts"),
+	}
+	resp, err := walletClient.ListAddresses(ctxc, req)
+	if err != nil {
+		return err
+	}
+
+	printRespJSON(resp)
+
+	return nil
+}
+
+var signMessageWithAddrCommand = cli.Command{
+	Name: "signmessage",
+	Usage: "Sign a message with the private key of the provided " +
+		"address.",
+	ArgsUsage: "address msg",
+	Description: `
+	Sign a message with the private key of the specified address, and
+	return the signature. Signing is solely done in the ECDSA compact
+	signature format. This is also done when signing with a P2TR address
+	meaning that the private key of the P2TR address (internal key) is used
+	to sign the provided message with the ECDSA format. Only addresses are
+	accepted which are owned by the internal lnd wallet.
+	`,
+	Flags: []cli.Flag{
+		cli.StringFlag{
+			Name: "address",
+			Usage: "specify the address which private key " +
+				"will be used to sign the message",
+		},
+		cli.StringFlag{
+			Name:  "msg",
+			Usage: "the message to sign for",
+		},
+	},
+	Action: actionDecorator(signMessageWithAddr),
+}
+
+func signMessageWithAddr(ctx *cli.Context) error {
+	ctxc := getContext()
+
+	// Display the command's help message if we do not have the expected
+	// number of arguments/flags.
+	if ctx.NArg() > 2 || ctx.NumFlags() > 2 {
+		return cli.ShowCommandHelp(ctx, "signmessagewithaddr")
+	}
+
+	walletClient, cleanUp := getWalletClient(ctx)
+	defer cleanUp()
+
+	var (
+		args = ctx.Args()
+		addr string
+		msg  []byte
+	)
+
+	switch {
+	case ctx.IsSet("address"):
+		addr = ctx.String("address")
+
+	case ctx.Args().Present():
+		addr = args.First()
+		args = args.Tail()
+
+	default:
+		return fmt.Errorf("address argument missing")
+	}
+
+	switch {
+	case ctx.IsSet("msg"):
+		msg = []byte(ctx.String("msg"))
+
+	case ctx.Args().Present():
+		msg = []byte(args.First())
+		args = args.Tail()
+
+	default:
+		return fmt.Errorf("msg argument missing")
+	}
+
+	resp, err := walletClient.SignMessageWithAddr(
+		ctxc,
+		&walletrpc.SignMessageWithAddrRequest{
+			Msg:  msg,
+			Addr: addr,
+		},
+	)
+	if err != nil {
+		return err
+	}
+
+	printRespJSON(resp)
+
+	return nil
+}
+
+var verifyMessageWithAddrCommand = cli.Command{
+	Name: "verifymessage",
+	Usage: "Verify a message signed with the private key of the " +
+		"provided address.",
+	ArgsUsage: "address sig msg",
+	Description: `
+	Verify a message signed with the signature of the public key
+	of the provided address. The signature must be in compact ECDSA format
+	The verification is independent whether the address belongs to the
+	wallet or not. This is achieved by only accepting ECDSA compacted
+	signatures. When verifying a signature with a taproot address, the
+	signature still has to be in the ECDSA compact format and no tapscript
+	has to be included in the P2TR address.
+	Supports address types P2PKH, P2WKH, NP2WKH, P2TR.
+
+	Besides whether the signature is valid or not, the recoverd public key
+	of the compact ECDSA signature is returned.
+	`,
+	Flags: []cli.Flag{
+		cli.StringFlag{
+			Name: "address",
+			Usage: "specify the address which corresponding" +
+				"public key will be used",
+		},
+		cli.StringFlag{
+			Name: "sig",
+			Usage: "the base64 encoded compact signature " +
+				"of the message",
+		},
+		cli.StringFlag{
+			Name:  "msg",
+			Usage: "the message to sign",
+		},
+	},
+	Action: actionDecorator(verifyMessageWithAddr),
+}
+
+func verifyMessageWithAddr(ctx *cli.Context) error {
+	ctxc := getContext()
+
+	// Display the command's help message if we do not have the expected
+	// number of arguments/flags.
+	if ctx.NArg() > 3 || ctx.NumFlags() > 3 {
+		return cli.ShowCommandHelp(ctx, "signmessagewithaddr")
+	}
+
+	walletClient, cleanUp := getWalletClient(ctx)
+	defer cleanUp()
+
+	var (
+		args = ctx.Args()
+		addr string
+		sig  string
+		msg  []byte
+	)
+
+	switch {
+	case ctx.IsSet("address"):
+		addr = ctx.String("address")
+
+	case args.Present():
+		addr = args.First()
+		args = args.Tail()
+
+	default:
+		return fmt.Errorf("address argument missing")
+	}
+
+	switch {
+	case ctx.IsSet("sig"):
+		sig = ctx.String("sig")
+
+	case ctx.Args().Present():
+		sig = args.First()
+		args = args.Tail()
+
+	default:
+		return fmt.Errorf("sig argument missing")
+	}
+
+	switch {
+	case ctx.IsSet("msg"):
+		msg = []byte(ctx.String("msg"))
+
+	case ctx.Args().Present():
+		msg = []byte(args.First())
+		args = args.Tail()
+
+	default:
+		return fmt.Errorf("msg argument missing")
+	}
+
+	resp, err := walletClient.VerifyMessageWithAddr(
+		ctxc,
+		&walletrpc.VerifyMessageWithAddrRequest{
+			Msg:       msg,
+			Signature: sig,
+			Addr:      addr,
+		},
+	)
+	if err != nil {
+		return err
+	}
+
+	printRespJSON(resp)
+
+	return nil
+}
+
 var importAccountCommand = cli.Command{
 	Name: "import",
 	Usage: "Import an on-chain account into the wallet through its " +
@@ -1002,6 +1446,9 @@ var importAccountCommand = cli.Command{
 
 	The address type can usually be inferred from the key's version, but may
 	be required for certain keys to map them into the proper scope.
+
+	If an account with the same name already exists (even with a different
+	key scope), an error will be returned.
 
 	For BIP-0044 keys, an address type must be specified as we intend to not
 	support importing BIP-0044 keys into the wallet using the legacy

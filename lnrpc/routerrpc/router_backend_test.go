@@ -7,14 +7,13 @@ import (
 	"testing"
 
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/lnrpc"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/record"
 	"github.com/ltcsuite/lnd/routing"
 	"github.com/ltcsuite/lnd/routing/route"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/stretchr/testify/require"
-
-	"github.com/ltcsuite/lnd/lnrpc"
 )
 
 const (
@@ -124,10 +123,10 @@ func testQueryRoutes(t *testing.T, useMissionControl bool, useMsat bool,
 	}
 
 	findRoute := func(source, target route.Vertex,
-		amt lnwire.MilliSatoshi, restrictions *routing.RestrictParams,
-		_ record.CustomSet,
+		amt lnwire.MilliSatoshi, _ float64,
+		restrictions *routing.RestrictParams, _ record.CustomSet,
 		routeHints map[route.Vertex][]*channeldb.CachedEdgePolicy,
-		finalExpiry uint16) (*route.Route, error) {
+		finalExpiry uint16) (*route.Route, float64, error) {
 
 		if int64(amt) != amtSat*1000 {
 			t.Fatal("unexpected amount")
@@ -146,18 +145,18 @@ func testQueryRoutes(t *testing.T, useMissionControl bool, useMsat bool,
 		}
 
 		if restrictions.ProbabilitySource(route.Vertex{2},
-			route.Vertex{1}, 0,
+			route.Vertex{1}, 0, 0,
 		) != 0 {
 			t.Fatal("expecting 0% probability for ignored edge")
 		}
 
 		if restrictions.ProbabilitySource(ignoreNodeVertex,
-			route.Vertex{6}, 0,
+			route.Vertex{6}, 0, 0,
 		) != 0 {
 			t.Fatal("expecting 0% probability for ignored node")
 		}
 
-		if restrictions.ProbabilitySource(node1, node2, 0) != 0 {
+		if restrictions.ProbabilitySource(node1, node2, 0, 0) != 0 {
 			t.Fatal("expecting 0% probability for ignored pair")
 		}
 
@@ -182,13 +181,15 @@ func testQueryRoutes(t *testing.T, useMissionControl bool, useMsat bool,
 			expectedProb = testMissionControlProb
 		}
 		if restrictions.ProbabilitySource(route.Vertex{4},
-			route.Vertex{5}, 0,
+			route.Vertex{5}, 0, 0,
 		) != expectedProb {
 			t.Fatal("expecting 100% probability")
 		}
 
 		hops := []*route.Hop{{}}
-		return route.NewRouteFromHops(amt, 144, source, hops)
+		route, err := route.NewRouteFromHops(amt, 144, source, hops)
+
+		return route, expectedProb, err
 	}
 
 	backend := &RouterBackend{
@@ -199,12 +200,17 @@ func testQueryRoutes(t *testing.T, useMissionControl bool, useMsat bool,
 
 			return 1, nil
 		},
+		FetchAmountPairCapacity: func(nodeFrom, nodeTo route.Vertex,
+			amount lnwire.MilliSatoshi) (ltcutil.Amount, error) {
+
+			return 1, nil
+		},
 		MissionControl: &mockMissionControl{},
 		FetchChannelEndpoints: func(chanID uint64) (route.Vertex,
 			route.Vertex, error) {
 
 			if chanID != 555 {
-				t.Fatal("expected endpoints to be fetched for "+
+				t.Fatalf("expected endpoints to be fetched for "+
 					"channel 555, but got %v instead",
 					chanID)
 			}
@@ -240,7 +246,7 @@ type mockMissionControl struct {
 }
 
 func (m *mockMissionControl) GetProbability(fromNode, toNode route.Vertex,
-	amt lnwire.MilliSatoshi) float64 {
+	amt lnwire.MilliSatoshi, capacity ltcutil.Amount) float64 {
 
 	return testMissionControlProb
 }
@@ -337,7 +343,6 @@ func TestUnmarshalMPP(t *testing.T) {
 func testUnmarshalMPP(t *testing.T, test unmarshalMPPTest) {
 	mpp, err := UnmarshalMPP(test.mpp)
 	switch test.outcome {
-
 	// Valid arguments should result in no error, a non-nil MPP record, and
 	// the fields should be set correctly.
 	case valid:

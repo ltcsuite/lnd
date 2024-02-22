@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/lnd/lnwallet"
 )
 
 // mockBackend simulates a chain backend for realistic behaviour in unit tests
@@ -89,6 +89,7 @@ func (b *mockBackend) PublishTransaction(tx *wire.MsgTx, _ string) error {
 
 func (b *mockBackend) ListUnspentWitnessFromDefaultAccount(minConfs, maxConfs int32) (
 	[]*lnwallet.Utxo, error) {
+
 	b.lock.Lock()
 	defer b.lock.Unlock()
 
@@ -149,4 +150,15 @@ func (b *mockBackend) mine() {
 
 func (b *mockBackend) isDone() bool {
 	return len(b.unconfirmedTxes) == 0
+}
+
+func (b *mockBackend) RemoveDescendants(*wire.MsgTx) error {
+	return nil
+}
+
+func (b *mockBackend) FetchTx(chainhash.Hash) (*wire.MsgTx, error) {
+	return nil, nil
+}
+
+func (b *mockBackend) CancelRebroadcast(tx chainhash.Hash) {
 }

@@ -2,7 +2,9 @@ package lookout
 
 import (
 	"errors"
+	"fmt"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/watchtower/blob"
 	"github.com/ltcsuite/lnd/watchtower/wtdb"
@@ -177,11 +179,11 @@ func (p *JusticeDescriptor) assembleJusticeTxn(txWeight int64,
 	// First, construct add the breached inputs to our justice transaction
 	// and compute the total amount that will be swept.
 	var totalAmt ltcutil.Amount
-	for _, input := range inputs {
-		totalAmt += ltcutil.Amount(input.txOut.Value)
+	for _, inp := range inputs {
+		totalAmt += ltcutil.Amount(inp.txOut.Value)
 		justiceTxn.AddTxIn(&wire.TxIn{
-			PreviousOutPoint: input.outPoint,
-			Sequence:         input.sequence,
+			PreviousOutPoint: inp.outPoint,
+			Sequence:         inp.sequence,
 		})
 	}
 
@@ -217,23 +219,30 @@ func (p *JusticeDescriptor) assembleJusticeTxn(txWeight int64,
 	}
 
 	// Attach each of the provided witnesses to the transaction.
-	for _, input := range inputs {
+	prevOutFetcher, err := prevOutFetcher(inputs)
+	if err != nil {
+		return nil, fmt.Errorf("error creating previous output "+
+			"fetcher: %v", err)
+	}
+	for _, inp := range inputs {
 		// Lookup the input's new post-sort position.
-		i := inputIndex[input.outPoint]
-		justiceTxn.TxIn[i].Witness = input.witness
+		i := inputIndex[inp.outPoint]
+		justiceTxn.TxIn[i].Witness = inp.witness
 
-		// Validate the reconstructed witnesses to ensure they are valid
-		// for the breached inputs.
+		// Validate the reconstructed witnesses to ensure they are
+		// valid for the breached inputs.
 		vm, err := txscript.NewEngine(
-			input.txOut.PkScript, justiceTxn, i,
+			inp.txOut.PkScript, justiceTxn, i,
 			txscript.StandardVerifyFlags,
-			nil, nil, input.txOut.Value,
+			nil, nil, inp.txOut.Value, prevOutFetcher,
 		)
 		if err != nil {
 			return nil, err
 		}
 		if err := vm.Execute(); err != nil {
-			return nil, err
+			log.Debugf("Failed to validate justice transaction: %s",
+				spew.Sdump(justiceTxn))
+			return nil, fmt.Errorf("error validating TX: %v", err)
 		}
 	}
 
@@ -294,6 +303,9 @@ func (p *JusticeDescriptor) CreateJusticeTxn() (*wire.MsgTx, error) {
 
 	sweepInputs = append(sweepInputs, toLocalInput)
 
+	log.Debugf("Found to local witness output=%#v, stack=%v",
+		toLocalInput.txOut, toLocalInput.witness)
+
 	// If the justice kit specifies that we have to sweep the to-remote
 	// output, we'll also try to assemble the output and add it to weight
 	// estimate if successful.
@@ -303,6 +315,9 @@ func (p *JusticeDescriptor) CreateJusticeTxn() (*wire.MsgTx, error) {
 			return nil, err
 		}
 		sweepInputs = append(sweepInputs, toRemoteInput)
+
+		log.Debugf("Found to remote witness output=%#v, stack=%v",
+			toRemoteInput.txOut, toRemoteInput.witness)
 
 		if p.JusticeKit.BlobType.IsAnchorChannel() {
 			weightEstimate.AddWitnessInput(input.ToRemoteConfirmedWitnessSize)
@@ -341,4 +356,21 @@ func buildWitness(witnessStack [][]byte, witnessScript []byte) [][]byte {
 	witness[lastIdx] = witnessScript
 
 	return witness
+}
+
+// prevOutFetcher returns a txscript.MultiPrevOutFetcher for the given set
+// of inputs.
+func prevOutFetcher(inputs []*breachedInput) (*txscript.MultiPrevOutFetcher,
+	error) {
+
+	fetcher := txscript.NewMultiPrevOutFetcher(nil)
+	for _, inp := range inputs {
+		if inp.txOut == nil {
+			return nil, fmt.Errorf("missing input utxo information")
+		}
+
+		fetcher.AddPrevOut(inp.outPoint, inp.txOut)
+	}
+
+	return fetcher, nil
 }

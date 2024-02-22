@@ -14,10 +14,6 @@ import (
 	"github.com/ltcsuite/ltcd/btcec/v2"
 )
 
-var (
-	loopBackAddrs = []string{"localhost", "127.0.0.1", "[::1]"}
-)
-
 // TCPResolver is a function signature that resolves an address on a given
 // network.
 type TCPResolver = func(network, addr string) (*net.TCPAddr, error)
@@ -112,14 +108,18 @@ func TLSListenOnAddress(addr net.Addr,
 }
 
 // IsLoopback returns true if an address describes a loopback interface.
-func IsLoopback(addr string) bool {
-	for _, loopback := range loopBackAddrs {
-		if strings.Contains(addr, loopback) {
-			return true
-		}
+func IsLoopback(host string) bool {
+	if strings.Contains(host, "localhost") {
+		return true
 	}
 
-	return false
+	rawHost, _, _ := net.SplitHostPort(host)
+	addr := net.ParseIP(rawHost)
+	if addr == nil {
+		return false
+	}
+
+	return addr.IsLoopback()
 }
 
 // isIPv6Host returns true if the host is IPV6 and false otherwise.
@@ -134,16 +134,27 @@ func isIPv6Host(host string) bool {
 	return v6Addr.To4() == nil
 }
 
+// isUnspecifiedHost returns true if the host IP is considered unspecified.
+func isUnspecifiedHost(host string) bool {
+	addr := net.ParseIP(host)
+	if addr == nil {
+		return false
+	}
+
+	return addr.IsUnspecified()
+}
+
 // IsUnix returns true if an address describes an Unix socket address.
 func IsUnix(addr net.Addr) bool {
 	return strings.HasPrefix(addr.Network(), "unix")
 }
 
 // IsPrivate returns true if the address is private. The definitions are,
-//   https://en.wikipedia.org/wiki/Link-local_address
-//   https://en.wikipedia.org/wiki/Multicast_address
-//   Local IPv4 addresses, https://tools.ietf.org/html/rfc1918
-//   Local IPv6 addresses, https://tools.ietf.org/html/rfc4193
+//
+//	https://en.wikipedia.org/wiki/Link-local_address
+//	https://en.wikipedia.org/wiki/Multicast_address
+//	Local IPv4 addresses, https://tools.ietf.org/html/rfc1918
+//	Local IPv6 addresses, https://tools.ietf.org/html/rfc4193
 func IsPrivate(addr net.Addr) bool {
 	switch addr := addr.(type) {
 	case *net.TCPAddr:
@@ -230,17 +241,18 @@ func ParseAddressString(strAddress string, defaultPort string,
 		}
 
 		// Otherwise, we'll attempt the resolve the host. The Tor
-		// resolver is unable to resolve local or IPv6 addresses, so
-		// we'll use the system resolver instead.
+		// resolver is unable to resolve local addresses,
+		// IPv6 addresses, or the all-interfaces address, so we'll use
+		// the system resolver instead for those.
 		if rawHost == "" || IsLoopback(rawHost) ||
-			isIPv6Host(rawHost) {
+			isIPv6Host(rawHost) || isUnspecifiedHost(rawHost) {
 
 			return net.ResolveTCPAddr("tcp", addrWithPort)
 		}
 
 		// If we've reached this point, then it's possible that this
 		// resolve returns an error if it isn't able to resolve the
-		// host. For eaxmple, local entries in /etc/hosts will fail to
+		// host. For example, local entries in /etc/hosts will fail to
 		// be resolved by Tor. In order to handle this case, we'll fall
 		// back to the normal system resolver if we fail with an
 		// identifiable error.
@@ -267,36 +279,9 @@ func ParseAddressString(strAddress string, defaultPort string,
 func ParseLNAddressString(strAddress string, defaultPort string,
 	tcpResolver TCPResolver) (*lnwire.NetAddress, error) {
 
-	// Split the address string around the @ sign.
-	parts := strings.Split(strAddress, "@")
-
-	// The string is malformed if there are not exactly two parts.
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid lightning address %s: "+
-			"must be of the form <pubkey-hex>@<addr>", strAddress)
-	}
-
-	// Now, take the first portion as the hex pubkey, and the latter as the
-	// address string.
-	parsedPubKey, parsedAddr := parts[0], parts[1]
-
-	// Decode the hex pubkey to get the raw compressed pubkey bytes.
-	pubKeyBytes, err := hex.DecodeString(parsedPubKey)
+	pubKey, parsedAddr, err := ParseLNAddressPubkey(strAddress)
 	if err != nil {
-		return nil, fmt.Errorf("invalid lightning address pubkey: %v", err)
-	}
-
-	// The compressed pubkey should have a length of exactly 33 bytes.
-	if len(pubKeyBytes) != 33 {
-		return nil, fmt.Errorf("invalid lightning address pubkey: "+
-			"length must be 33 bytes, found %d", len(pubKeyBytes))
-	}
-
-	// Parse the pubkey bytes to verify that it corresponds to valid public
-	// key on the secp256k1 curve.
-	pubKey, err := btcec.ParsePubKey(pubKeyBytes)
-	if err != nil {
-		return nil, fmt.Errorf("invalid lightning address pubkey: %v", err)
+		return nil, err
 	}
 
 	// Finally, parse the address string using our generic address parser.
@@ -309,6 +294,45 @@ func ParseLNAddressString(strAddress string, defaultPort string,
 		IdentityKey: pubKey,
 		Address:     addr,
 	}, nil
+}
+
+// ParseLNAddressPubkey converts a string of the form <pubkey>@<addr> into two
+// pieces: the pubkey bytes and an addr string. It validates that the pubkey
+// is of a valid form.
+func ParseLNAddressPubkey(strAddress string) (*btcec.PublicKey, string, error) {
+	// Split the address string around the @ sign.
+	parts := strings.Split(strAddress, "@")
+
+	// The string is malformed if there are not exactly two parts.
+	if len(parts) != 2 {
+		return nil, "", fmt.Errorf("invalid lightning address %s: "+
+			"must be of the form <pubkey-hex>@<addr>", strAddress)
+	}
+
+	// Now, take the first portion as the hex pubkey, and the latter as the
+	// address string.
+	parsedPubKey, parsedAddr := parts[0], parts[1]
+
+	// Decode the hex pubkey to get the raw compressed pubkey bytes.
+	pubKeyBytes, err := hex.DecodeString(parsedPubKey)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid lightning address pubkey: %v", err)
+	}
+
+	// The compressed pubkey should have a length of exactly 33 bytes.
+	if len(pubKeyBytes) != 33 {
+		return nil, "", fmt.Errorf("invalid lightning address pubkey: "+
+			"length must be 33 bytes, found %d", len(pubKeyBytes))
+	}
+
+	// Parse the pubkey bytes to verify that it corresponds to valid public
+	// key on the secp256k1 curve.
+	pubKey, err := btcec.ParsePubKey(pubKeyBytes)
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid lightning address pubkey: %v", err)
+	}
+
+	return pubKey, parsedAddr, nil
 }
 
 // verifyPort makes sure that an address string has both a host and a port. If

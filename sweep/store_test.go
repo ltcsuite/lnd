@@ -3,9 +3,10 @@ package sweep
 import (
 	"testing"
 
+	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
-	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/stretchr/testify/require"
 )
 
 // TestStore asserts that the store persists the presented data to disk and is
@@ -14,14 +15,9 @@ func TestStore(t *testing.T) {
 	t.Run("bolt", func(t *testing.T) {
 
 		// Create new store.
-		cdb, cleanUp, err := channeldb.MakeTestDB()
+		cdb, err := channeldb.MakeTestDB(t)
 		if err != nil {
 			t.Fatalf("unable to open channel db: %v", err)
-		}
-		defer cleanUp()
-
-		if err != nil {
-			t.Fatal(err)
 		}
 
 		testStore(t, func() (SweeperStore, error) {
@@ -44,15 +40,6 @@ func testStore(t *testing.T, createStore func() (SweeperStore, error)) {
 	store, err := createStore()
 	if err != nil {
 		t.Fatal(err)
-	}
-
-	// Initially we expect the store not to have a last published tx.
-	retrievedTx, err := store.GetLastPublishedTx()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if retrievedTx != nil {
-		t.Fatal("expected no last published tx")
 	}
 
 	// Notify publication of tx1
@@ -87,16 +74,6 @@ func testStore(t *testing.T, createStore func() (SweeperStore, error)) {
 		t.Fatal(err)
 	}
 
-	// Assert that last published tx2 is present.
-	retrievedTx, err = store.GetLastPublishedTx()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if tx2.TxHash() != retrievedTx.TxHash() {
-		t.Fatal("txes do not match")
-	}
-
 	// Assert that both txes are recognized as our own.
 	ours, err := store.IsOurTx(tx1.TxHash())
 	if err != nil {
@@ -125,9 +102,7 @@ func testStore(t *testing.T, createStore func() (SweeperStore, error)) {
 	}
 
 	txns, err := store.ListSweeps()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	require.NoError(t, err, "unexpected error")
 
 	// Create a map containing the sweeps we expect to be returned by list
 	// sweeps.

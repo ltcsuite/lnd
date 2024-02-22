@@ -1,7 +1,6 @@
 package chanfunding
 
 import (
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"sync"
@@ -178,23 +177,26 @@ func (i *PsbtIntent) FundingParams() (ltcutil.Address, int64, *psbt.Packet,
 	// The funding output needs to be known already at this point, which
 	// means we need to have the local and remote multisig keys bound
 	// already.
-	witnessScript, out, err := i.FundingOutput()
+	_, out, err := i.FundingOutput()
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("unable to create funding "+
 			"output: %v", err)
 	}
-	witnessScriptHash := sha256.Sum256(witnessScript)
 
-	// Encode the address in the human readable bech32 format.
-	addr, err := ltcutil.NewAddressWitnessScriptHash(
-		witnessScriptHash[:], i.netParams,
-	)
+	script, err := txscript.ParsePkScript(out.PkScript)
+	if err != nil {
+		return nil, 0, nil, fmt.Errorf("unable to parse funding "+
+			"output script: %w", err)
+	}
+
+	// Encode the address in the human-readable bech32 format.
+	addr, err := script.Address(i.netParams)
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("unable to encode address: %v",
 			err)
 	}
 
-	// We'll also encode the address/amount in a machine readable raw PSBT
+	// We'll also encode the address/amount in a machine-readable raw PSBT
 	// format. If the user supplied a base PSBT, we'll add the output to
 	// that one, otherwise we'll create a new one.
 	packet := i.BasePsbt
@@ -428,7 +430,6 @@ func (i *PsbtIntent) Inputs() []wire.OutPoint {
 	var inputs []wire.OutPoint
 
 	switch i.State {
-
 	// We return the inputs to the pending psbt.
 	case PsbtVerified:
 		for _, in := range i.PendingPsbt.UnsignedTx.TxIn {
@@ -453,7 +454,6 @@ func (i *PsbtIntent) Inputs() []wire.OutPoint {
 // know about. These are only known after the PSBT has been verified.
 func (i *PsbtIntent) Outputs() []*wire.TxOut {
 	switch i.State {
-
 	// We return the outputs of the pending psbt.
 	case PsbtVerified:
 		return i.PendingPsbt.UnsignedTx.TxOut
@@ -516,15 +516,24 @@ func NewPsbtAssembler(fundingAmt ltcutil.Amount, basePsbt *psbt.Packet,
 //
 // NOTE: This method satisfies the chanfunding.Assembler interface.
 func (p *PsbtAssembler) ProvisionChannel(req *Request) (Intent, error) {
-	// We'll exit out if this field is set as the funding transaction will
+	// We'll exit out if SubtractFees is set as the funding transaction will
 	// be assembled externally, so we don't influence coin selection.
 	if req.SubtractFees {
 		return nil, fmt.Errorf("SubtractFees not supported for PSBT")
 	}
 
+	// We'll exit out if FundUpToMaxAmt or MinFundAmt is set as the funding
+	// transaction will be assembled externally, so we don't influence coin
+	// selection.
+	if req.FundUpToMaxAmt != 0 || req.MinFundAmt != 0 {
+		return nil, fmt.Errorf("FundUpToMaxAmt and MinFundAmt not " +
+			"supported for PSBT")
+	}
+
 	intent := &PsbtIntent{
 		ShimIntent: ShimIntent{
 			localFundingAmt: p.fundingAmt,
+			musig2:          req.Musig2,
 		},
 		State:         PsbtShimRegistered,
 		BasePsbt:      p.basePsbt,
@@ -590,8 +599,8 @@ func verifyAllInputsSegWit(txIns []*wire.TxIn, ins []psbt.PInput) error {
 			txIn := txIns[idx]
 			txOut := utxo.TxOut[txIn.PreviousOutPoint.Index]
 
-			if !isSegWitScript(txOut.PkScript) &&
-				!isSegWitScript(in.RedeemScript) {
+			if !txscript.IsWitnessProgram(txOut.PkScript) &&
+				!txscript.IsWitnessProgram(in.RedeemScript) {
 
 				return fmt.Errorf("input %d is non-SegWit "+
 					"spend or missing redeem script", idx)
@@ -606,20 +615,4 @@ func verifyAllInputsSegWit(txIns []*wire.TxIn, ins []psbt.PInput) error {
 	}
 
 	return nil
-}
-
-// isSegWitScript returns true if the given pkScript can be parsed successfully
-// as a SegWit v0 spend.
-func isSegWitScript(pkScript []byte) bool {
-	if len(pkScript) == 0 {
-		return false
-	}
-
-	parsed, err := txscript.ParsePkScript(pkScript)
-	if err != nil {
-		return false
-	}
-
-	return parsed.Class() == txscript.WitnessV0PubKeyHashTy ||
-		parsed.Class() == txscript.WitnessV0ScriptHashTy
 }

@@ -1,5 +1,5 @@
 DEV_TAGS = dev
-RPC_TAGS = autopilotrpc chainrpc invoicesrpc routerrpc signrpc verrpc walletrpc watchtowerrpc wtclientrpc
+RPC_TAGS = autopilotrpc chainrpc invoicesrpc neutrinorpc peersrpc routerrpc signrpc verrpc walletrpc watchtowerrpc wtclientrpc
 LOG_TAGS =
 TEST_FLAGS =
 ITEST_FLAGS = 
@@ -63,6 +63,10 @@ ifeq ($(dbbackend),postgres)
 DEV_TAGS += kvdb_postgres
 endif
 
+ifeq ($(dbbackend),sqlite)
+DEV_TAGS += kvdb_sqlite
+endif
+
 ifneq ($(tags),)
 DEV_TAGS += ${tags}
 endif
@@ -76,11 +80,11 @@ LOG_TAGS := nolog
 endif
 
 # If a timeout was requested, construct initialize the proper flag for the go
-# test command. If not, we set 60m (up from the default 10m).
+# test command. If not, we set 180m (up from the default 10m).
 ifneq ($(timeout),)
 TEST_FLAGS += -test.timeout=$(timeout)
 else
-TEST_FLAGS += -test.timeout=60m
+TEST_FLAGS += -test.timeout=180m
 endif
 
 GOLIST := go list -tags="$(DEV_TAGS)" -deps $(PKG)/... | grep '$(PKG)'| grep -v '/vendor/'
@@ -96,19 +100,26 @@ ifeq ($(UNIT_TARGETED), yes)
 UNIT := $(GOTEST) -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS) $(UNITPKG)
 UNIT_DEBUG := $(GOTEST) -v -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS) $(UNITPKG)
 UNIT_RACE := $(GOTEST) -tags="$(DEV_TAGS) $(LOG_TAGS) lowscrypt" $(TEST_FLAGS) -race $(UNITPKG)
+# NONE is a special value which selects no other tests but only executes the benchmark tests here.
+UNIT_BENCH := $(GOTEST) -tags="$(DEV_TAGS) $(LOG_TAGS)" -test.bench=. -test.run=NONE $(UNITPKG)
 endif
 
 ifeq ($(UNIT_TARGETED), no)
 UNIT := $(GOLIST) | $(XARGS) env $(GOTEST) -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS)
 UNIT_DEBUG := $(GOLIST) | $(XARGS) env $(GOTEST) -v -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS)
 UNIT_RACE := $(UNIT) -race
+# NONE is a special value which selects no other tests but only executes the benchmark tests here.
+UNIT_BENCH := $(GOLIST) | $(XARGS) env $(GOTEST) -tags="$(DEV_TAGS) $(LOG_TAGS)" -test.bench=. -test.run=NONE
 endif
 
 
-# Default to btcd backend if not set.
+# Default to ltcd backend if not set.
 ifeq ($(backend),)
-backend = btcd
+backend = ltcd
 endif
 
 # Construct the integration test command with the added build flags.
-ITEST_TAGS := $(DEV_TAGS) $(RPC_TAGS) rpctest $(backend)
+ITEST_TAGS := $(DEV_TAGS) $(RPC_TAGS) integration $(backend)
+
+# Construct the coverage test command with the added build flags.
+GOACC := $(GOACC_BIN) $(COVER_PKG) -- -tags="$(DEV_TAGS) $(LOG_TAGS)" $(TEST_FLAGS)

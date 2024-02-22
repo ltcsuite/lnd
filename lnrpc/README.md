@@ -148,7 +148,7 @@ description):
 ## Installation and Updating
 
 ```shell
-⛰  go get -u github.com/ltcsuite/lnd/lnrpc
+$  go get -u github.com/ltcsuite/lnd/lnrpc
 ```
 
 ## Generate protobuf definitions

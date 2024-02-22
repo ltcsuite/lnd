@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ltcsuite/lnd/channeldb/models"
 	"github.com/ltcsuite/lnd/clock"
 	"github.com/ltcsuite/lnd/feature"
+	invpkg "github.com/ltcsuite/lnd/invoices"
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/record"
@@ -30,7 +32,7 @@ var (
 	testNow = time.Unix(1, 0)
 )
 
-func randInvoice(value lnwire.MilliSatoshi) (*Invoice, error) {
+func randInvoice(value lnwire.MilliSatoshi) (*invpkg.Invoice, error) {
 	var (
 		pre     lntypes.Preimage
 		payAddr [32]byte
@@ -42,24 +44,24 @@ func randInvoice(value lnwire.MilliSatoshi) (*Invoice, error) {
 		return nil, err
 	}
 
-	i := &Invoice{
+	i := &invpkg.Invoice{
 		CreationDate: testNow,
-		Terms: ContractTerm{
+		Terms: invpkg.ContractTerm{
 			Expiry:          4000,
 			PaymentPreimage: &pre,
 			PaymentAddr:     payAddr,
 			Value:           value,
 			Features:        emptyFeatures,
 		},
-		Htlcs:    map[CircuitKey]*InvoiceHTLC{},
-		AMPState: map[SetID]InvoiceStateAMP{},
+		Htlcs:    map[models.CircuitKey]*invpkg.InvoiceHTLC{},
+		AMPState: map[invpkg.SetID]invpkg.InvoiceStateAMP{},
 	}
 	i.Memo = []byte("memo")
 
 	// Create a random byte slice of MaxPaymentRequestSize bytes to be used
 	// as a dummy paymentrequest, and  determine if it should be set based
 	// on one of the random bytes.
-	var r [MaxPaymentRequestSize]byte
+	var r [invpkg.MaxPaymentRequestSize]byte
 	if _, err := rand.Read(r[:]); err != nil {
 		return nil, err
 	}
@@ -73,15 +75,15 @@ func randInvoice(value lnwire.MilliSatoshi) (*Invoice, error) {
 }
 
 // settleTestInvoice settles a test invoice.
-func settleTestInvoice(invoice *Invoice, settleIndex uint64) {
+func settleTestInvoice(invoice *invpkg.Invoice, settleIndex uint64) {
 	invoice.SettleDate = testNow
 	invoice.AmtPaid = invoice.Terms.Value
-	invoice.State = ContractSettled
-	invoice.Htlcs[CircuitKey{}] = &InvoiceHTLC{
+	invoice.State = invpkg.ContractSettled
+	invoice.Htlcs[models.CircuitKey{}] = &invpkg.InvoiceHTLC{
 		Amt:           invoice.Terms.Value,
 		AcceptTime:    testNow,
 		ResolveTime:   testNow,
-		State:         HtlcStateSettled,
+		State:         invpkg.HtlcStateSettled,
 		CustomRecords: make(record.CustomSet),
 	}
 	invoice.SettleIndex = settleIndex
@@ -90,23 +92,23 @@ func settleTestInvoice(invoice *Invoice, settleIndex uint64) {
 // Tests that pending invoices are those which are either in ContractOpen or
 // in ContractAccepted state.
 func TestInvoiceIsPending(t *testing.T) {
-	contractStates := []ContractState{
-		ContractOpen, ContractSettled, ContractCanceled, ContractAccepted,
+	contractStates := []invpkg.ContractState{
+		invpkg.ContractOpen, invpkg.ContractSettled,
+		invpkg.ContractCanceled, invpkg.ContractAccepted,
 	}
 
 	for _, state := range contractStates {
-		invoice := Invoice{
+		invoice := invpkg.Invoice{
 			State: state,
 		}
 
-		// We expect that an invoice is pending if it's either in ContractOpen
-		// or ContractAccepted state.
-		pending := (state == ContractOpen || state == ContractAccepted)
+		// We expect that an invoice is pending if it's either in
+		// ContractOpen or ContractAccepted state.
+		open := invpkg.ContractOpen
+		accepted := invpkg.ContractAccepted
+		pending := (state == open || state == accepted)
 
-		if invoice.IsPending() != pending {
-			t.Fatalf("expected pending: %v, got: %v, invoice: %v",
-				pending, invoice.IsPending(), invoice)
-		}
+		require.Equal(t, pending, invoice.IsPending())
 	}
 }
 
@@ -149,18 +151,13 @@ func TestInvoiceWorkflow(t *testing.T) {
 }
 
 func testInvoiceWorkflow(t *testing.T, test invWorkflowTest) {
-	db, cleanUp, err := MakeTestDB()
-	defer cleanUp()
-	if err != nil {
-		t.Fatalf("unable to make test db: %v", err)
-	}
+	db, err := MakeTestDB(t)
+	require.NoError(t, err, "unable to make test db")
 
 	// Create a fake invoice which we'll use several times in the tests
 	// below.
 	fakeInvoice, err := randInvoice(10000)
-	if err != nil {
-		t.Fatalf("unable to create invoice: %v", err)
-	}
+	require.NoError(t, err, "unable to create invoice")
 	invPayHash := fakeInvoice.Terms.PaymentPreimage.Hash()
 
 	// Select the payment hash and payment address we will use to lookup or
@@ -168,16 +165,16 @@ func testInvoiceWorkflow(t *testing.T, test invWorkflowTest) {
 	var (
 		payHash lntypes.Hash
 		payAddr *[32]byte
-		ref     InvoiceRef
+		ref     invpkg.InvoiceRef
 	)
 	switch {
 	case test.queryPayHash && test.queryPayAddr:
 		payHash = invPayHash
 		payAddr = &fakeInvoice.Terms.PaymentAddr
-		ref = InvoiceRefByHashAndAddr(payHash, *payAddr)
+		ref = invpkg.InvoiceRefByHashAndAddr(payHash, *payAddr)
 	case test.queryPayHash:
 		payHash = invPayHash
-		ref = InvoiceRefByHash(payHash)
+		ref = invpkg.InvoiceRefByHash(payHash)
 	}
 
 	// Add the invoice to the database, this should succeed as there aren't
@@ -192,9 +189,7 @@ func testInvoiceWorkflow(t *testing.T, test invWorkflowTest) {
 	// identical to the one created above.
 	dbInvoice, err := db.LookupInvoice(ref)
 	if !test.queryPayAddr && !test.queryPayHash {
-		if err != ErrInvoiceNotFound {
-			t.Fatalf("invoice should not exist: %v", err)
-		}
+		require.ErrorIs(t, err, invpkg.ErrInvoiceNotFound)
 		return
 	}
 
@@ -216,14 +211,10 @@ func testInvoiceWorkflow(t *testing.T, test invWorkflowTest) {
 	// SettledDate
 	payAmt := fakeInvoice.Terms.Value * 2
 	_, err = db.UpdateInvoice(ref, nil, getUpdateInvoice(payAmt))
-	if err != nil {
-		t.Fatalf("unable to settle invoice: %v", err)
-	}
+	require.NoError(t, err, "unable to settle invoice")
 	dbInvoice2, err := db.LookupInvoice(ref)
-	if err != nil {
-		t.Fatalf("unable to fetch invoice: %v", err)
-	}
-	if dbInvoice2.State != ContractSettled {
+	require.NoError(t, err, "unable to fetch invoice")
+	if dbInvoice2.State != invpkg.ContractSettled {
 		t.Fatalf("invoice should now be settled but isn't")
 	}
 	if dbInvoice2.SettleDate.IsZero() {
@@ -243,24 +234,20 @@ func testInvoiceWorkflow(t *testing.T, test invWorkflowTest) {
 
 	// Attempt to insert generated above again, this should fail as
 	// duplicates are rejected by the processing logic.
-	if _, err := db.AddInvoice(fakeInvoice, payHash); err != ErrDuplicateInvoice {
-		t.Fatalf("invoice insertion should fail due to duplication, "+
-			"instead %v", err)
-	}
+	_, err = db.AddInvoice(fakeInvoice, payHash)
+	require.ErrorIs(t, err, invpkg.ErrDuplicateInvoice)
 
 	// Attempt to look up a non-existent invoice, this should also fail but
 	// with a "not found" error.
 	var fakeHash [32]byte
-	fakeRef := InvoiceRefByHash(fakeHash)
+	fakeRef := invpkg.InvoiceRefByHash(fakeHash)
 	_, err = db.LookupInvoice(fakeRef)
-	if err != ErrInvoiceNotFound {
-		t.Fatalf("lookup should have failed, instead %v", err)
-	}
+	require.ErrorIs(t, err, invpkg.ErrInvoiceNotFound)
 
 	// Add 10 random invoices.
 	const numInvoices = 10
 	amt := lnwire.NewMSatFromSatoshis(1000)
-	invoices := make([]*Invoice, numInvoices+1)
+	invoices := make([]*invpkg.Invoice, numInvoices+1)
 	invoices[0] = &dbInvoice2
 	for i := 1; i < len(invoices); i++ {
 		invoice, err := randInvoice(amt)
@@ -277,16 +264,14 @@ func testInvoiceWorkflow(t *testing.T, test invWorkflowTest) {
 	}
 
 	// Perform a scan to collect all the active invoices.
-	query := InvoiceQuery{
+	query := invpkg.InvoiceQuery{
 		IndexOffset:    0,
 		NumMaxInvoices: math.MaxUint64,
 		PendingOnly:    false,
 	}
 
 	response, err := db.QueryInvoices(query)
-	if err != nil {
-		t.Fatalf("invoice query failed: %v", err)
-	}
+	require.NoError(t, err, "invoice query failed")
 
 	// The retrieve list of invoices should be identical as since we're
 	// using big endian, the invoices should be retrieved in ascending
@@ -303,8 +288,7 @@ func testInvoiceWorkflow(t *testing.T, test invWorkflowTest) {
 // TestAddDuplicatePayAddr asserts that the payment addresses of inserted
 // invoices are unique.
 func TestAddDuplicatePayAddr(t *testing.T) {
-	db, cleanUp, err := MakeTestDB()
-	defer cleanUp()
+	db, err := MakeTestDB(t)
 	require.NoError(t, err)
 
 	// Create two invoices with the same payment addr.
@@ -323,25 +307,24 @@ func TestAddDuplicatePayAddr(t *testing.T) {
 	// Second insert should fail with duplicate payment addr.
 	inv2Hash := invoice2.Terms.PaymentPreimage.Hash()
 	_, err = db.AddInvoice(invoice2, inv2Hash)
-	require.Error(t, err, ErrDuplicatePayAddr)
+	require.Error(t, err, invpkg.ErrDuplicatePayAddr)
 }
 
 // TestAddDuplicateKeysendPayAddr asserts that we permit duplicate payment
 // addresses to be inserted if they are blank to support JIT legacy keysend
 // invoices.
 func TestAddDuplicateKeysendPayAddr(t *testing.T) {
-	db, cleanUp, err := MakeTestDB()
-	defer cleanUp()
+	db, err := MakeTestDB(t)
 	require.NoError(t, err)
 
 	// Create two invoices with the same _blank_ payment addr.
 	invoice1, err := randInvoice(1000)
 	require.NoError(t, err)
-	invoice1.Terms.PaymentAddr = BlankPayAddr
+	invoice1.Terms.PaymentAddr = invpkg.BlankPayAddr
 
 	invoice2, err := randInvoice(20000)
 	require.NoError(t, err)
-	invoice2.Terms.PaymentAddr = BlankPayAddr
+	invoice2.Terms.PaymentAddr = invpkg.BlankPayAddr
 
 	// Inserting both should succeed without a duplicate payment address
 	// failure.
@@ -357,12 +340,12 @@ func TestAddDuplicateKeysendPayAddr(t *testing.T) {
 	// the lookup will fail if the hash and addr point to different
 	// invoices, so if both succeed we can be assured they aren't included
 	// in the payment address index.
-	ref1 := InvoiceRefByHashAndAddr(inv1Hash, BlankPayAddr)
+	ref1 := invpkg.InvoiceRefByHashAndAddr(inv1Hash, invpkg.BlankPayAddr)
 	dbInv1, err := db.LookupInvoice(ref1)
 	require.NoError(t, err)
 	require.Equal(t, invoice1, &dbInv1)
 
-	ref2 := InvoiceRefByHashAndAddr(inv2Hash, BlankPayAddr)
+	ref2 := invpkg.InvoiceRefByHashAndAddr(inv2Hash, invpkg.BlankPayAddr)
 	dbInv2, err := db.LookupInvoice(ref2)
 	require.NoError(t, err)
 	require.Equal(t, invoice2, &dbInv2)
@@ -373,8 +356,7 @@ func TestAddDuplicateKeysendPayAddr(t *testing.T) {
 // ensures that the HTLC's payment hash always matches the payment hash in the
 // returned invoice.
 func TestFailInvoiceLookupMPPPayAddrOnly(t *testing.T) {
-	db, cleanUp, err := MakeTestDB()
-	defer cleanUp()
+	db, err := MakeTestDB(t)
 	require.NoError(t, err)
 
 	// Create and insert a random invoice.
@@ -393,16 +375,15 @@ func TestFailInvoiceLookupMPPPayAddrOnly(t *testing.T) {
 	// lookup should fail since we require the payment hash to match for
 	// legacy/MPP invoices, as this guarantees that the preimage is valid
 	// for the given HTLC.
-	ref := InvoiceRefByHashAndAddr(payHash, payAddr)
+	ref := invpkg.InvoiceRefByHashAndAddr(payHash, payAddr)
 	_, err = db.LookupInvoice(ref)
-	require.Equal(t, ErrInvoiceNotFound, err)
+	require.Equal(t, invpkg.ErrInvoiceNotFound, err)
 }
 
 // TestInvRefEquivocation asserts that retrieving or updating an invoice using
 // an equivocating InvoiceRef results in ErrInvRefEquivocation.
 func TestInvRefEquivocation(t *testing.T) {
-	db, cleanUp, err := MakeTestDB()
-	defer cleanUp()
+	db, err := MakeTestDB(t)
 	require.NoError(t, err)
 
 	// Add two random invoices.
@@ -423,17 +404,19 @@ func TestInvRefEquivocation(t *testing.T) {
 	// Now, query using invoice 1's payment address, but invoice 2's payment
 	// hash. We expect an error since the invref points to multiple
 	// invoices.
-	ref := InvoiceRefByHashAndAddr(inv2Hash, invoice1.Terms.PaymentAddr)
+	ref := invpkg.InvoiceRefByHashAndAddr(
+		inv2Hash, invoice1.Terms.PaymentAddr,
+	)
 	_, err = db.LookupInvoice(ref)
-	require.Error(t, err, ErrInvRefEquivocation)
+	require.Error(t, err, invpkg.ErrInvRefEquivocation)
 
 	// The same error should be returned when updating an equivocating
 	// reference.
-	nop := func(_ *Invoice) (*InvoiceUpdateDesc, error) {
+	nop := func(_ *invpkg.Invoice) (*invpkg.InvoiceUpdateDesc, error) {
 		return nil, nil
 	}
 	_, err = db.UpdateInvoice(ref, nil, nop)
-	require.Error(t, err, ErrInvRefEquivocation)
+	require.Error(t, err, invpkg.ErrInvRefEquivocation)
 }
 
 // TestInvoiceCancelSingleHtlc tests that a single htlc can be canceled on the
@@ -441,18 +424,15 @@ func TestInvRefEquivocation(t *testing.T) {
 func TestInvoiceCancelSingleHtlc(t *testing.T) {
 	t.Parallel()
 
-	db, cleanUp, err := MakeTestDB()
-	defer cleanUp()
-	if err != nil {
-		t.Fatalf("unable to make test db: %v", err)
-	}
+	db, err := MakeTestDB(t)
+	require.NoError(t, err, "unable to make test db")
 
 	preimage := lntypes.Preimage{1}
 	paymentHash := preimage.Hash()
 
-	testInvoice := &Invoice{
-		Htlcs: map[CircuitKey]*InvoiceHTLC{},
-		Terms: ContractTerm{
+	testInvoice := &invpkg.Invoice{
+		Htlcs: map[models.CircuitKey]*invpkg.InvoiceHTLC{},
+		Terms: invpkg.ContractTerm{
 			Value:           lnwire.NewMSatFromSatoshis(10000),
 			Features:        emptyFeatures,
 			PaymentPreimage: &preimage,
@@ -464,47 +444,56 @@ func TestInvoiceCancelSingleHtlc(t *testing.T) {
 	}
 
 	// Accept an htlc on this invoice.
-	key := CircuitKey{ChanID: lnwire.NewShortChanIDFromInt(1), HtlcID: 4}
-	htlc := HtlcAcceptDesc{
+	key := models.CircuitKey{
+		ChanID: lnwire.NewShortChanIDFromInt(1),
+		HtlcID: 4,
+	}
+	htlc := invpkg.HtlcAcceptDesc{
 		Amt:           500,
 		CustomRecords: make(record.CustomSet),
 	}
 
-	ref := InvoiceRefByHash(paymentHash)
-	invoice, err := db.UpdateInvoice(ref, nil,
-		func(invoice *Invoice) (*InvoiceUpdateDesc, error) {
-			return &InvoiceUpdateDesc{
-				AddHtlcs: map[CircuitKey]*HtlcAcceptDesc{
-					key: &htlc,
-				},
-			}, nil
-		})
-	if err != nil {
-		t.Fatalf("unable to add invoice htlc: %v", err)
+	callback := func(
+		invoice *invpkg.Invoice) (*invpkg.InvoiceUpdateDesc, error) {
+
+		htlcs := map[models.CircuitKey]*invpkg.HtlcAcceptDesc{
+			key: &htlc,
+		}
+
+		return &invpkg.InvoiceUpdateDesc{
+			UpdateType: invpkg.AddHTLCsUpdate,
+			AddHtlcs:   htlcs,
+		}, nil
 	}
+
+	ref := invpkg.InvoiceRefByHash(paymentHash)
+	invoice, err := db.UpdateInvoice(ref, nil, callback)
+	require.NoError(t, err, "unable to add invoice htlc")
 	if len(invoice.Htlcs) != 1 {
 		t.Fatalf("expected the htlc to be added")
 	}
-	if invoice.Htlcs[key].State != HtlcStateAccepted {
+	if invoice.Htlcs[key].State != invpkg.HtlcStateAccepted {
 		t.Fatalf("expected htlc in state accepted")
 	}
 
-	// Cancel the htlc again.
-	invoice, err = db.UpdateInvoice(ref, nil,
-		func(invoice *Invoice) (*InvoiceUpdateDesc, error) {
-			return &InvoiceUpdateDesc{
-				CancelHtlcs: map[CircuitKey]struct{}{
-					key: {},
-				},
-			}, nil
-		})
-	if err != nil {
-		t.Fatalf("unable to cancel htlc: %v", err)
+	callback = func(
+		invoice *invpkg.Invoice) (*invpkg.InvoiceUpdateDesc, error) {
+
+		return &invpkg.InvoiceUpdateDesc{
+			UpdateType: invpkg.CancelHTLCsUpdate,
+			CancelHtlcs: map[models.CircuitKey]struct{}{
+				key: {},
+			},
+		}, nil
 	}
+
+	// Cancel the htlc again.
+	invoice, err = db.UpdateInvoice(ref, nil, callback)
+	require.NoError(t, err, "unable to cancel htlc")
 	if len(invoice.Htlcs) != 1 {
 		t.Fatalf("expected the htlc to be present")
 	}
-	if invoice.Htlcs[key].State != HtlcStateCanceled {
+	if invoice.Htlcs[key].State != invpkg.HtlcStateCanceled {
 		t.Fatalf("expected htlc in state canceled")
 	}
 }
@@ -515,8 +504,7 @@ func TestInvoiceCancelSingleHtlc(t *testing.T) {
 func TestInvoiceCancelSingleHtlcAMP(t *testing.T) {
 	t.Parallel()
 
-	db, cleanUp, err := MakeTestDB(OptionClock(testClock))
-	defer cleanUp()
+	db, err := MakeTestDB(t, OptionClock(testClock))
 	require.NoError(t, err, "unable to make test db: %v", err)
 
 	// We'll start out by creating an invoice and writing it to the DB.
@@ -537,21 +525,26 @@ func TestInvoiceCancelSingleHtlcAMP(t *testing.T) {
 	setID1 := &[32]byte{1}
 	setID2 := &[32]byte{2}
 
-	ref := InvoiceRefByHashAndAddr(payHash, invoice.Terms.PaymentAddr)
+	ref := invpkg.InvoiceRefByHashAndAddr(
+		payHash, invoice.Terms.PaymentAddr,
+	)
 
 	// The first set ID with a single HTLC added.
 	_, err = db.UpdateInvoice(
-		ref, (*SetID)(setID1), updateAcceptAMPHtlc(0, amt, setID1, true),
+		ref, (*invpkg.SetID)(setID1),
+		updateAcceptAMPHtlc(0, amt, setID1, true),
 	)
 	require.Nil(t, err)
 
 	// The second set ID with two HTLCs added.
 	_, err = db.UpdateInvoice(
-		ref, (*SetID)(setID2), updateAcceptAMPHtlc(1, amt, setID2, true),
+		ref, (*invpkg.SetID)(setID2),
+		updateAcceptAMPHtlc(1, amt, setID2, true),
 	)
 	require.Nil(t, err)
 	dbInvoice, err := db.UpdateInvoice(
-		ref, (*SetID)(setID2), updateAcceptAMPHtlc(2, amt, setID2, true),
+		ref, (*invpkg.SetID)(setID2),
+		updateAcceptAMPHtlc(2, amt, setID2, true),
 	)
 	require.Nil(t, err)
 
@@ -559,21 +552,23 @@ func TestInvoiceCancelSingleHtlcAMP(t *testing.T) {
 	// paid.
 	require.Equal(t, dbInvoice.AmtPaid, amt*3)
 
+	callback := func(
+		invoice *invpkg.Invoice) (*invpkg.InvoiceUpdateDesc, error) {
+
+		return &invpkg.InvoiceUpdateDesc{
+			UpdateType: invpkg.CancelHTLCsUpdate,
+			CancelHtlcs: map[models.CircuitKey]struct{}{
+				{HtlcID: 0}: {},
+			},
+			SetID: (*invpkg.SetID)(setID1),
+		}, nil
+	}
+
 	// Now we'll cancel a single invoice, and assert that the amount paid
 	// is decremented, and the state for that HTLC set reflects that is
 	// been cancelled.
-	_, err = db.UpdateInvoice(ref, (*SetID)(setID1),
-		func(invoice *Invoice) (*InvoiceUpdateDesc, error) {
-			return &InvoiceUpdateDesc{
-				CancelHtlcs: map[CircuitKey]struct{}{
-					{HtlcID: 0}: {},
-				},
-				SetID: (*SetID)(setID1),
-			}, nil
-		})
-	if err != nil {
-		t.Fatalf("unable to cancel htlc: %v", err)
-	}
+	_, err = db.UpdateInvoice(ref, (*invpkg.SetID)(setID1), callback)
+	require.NoError(t, err, "unable to cancel htlc")
 
 	freshInvoice, err := db.LookupInvoice(ref)
 	require.Nil(t, err)
@@ -584,78 +579,86 @@ func TestInvoiceCancelSingleHtlcAMP(t *testing.T) {
 
 	// The HTLC and AMP state should also show that only one HTLC set is
 	// left.
-	invoice.State = ContractOpen
+	invoice.State = invpkg.ContractOpen
 	invoice.AmtPaid = 2 * amt
 	invoice.SettleDate = dbInvoice.SettleDate
-	invoice.Htlcs = map[CircuitKey]*InvoiceHTLC{
-		{HtlcID: 0}: makeAMPInvoiceHTLC(amt, *setID1, payHash, &preimage),
-		{HtlcID: 1}: makeAMPInvoiceHTLC(amt, *setID2, payHash, &preimage),
-		{HtlcID: 2}: makeAMPInvoiceHTLC(amt, *setID2, payHash, &preimage),
+
+	htlc0 := models.CircuitKey{HtlcID: 0}
+	htlc1 := models.CircuitKey{HtlcID: 1}
+	htlc2 := models.CircuitKey{HtlcID: 2}
+
+	invoice.Htlcs = map[models.CircuitKey]*invpkg.InvoiceHTLC{
+		htlc0: makeAMPInvoiceHTLC(amt, *setID1, payHash, &preimage),
+		htlc1: makeAMPInvoiceHTLC(amt, *setID2, payHash, &preimage),
+		htlc2: makeAMPInvoiceHTLC(amt, *setID2, payHash, &preimage),
 	}
-	invoice.AMPState[*setID1] = InvoiceStateAMP{
-		State: HtlcStateCanceled,
-		InvoiceKeys: map[CircuitKey]struct{}{
+	invoice.AMPState[*setID1] = invpkg.InvoiceStateAMP{
+		State: invpkg.HtlcStateCanceled,
+		InvoiceKeys: map[models.CircuitKey]struct{}{
 			{HtlcID: 0}: {},
 		},
 	}
-	invoice.AMPState[*setID2] = InvoiceStateAMP{
-		State:   HtlcStateAccepted,
+	invoice.AMPState[*setID2] = invpkg.InvoiceStateAMP{
+		State:   invpkg.HtlcStateAccepted,
 		AmtPaid: amt * 2,
-		InvoiceKeys: map[CircuitKey]struct{}{
+		InvoiceKeys: map[models.CircuitKey]struct{}{
 			{HtlcID: 1}: {},
 			{HtlcID: 2}: {},
 		},
 	}
 
-	invoice.Htlcs[CircuitKey{HtlcID: 0}].State = HtlcStateCanceled
-	invoice.Htlcs[CircuitKey{HtlcID: 0}].ResolveTime = time.Unix(1, 0)
+	invoice.Htlcs[htlc0].State = invpkg.HtlcStateCanceled
+	invoice.Htlcs[htlc0].ResolveTime = time.Unix(1, 0)
 
 	require.Equal(t, invoice, dbInvoice)
 
 	// Next, we'll cancel the _other_ HTLCs active, but we'll do them one
 	// by one.
-	_, err = db.UpdateInvoice(ref, (*SetID)(setID2),
-		func(invoice *Invoice) (*InvoiceUpdateDesc, error) {
-			return &InvoiceUpdateDesc{
-				CancelHtlcs: map[CircuitKey]struct{}{
+	_, err = db.UpdateInvoice(ref, (*invpkg.SetID)(setID2),
+		func(invoice *invpkg.Invoice) (*invpkg.InvoiceUpdateDesc,
+			error) {
+
+			return &invpkg.InvoiceUpdateDesc{
+				UpdateType: invpkg.CancelHTLCsUpdate,
+				CancelHtlcs: map[models.CircuitKey]struct{}{
 					{HtlcID: 1}: {},
 				},
-				SetID: (*SetID)(setID2),
+				SetID: (*invpkg.SetID)(setID2),
 			}, nil
 		})
-	if err != nil {
-		t.Fatalf("unable to cancel htlc: %v", err)
-	}
+	require.NoError(t, err, "unable to cancel htlc")
 
 	freshInvoice, err = db.LookupInvoice(ref)
 	require.Nil(t, err)
 	dbInvoice = &freshInvoice
 
-	invoice.Htlcs[CircuitKey{HtlcID: 1}].State = HtlcStateCanceled
-	invoice.Htlcs[CircuitKey{HtlcID: 1}].ResolveTime = time.Unix(1, 0)
+	invoice.Htlcs[htlc1].State = invpkg.HtlcStateCanceled
+	invoice.Htlcs[htlc1].ResolveTime = time.Unix(1, 0)
 	invoice.AmtPaid = amt
 
 	ampState := invoice.AMPState[*setID2]
-	ampState.State = HtlcStateCanceled
+	ampState.State = invpkg.HtlcStateCanceled
 	ampState.AmtPaid = amt
 	invoice.AMPState[*setID2] = ampState
 
 	require.Equal(t, invoice, dbInvoice)
 
+	callback = func(
+		invoice *invpkg.Invoice) (*invpkg.InvoiceUpdateDesc, error) {
+
+		return &invpkg.InvoiceUpdateDesc{
+			UpdateType: invpkg.CancelHTLCsUpdate,
+			CancelHtlcs: map[models.CircuitKey]struct{}{
+				{HtlcID: 2}: {},
+			},
+			SetID: (*invpkg.SetID)(setID2),
+		}, nil
+	}
+
 	// Now we'll cancel the final HTLC, which should cause all the active
 	// HTLCs to transition to the cancelled state.
-	_, err = db.UpdateInvoice(ref, (*SetID)(setID2),
-		func(invoice *Invoice) (*InvoiceUpdateDesc, error) {
-			return &InvoiceUpdateDesc{
-				CancelHtlcs: map[CircuitKey]struct{}{
-					{HtlcID: 2}: {},
-				},
-				SetID: (*SetID)(setID2),
-			}, nil
-		})
-	if err != nil {
-		t.Fatalf("unable to cancel htlc: %v", err)
-	}
+	_, err = db.UpdateInvoice(ref, (*invpkg.SetID)(setID2), callback)
+	require.NoError(t, err, "unable to cancel htlc")
 
 	freshInvoice, err = db.LookupInvoice(ref)
 	require.Nil(t, err)
@@ -665,8 +668,8 @@ func TestInvoiceCancelSingleHtlcAMP(t *testing.T) {
 	ampState.AmtPaid = 0
 	invoice.AMPState[*setID2] = ampState
 
-	invoice.Htlcs[CircuitKey{HtlcID: 2}].State = HtlcStateCanceled
-	invoice.Htlcs[CircuitKey{HtlcID: 2}].ResolveTime = time.Unix(1, 0)
+	invoice.Htlcs[htlc2].State = invpkg.HtlcStateCanceled
+	invoice.Htlcs[htlc2].ResolveTime = time.Unix(1, 0)
 	invoice.AmtPaid = 0
 
 	require.Equal(t, invoice, dbInvoice)
@@ -678,11 +681,8 @@ func TestInvoiceCancelSingleHtlcAMP(t *testing.T) {
 func TestInvoiceAddTimeSeries(t *testing.T) {
 	t.Parallel()
 
-	db, cleanUp, err := MakeTestDB(OptionClock(testClock))
-	defer cleanUp()
-	if err != nil {
-		t.Fatalf("unable to make test db: %v", err)
-	}
+	db, err := MakeTestDB(t, OptionClock(testClock))
+	require.NoError(t, err, "unable to make test db")
 
 	_, err = db.InvoicesAddedSince(0)
 	require.NoError(t, err)
@@ -691,7 +691,7 @@ func TestInvoiceAddTimeSeries(t *testing.T) {
 	// into the database.
 	const numInvoices = 20
 	amt := lnwire.NewMSatFromSatoshis(1000)
-	invoices := make([]Invoice, numInvoices)
+	invoices := make([]invpkg.Invoice, numInvoices)
 	for i := 0; i < len(invoices); i++ {
 		invoice, err := randInvoice(amt)
 		if err != nil {
@@ -713,7 +713,7 @@ func TestInvoiceAddTimeSeries(t *testing.T) {
 	addQueries := []struct {
 		sinceAddIndex uint64
 
-		resp []Invoice
+		resp []invpkg.Invoice
 	}{
 		// If we specify a value of zero, we shouldn't get any invoices
 		// back.
@@ -761,7 +761,7 @@ func TestInvoiceAddTimeSeries(t *testing.T) {
 	_, err = db.InvoicesSettledSince(0)
 	require.NoError(t, err)
 
-	var settledInvoices []Invoice
+	var settledInvoices []invpkg.Invoice
 	var settleIndex uint64 = 1
 	// We'll now only settle the latter half of each of those invoices.
 	for i := 10; i < len(invoices); i++ {
@@ -769,7 +769,7 @@ func TestInvoiceAddTimeSeries(t *testing.T) {
 
 		paymentHash := invoice.Terms.PaymentPreimage.Hash()
 
-		ref := InvoiceRefByHash(paymentHash)
+		ref := invpkg.InvoiceRefByHash(paymentHash)
 		_, err := db.UpdateInvoice(
 			ref, nil, getUpdateInvoice(invoice.Terms.Value),
 		)
@@ -789,7 +789,7 @@ func TestInvoiceAddTimeSeries(t *testing.T) {
 	settleQueries := []struct {
 		sinceSettleIndex uint64
 
-		resp []Invoice
+		resp []invpkg.Invoice
 	}{
 		// If we specify a value of zero, we shouldn't get any settled
 		// invoices back.
@@ -836,8 +836,7 @@ func TestSettleIndexAmpPayments(t *testing.T) {
 	t.Parallel()
 
 	testClock := clock.NewTestClock(testNow)
-	db, cleanUp, err := MakeTestDB(OptionClock(testClock))
-	defer cleanUp()
+	db, err := MakeTestDB(t, OptionClock(testClock))
 	require.Nil(t, err)
 
 	// First, we'll make a sample invoice that'll be paid to several times
@@ -861,17 +860,22 @@ func TestSettleIndexAmpPayments(t *testing.T) {
 	setID2 := &[32]byte{2}
 	setID3 := &[32]byte{3}
 
-	ref := InvoiceRefByHashAndAddr(payHash, testInvoice.Terms.PaymentAddr)
+	ref := invpkg.InvoiceRefByHashAndAddr(
+		payHash, testInvoice.Terms.PaymentAddr,
+	)
 	_, err = db.UpdateInvoice(
-		ref, (*SetID)(setID1), updateAcceptAMPHtlc(1, amt, setID1, true),
+		ref, (*invpkg.SetID)(setID1),
+		updateAcceptAMPHtlc(1, amt, setID1, true),
 	)
 	require.Nil(t, err)
 	_, err = db.UpdateInvoice(
-		ref, (*SetID)(setID2), updateAcceptAMPHtlc(2, amt, setID2, true),
+		ref, (*invpkg.SetID)(setID2),
+		updateAcceptAMPHtlc(2, amt, setID2, true),
 	)
 	require.Nil(t, err)
 	_, err = db.UpdateInvoice(
-		ref, (*SetID)(setID3), updateAcceptAMPHtlc(3, amt, setID3, true),
+		ref, (*invpkg.SetID)(setID3),
+		updateAcceptAMPHtlc(3, amt, setID3, true),
 	)
 	require.Nil(t, err)
 
@@ -881,7 +885,9 @@ func TestSettleIndexAmpPayments(t *testing.T) {
 	//
 	// First, we'll query for the invoice with just the payment addr, but
 	// specify no HTLcs are to be included.
-	refNoHtlcs := InvoiceRefByAddrBlankHtlc(testInvoice.Terms.PaymentAddr)
+	refNoHtlcs := invpkg.InvoiceRefByAddrBlankHtlc(
+		testInvoice.Terms.PaymentAddr,
+	)
 	invoiceNoHTLCs, err := db.LookupInvoice(refNoHtlcs)
 	require.Nil(t, err)
 
@@ -890,7 +896,7 @@ func TestSettleIndexAmpPayments(t *testing.T) {
 	// We'll now look up the HTLCs based on the individual setIDs added
 	// above.
 	for i, setID := range []*[32]byte{setID1, setID2, setID3} {
-		refFiltered := InvoiceRefBySetIDFiltered(*setID)
+		refFiltered := invpkg.InvoiceRefBySetIDFiltered(*setID)
 		invoiceFiltered, err := db.LookupInvoice(refFiltered)
 		require.Nil(t, err)
 
@@ -898,34 +904,34 @@ func TestSettleIndexAmpPayments(t *testing.T) {
 		require.Equal(t, 1, len(invoiceFiltered.Htlcs))
 
 		// The set ID for the HTLC should match the queried set ID.
-		key := CircuitKey{HtlcID: uint64(i + 1)}
+		key := models.CircuitKey{HtlcID: uint64(i + 1)}
 		htlc := invoiceFiltered.Htlcs[key]
 		require.Equal(t, *setID, htlc.AMP.Record.SetID())
 
 		// The HTLC should show that it's in the accepted state.
-		require.Equal(t, htlc.State, HtlcStateAccepted)
+		require.Equal(t, htlc.State, invpkg.HtlcStateAccepted)
 	}
 
 	// Now that we know the invoices are in the proper state, we'll settle
 	// them on by one in distinct updates.
 	_, err = db.UpdateInvoice(
-		ref, (*SetID)(setID1),
+		ref, (*invpkg.SetID)(setID1),
 		getUpdateInvoiceAMPSettle(
-			setID1, preimage, CircuitKey{HtlcID: 1},
+			setID1, preimage, models.CircuitKey{HtlcID: 1},
 		),
 	)
 	require.Nil(t, err)
 	_, err = db.UpdateInvoice(
-		ref, (*SetID)(setID2),
+		ref, (*invpkg.SetID)(setID2),
 		getUpdateInvoiceAMPSettle(
-			setID2, preimage, CircuitKey{HtlcID: 2},
+			setID2, preimage, models.CircuitKey{HtlcID: 2},
 		),
 	)
 	require.Nil(t, err)
 	_, err = db.UpdateInvoice(
-		ref, (*SetID)(setID3),
+		ref, (*invpkg.SetID)(setID3),
 		getUpdateInvoiceAMPSettle(
-			setID3, preimage, CircuitKey{HtlcID: 3},
+			setID3, preimage, models.CircuitKey{HtlcID: 3},
 		),
 	)
 	require.Nil(t, err)
@@ -940,9 +946,13 @@ func TestSettleIndexAmpPayments(t *testing.T) {
 	// To get around the settle index quirk, we'll fetch the very first
 	// invoice in the HTLC filtered mode and append it to the set of
 	// invoices.
-	firstInvoice, err := db.LookupInvoice(InvoiceRefBySetIDFiltered(*setID1))
+	firstInvoice, err := db.LookupInvoice(
+		invpkg.InvoiceRefBySetIDFiltered(*setID1),
+	)
 	require.Nil(t, err)
-	settledInvoices = append([]Invoice{firstInvoice}, settledInvoices...)
+	settledInvoices = append(
+		[]invpkg.Invoice{firstInvoice}, settledInvoices...,
+	)
 
 	// There should be 3 invoices settled, as we created 3 "sub-invoices"
 	// above.
@@ -961,24 +971,24 @@ func TestSettleIndexAmpPayments(t *testing.T) {
 		subInvoiceState, ok := settledInvoice.AMPState[*invSetID]
 		require.True(t, ok)
 
-		require.Equal(t, subInvoiceState.State, HtlcStateSettled)
+		require.Equal(t, subInvoiceState.State, invpkg.HtlcStateSettled)
 		require.Equal(t, int(subInvoiceState.SettleIndex), i+1)
 
-		invoiceKey := CircuitKey{HtlcID: uint64(i + 1)}
+		invoiceKey := models.CircuitKey{HtlcID: uint64(i + 1)}
 		_, keyFound := subInvoiceState.InvoiceKeys[invoiceKey]
 		require.True(t, keyFound)
 	}
 
 	// If we attempt to look up the invoice by the payment addr, with all
 	// the HTLCs, the main invoice should have 3 HTLCs present.
-	refWithHtlcs := InvoiceRefByAddr(testInvoice.Terms.PaymentAddr)
+	refWithHtlcs := invpkg.InvoiceRefByAddr(testInvoice.Terms.PaymentAddr)
 	invoiceWithHTLCs, err := db.LookupInvoice(refWithHtlcs)
 	require.Nil(t, err)
 	require.Equal(t, numInvoices, len(invoiceWithHTLCs.Htlcs))
 
 	// Finally, delete the invoice. If we query again, then nothing should
 	// be found.
-	err = db.DeleteInvoice([]InvoiceDeleteRef{
+	err = db.DeleteInvoice([]invpkg.InvoiceDeleteRef{
 		{
 			PayHash:  payHash,
 			PayAddr:  &testInvoice.Terms.PaymentAddr,
@@ -993,13 +1003,10 @@ func TestSettleIndexAmpPayments(t *testing.T) {
 func TestScanInvoices(t *testing.T) {
 	t.Parallel()
 
-	db, cleanup, err := MakeTestDB()
-	defer cleanup()
-	if err != nil {
-		t.Fatalf("unable to make test db: %v", err)
-	}
+	db, err := MakeTestDB(t)
+	require.NoError(t, err, "unable to make test db")
 
-	var invoices map[lntypes.Hash]*Invoice
+	var invoices map[lntypes.Hash]*invpkg.Invoice
 	callCount := 0
 	resetCount := 0
 
@@ -1007,13 +1014,14 @@ func TestScanInvoices(t *testing.T) {
 	// upon calling ScanInvoices and when the underlying transaction is
 	// retried.
 	reset := func() {
-		invoices = make(map[lntypes.Hash]*Invoice)
+		invoices = make(map[lntypes.Hash]*invpkg.Invoice)
 		callCount = 0
 		resetCount++
-
 	}
 
-	scanFunc := func(paymentHash lntypes.Hash, invoice *Invoice) error {
+	scanFunc := func(paymentHash lntypes.Hash,
+		invoice *invpkg.Invoice) error {
+
 		invoices[paymentHash] = invoice
 		callCount++
 
@@ -1027,7 +1035,7 @@ func TestScanInvoices(t *testing.T) {
 	require.Equal(t, 1, resetCount)
 
 	numInvoices := 5
-	testInvoices := make(map[lntypes.Hash]*Invoice)
+	testInvoices := make(map[lntypes.Hash]*invpkg.Invoice)
 
 	// Now populate the DB and check if we can get all invoices with their
 	// payment hashes as expected.
@@ -1055,18 +1063,13 @@ func TestScanInvoices(t *testing.T) {
 func TestDuplicateSettleInvoice(t *testing.T) {
 	t.Parallel()
 
-	db, cleanUp, err := MakeTestDB(OptionClock(testClock))
-	defer cleanUp()
-	if err != nil {
-		t.Fatalf("unable to make test db: %v", err)
-	}
+	db, err := MakeTestDB(t, OptionClock(testClock))
+	require.NoError(t, err, "unable to make test db")
 
 	// We'll start out by creating an invoice and writing it to the DB.
 	amt := lnwire.NewMSatFromSatoshis(1000)
 	invoice, err := randInvoice(amt)
-	if err != nil {
-		t.Fatalf("unable to create invoice: %v", err)
-	}
+	require.NoError(t, err, "unable to create invoice")
 
 	payHash := invoice.Terms.PaymentPreimage.Hash()
 
@@ -1075,24 +1078,22 @@ func TestDuplicateSettleInvoice(t *testing.T) {
 	}
 
 	// With the invoice in the DB, we'll now attempt to settle the invoice.
-	ref := InvoiceRefByHash(payHash)
+	ref := invpkg.InvoiceRefByHash(payHash)
 	dbInvoice, err := db.UpdateInvoice(ref, nil, getUpdateInvoice(amt))
-	if err != nil {
-		t.Fatalf("unable to settle invoice: %v", err)
-	}
+	require.NoError(t, err, "unable to settle invoice")
 
 	// We'll update what we expect the settle invoice to be so that our
 	// comparison below has the correct assumption.
 	invoice.SettleIndex = 1
-	invoice.State = ContractSettled
+	invoice.State = invpkg.ContractSettled
 	invoice.AmtPaid = amt
 	invoice.SettleDate = dbInvoice.SettleDate
-	invoice.Htlcs = map[CircuitKey]*InvoiceHTLC{
+	invoice.Htlcs = map[models.CircuitKey]*invpkg.InvoiceHTLC{
 		{}: {
 			Amt:           amt,
 			AcceptTime:    time.Unix(1, 0),
 			ResolveTime:   time.Unix(1, 0),
-			State:         HtlcStateSettled,
+			State:         invpkg.HtlcStateSettled,
 			CustomRecords: make(record.CustomSet),
 		},
 	}
@@ -1103,16 +1104,16 @@ func TestDuplicateSettleInvoice(t *testing.T) {
 	// If we try to settle the invoice again, then we should get the very
 	// same invoice back, but with an error this time.
 	dbInvoice, err = db.UpdateInvoice(ref, nil, getUpdateInvoice(amt))
-	if err != ErrInvoiceAlreadySettled {
-		t.Fatalf("expected ErrInvoiceAlreadySettled")
-	}
+	require.ErrorIs(t, err, invpkg.ErrInvoiceAlreadySettled)
 
 	if dbInvoice == nil {
 		t.Fatalf("invoice from db is nil after settle!")
 	}
 
 	invoice.SettleDate = dbInvoice.SettleDate
-	require.Equal(t, invoice, dbInvoice, "wrong invoice after second settle")
+	require.Equal(
+		t, invoice, dbInvoice, "wrong invoice after second settle",
+	)
 }
 
 // TestQueryInvoices ensures that we can properly query the invoice database for
@@ -1120,23 +1121,23 @@ func TestDuplicateSettleInvoice(t *testing.T) {
 func TestQueryInvoices(t *testing.T) {
 	t.Parallel()
 
-	db, cleanUp, err := MakeTestDB(OptionClock(testClock))
-	defer cleanUp()
-	if err != nil {
-		t.Fatalf("unable to make test db: %v", err)
-	}
+	db, err := MakeTestDB(t, OptionClock(testClock))
+	require.NoError(t, err, "unable to make test db")
 
 	// To begin the test, we'll add 50 invoices to the database. We'll
 	// assume that the index of the invoice within the database is the same
 	// as the amount of the invoice itself.
 	const numInvoices = 50
 	var settleIndex uint64 = 1
-	var invoices []Invoice
-	var pendingInvoices []Invoice
+	var invoices []invpkg.Invoice
+	var pendingInvoices []invpkg.Invoice
 
 	for i := 1; i <= numInvoices; i++ {
 		amt := lnwire.MilliSatoshi(i)
 		invoice, err := randInvoice(amt)
+		invoice.CreationDate = invoice.CreationDate.Add(
+			time.Duration(i-1) * time.Second,
+		)
 		if err != nil {
 			t.Fatalf("unable to create invoice: %v", err)
 		}
@@ -1149,8 +1150,10 @@ func TestQueryInvoices(t *testing.T) {
 
 		// We'll only settle half of all invoices created.
 		if i%2 == 0 {
-			ref := InvoiceRefByHash(paymentHash)
-			_, err := db.UpdateInvoice(ref, nil, getUpdateInvoice(amt))
+			ref := invpkg.InvoiceRefByHash(paymentHash)
+			_, err := db.UpdateInvoice(
+				ref, nil, getUpdateInvoice(amt),
+			)
 			if err != nil {
 				t.Fatalf("unable to settle invoice: %v", err)
 			}
@@ -1168,19 +1171,19 @@ func TestQueryInvoices(t *testing.T) {
 	// The test will consist of several queries along with their respective
 	// expected response. Each query response should match its expected one.
 	testCases := []struct {
-		query    InvoiceQuery
-		expected []Invoice
+		query    invpkg.InvoiceQuery
+		expected []invpkg.Invoice
 	}{
 		// Fetch all invoices with a single query.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				NumMaxInvoices: numInvoices,
 			},
 			expected: invoices,
 		},
 		// Fetch all invoices with a single query, reversed.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				Reversed:       true,
 				NumMaxInvoices: numInvoices,
 			},
@@ -1188,7 +1191,7 @@ func TestQueryInvoices(t *testing.T) {
 		},
 		// Fetch the first 25 invoices.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				NumMaxInvoices: numInvoices / 2,
 			},
 			expected: invoices[:numInvoices/2],
@@ -1196,7 +1199,7 @@ func TestQueryInvoices(t *testing.T) {
 		// Fetch the first 10 invoices, but this time iterating
 		// backwards.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				IndexOffset:    11,
 				Reversed:       true,
 				NumMaxInvoices: numInvoices,
@@ -1205,7 +1208,7 @@ func TestQueryInvoices(t *testing.T) {
 		},
 		// Fetch the last 40 invoices.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				IndexOffset:    10,
 				NumMaxInvoices: numInvoices,
 			},
@@ -1213,7 +1216,7 @@ func TestQueryInvoices(t *testing.T) {
 		},
 		// Fetch all but the first invoice.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				IndexOffset:    1,
 				NumMaxInvoices: numInvoices,
 			},
@@ -1222,7 +1225,7 @@ func TestQueryInvoices(t *testing.T) {
 		// Fetch one invoice, reversed, with index offset 3. This
 		// should give us the second invoice in the array.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				IndexOffset:    3,
 				Reversed:       true,
 				NumMaxInvoices: 1,
@@ -1231,7 +1234,7 @@ func TestQueryInvoices(t *testing.T) {
 		},
 		// Same as above, at index 2.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				IndexOffset:    2,
 				Reversed:       true,
 				NumMaxInvoices: 1,
@@ -1242,7 +1245,7 @@ func TestQueryInvoices(t *testing.T) {
 		// the very first, there won't be any left in a reverse search,
 		// so we expect no invoices to be returned.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				IndexOffset:    1,
 				Reversed:       true,
 				NumMaxInvoices: 1,
@@ -1252,7 +1255,7 @@ func TestQueryInvoices(t *testing.T) {
 		// Same as above, but don't restrict the number of invoices to
 		// 1.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				IndexOffset:    1,
 				Reversed:       true,
 				NumMaxInvoices: numInvoices,
@@ -1262,7 +1265,7 @@ func TestQueryInvoices(t *testing.T) {
 		// Fetch one invoice, reversed, with no offset set. We expect
 		// the last invoice in the response.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				Reversed:       true,
 				NumMaxInvoices: 1,
 			},
@@ -1271,7 +1274,7 @@ func TestQueryInvoices(t *testing.T) {
 		// Fetch one invoice, reversed, the offset set at numInvoices+1.
 		// We expect this to return the last invoice.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				IndexOffset:    numInvoices + 1,
 				Reversed:       true,
 				NumMaxInvoices: 1,
@@ -1280,7 +1283,7 @@ func TestQueryInvoices(t *testing.T) {
 		},
 		// Same as above, at offset numInvoices.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				IndexOffset:    numInvoices,
 				Reversed:       true,
 				NumMaxInvoices: 1,
@@ -1290,14 +1293,14 @@ func TestQueryInvoices(t *testing.T) {
 		// Fetch one invoice, at no offset (same as offset 0). We
 		// expect the first invoice only in the response.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				NumMaxInvoices: 1,
 			},
 			expected: invoices[:1],
 		},
 		// Same as above, at offset 1.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				IndexOffset:    1,
 				NumMaxInvoices: 1,
 			},
@@ -1305,7 +1308,7 @@ func TestQueryInvoices(t *testing.T) {
 		},
 		// Same as above, at offset 2.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				IndexOffset:    2,
 				NumMaxInvoices: 1,
 			},
@@ -1314,7 +1317,7 @@ func TestQueryInvoices(t *testing.T) {
 		// Same as above, at offset numInvoices-1. Expect the last
 		// invoice to be returned.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				IndexOffset:    numInvoices - 1,
 				NumMaxInvoices: 1,
 			},
@@ -1323,7 +1326,7 @@ func TestQueryInvoices(t *testing.T) {
 		// Same as above, at offset numInvoices. No invoices should be
 		// returned, as there are no invoices after this offset.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				IndexOffset:    numInvoices,
 				NumMaxInvoices: 1,
 			},
@@ -1331,7 +1334,7 @@ func TestQueryInvoices(t *testing.T) {
 		},
 		// Fetch all pending invoices with a single query.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				PendingOnly:    true,
 				NumMaxInvoices: numInvoices,
 			},
@@ -1339,7 +1342,7 @@ func TestQueryInvoices(t *testing.T) {
 		},
 		// Fetch the first 12 pending invoices.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				PendingOnly:    true,
 				NumMaxInvoices: numInvoices / 4,
 			},
@@ -1348,7 +1351,7 @@ func TestQueryInvoices(t *testing.T) {
 		// Fetch the first 5 pending invoices, but this time iterating
 		// backwards.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				IndexOffset:    10,
 				PendingOnly:    true,
 				Reversed:       true,
@@ -1362,7 +1365,7 @@ func TestQueryInvoices(t *testing.T) {
 		},
 		// Fetch the last 15 invoices.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				IndexOffset:    20,
 				PendingOnly:    true,
 				NumMaxInvoices: numInvoices,
@@ -1376,13 +1379,123 @@ func TestQueryInvoices(t *testing.T) {
 		// that is beyond our last offset. We expect all invoices to be
 		// returned.
 		{
-			query: InvoiceQuery{
+			query: invpkg.InvoiceQuery{
 				IndexOffset:    numInvoices * 2,
 				PendingOnly:    false,
 				Reversed:       true,
 				NumMaxInvoices: numInvoices,
 			},
 			expected: invoices,
+		},
+		// Fetch invoices <= 25 by creation date.
+		{
+			query: invpkg.InvoiceQuery{
+				NumMaxInvoices:  numInvoices,
+				CreationDateEnd: time.Unix(25, 0),
+			},
+			expected: invoices[:25],
+		},
+		// Fetch invoices >= 26 creation date.
+		{
+			query: invpkg.InvoiceQuery{
+				NumMaxInvoices:    numInvoices,
+				CreationDateStart: time.Unix(26, 0),
+			},
+			expected: invoices[25:],
+		},
+		// Fetch pending invoices <= 25 by creation date.
+		{
+			query: invpkg.InvoiceQuery{
+				PendingOnly:     true,
+				NumMaxInvoices:  numInvoices,
+				CreationDateEnd: time.Unix(25, 0),
+			},
+			expected: pendingInvoices[:13],
+		},
+		// Fetch pending invoices >= 26 creation date.
+		{
+			query: invpkg.InvoiceQuery{
+				PendingOnly:       true,
+				NumMaxInvoices:    numInvoices,
+				CreationDateStart: time.Unix(26, 0),
+			},
+			expected: pendingInvoices[13:],
+		},
+		// Fetch pending invoices with offset and end creation date.
+		{
+			query: invpkg.InvoiceQuery{
+				IndexOffset:     20,
+				NumMaxInvoices:  numInvoices,
+				CreationDateEnd: time.Unix(30, 0),
+			},
+			// Since we're skipping to invoice 20 and iterating
+			// to invoice 30, we'll expect those invoices.
+			expected: invoices[20:30],
+		},
+		// Fetch pending invoices with offset and start creation date
+		// in reversed order.
+		{
+			query: invpkg.InvoiceQuery{
+				IndexOffset:       21,
+				Reversed:          true,
+				NumMaxInvoices:    numInvoices,
+				CreationDateStart: time.Unix(11, 0),
+			},
+			// Since we're skipping to invoice 20 and iterating
+			// backward to invoice 10, we'll expect those invoices.
+			expected: invoices[10:20],
+		},
+		// Fetch invoices with start and end creation date.
+		{
+			query: invpkg.InvoiceQuery{
+				NumMaxInvoices:    numInvoices,
+				CreationDateStart: time.Unix(11, 0),
+				CreationDateEnd:   time.Unix(20, 0),
+			},
+			expected: invoices[10:20],
+		},
+		// Fetch pending invoices with start and end creation date.
+		{
+			query: invpkg.InvoiceQuery{
+				PendingOnly:       true,
+				NumMaxInvoices:    numInvoices,
+				CreationDateStart: time.Unix(11, 0),
+				CreationDateEnd:   time.Unix(20, 0),
+			},
+			expected: pendingInvoices[5:10],
+		},
+		// Fetch invoices with start and end creation date in reverse
+		// order.
+		{
+			query: invpkg.InvoiceQuery{
+				Reversed:          true,
+				NumMaxInvoices:    numInvoices,
+				CreationDateStart: time.Unix(11, 0),
+				CreationDateEnd:   time.Unix(20, 0),
+			},
+			expected: invoices[10:20],
+		},
+		// Fetch pending invoices with start and end creation date in
+		// reverse order.
+		{
+			query: invpkg.InvoiceQuery{
+				PendingOnly:       true,
+				Reversed:          true,
+				NumMaxInvoices:    numInvoices,
+				CreationDateStart: time.Unix(11, 0),
+				CreationDateEnd:   time.Unix(20, 0),
+			},
+			expected: pendingInvoices[5:10],
+		},
+		// Fetch invoices with a start date greater than end date
+		// should result in an empty slice.
+		{
+			query: invpkg.InvoiceQuery{
+				NumMaxInvoices:    numInvoices,
+				CreationDateStart: time.Unix(20, 0),
+				CreationDateEnd:   time.Unix(11, 0),
+			},
+			expected: nil,
 		},
 	}
 
@@ -1405,25 +1518,28 @@ func TestQueryInvoices(t *testing.T) {
 
 // getUpdateInvoice returns an invoice update callback that, when called,
 // settles the invoice with the given amount.
-func getUpdateInvoice(amt lnwire.MilliSatoshi) InvoiceUpdateCallback {
-	return func(invoice *Invoice) (*InvoiceUpdateDesc, error) {
-		if invoice.State == ContractSettled {
-			return nil, ErrInvoiceAlreadySettled
+func getUpdateInvoice(amt lnwire.MilliSatoshi) invpkg.InvoiceUpdateCallback {
+	return func(invoice *invpkg.Invoice) (*invpkg.InvoiceUpdateDesc,
+		error) {
+
+		if invoice.State == invpkg.ContractSettled {
+			return nil, invpkg.ErrInvoiceAlreadySettled
 		}
 
 		noRecords := make(record.CustomSet)
-
-		update := &InvoiceUpdateDesc{
-			State: &InvoiceStateUpdateDesc{
+		htlcs := map[models.CircuitKey]*invpkg.HtlcAcceptDesc{
+			{}: {
+				Amt:           amt,
+				CustomRecords: noRecords,
+			},
+		}
+		update := &invpkg.InvoiceUpdateDesc{
+			UpdateType: invpkg.AddHTLCsUpdate,
+			State: &invpkg.InvoiceStateUpdateDesc{
 				Preimage: invoice.Terms.PaymentPreimage,
-				NewState: ContractSettled,
+				NewState: invpkg.ContractSettled,
 			},
-			AddHtlcs: map[CircuitKey]*HtlcAcceptDesc{
-				{}: {
-					Amt:           amt,
-					CustomRecords: noRecords,
-				},
-			},
+			AddHtlcs: htlcs,
 		}
 
 		return update, nil
@@ -1435,18 +1551,15 @@ func getUpdateInvoice(amt lnwire.MilliSatoshi) InvoiceUpdateCallback {
 func TestCustomRecords(t *testing.T) {
 	t.Parallel()
 
-	db, cleanUp, err := MakeTestDB()
-	defer cleanUp()
-	if err != nil {
-		t.Fatalf("unable to make test db: %v", err)
-	}
+	db, err := MakeTestDB(t)
+	require.NoError(t, err, "unable to make test db")
 
 	preimage := lntypes.Preimage{1}
 	paymentHash := preimage.Hash()
 
-	testInvoice := &Invoice{
-		Htlcs: map[CircuitKey]*InvoiceHTLC{},
-		Terms: ContractTerm{
+	testInvoice := &invpkg.Invoice{
+		Htlcs: map[models.CircuitKey]*invpkg.InvoiceHTLC{},
+		Terms: invpkg.ContractTerm{
 			Value:           lnwire.NewMSatFromSatoshis(10000),
 			Features:        emptyFeatures,
 			PaymentPreimage: &preimage,
@@ -1458,36 +1571,40 @@ func TestCustomRecords(t *testing.T) {
 	}
 
 	// Accept an htlc with custom records on this invoice.
-	key := CircuitKey{ChanID: lnwire.NewShortChanIDFromInt(1), HtlcID: 4}
+	key := models.CircuitKey{
+		ChanID: lnwire.NewShortChanIDFromInt(1),
+		HtlcID: 4,
+	}
 
 	records := record.CustomSet{
 		100000: []byte{},
 		100001: []byte{1, 2},
 	}
 
-	ref := InvoiceRefByHash(paymentHash)
-	_, err = db.UpdateInvoice(ref, nil,
-		func(invoice *Invoice) (*InvoiceUpdateDesc, error) {
-			return &InvoiceUpdateDesc{
-				AddHtlcs: map[CircuitKey]*HtlcAcceptDesc{
-					key: {
-						Amt:           500,
-						CustomRecords: records,
-					},
-				},
-			}, nil
-		},
-	)
-	if err != nil {
-		t.Fatalf("unable to add invoice htlc: %v", err)
+	ref := invpkg.InvoiceRefByHash(paymentHash)
+	callback := func(invoice *invpkg.Invoice) (*invpkg.InvoiceUpdateDesc,
+		error) {
+
+		htlcs := map[models.CircuitKey]*invpkg.HtlcAcceptDesc{
+			key: {
+				Amt:           500,
+				CustomRecords: records,
+			},
+		}
+
+		return &invpkg.InvoiceUpdateDesc{
+			AddHtlcs:   htlcs,
+			UpdateType: invpkg.AddHTLCsUpdate,
+		}, nil
 	}
+
+	_, err = db.UpdateInvoice(ref, nil, callback)
+	require.NoError(t, err, "unable to add invoice htlc")
 
 	// Retrieve the invoice from that database and verify that the custom
 	// records are present.
 	dbInvoice, err := db.LookupInvoice(ref)
-	if err != nil {
-		t.Fatalf("unable to lookup invoice: %v", err)
-	}
+	require.NoError(t, err, "unable to lookup invoice")
 
 	if len(dbInvoice.Htlcs) != 1 {
 		t.Fatalf("expected the htlc to be added")
@@ -1511,8 +1628,7 @@ func TestInvoiceHtlcAMPFields(t *testing.T) {
 }
 
 func testInvoiceHtlcAMPFields(t *testing.T, isAMP bool) {
-	db, cleanUp, err := MakeTestDB()
-	defer cleanUp()
+	db, err := MakeTestDB(t)
 	require.Nil(t, err)
 
 	testInvoice, err := randInvoice(1000)
@@ -1527,35 +1643,43 @@ func testInvoiceHtlcAMPFields(t *testing.T, isAMP bool) {
 	require.Nil(t, err)
 
 	// Accept an htlc with custom records on this invoice.
-	key := CircuitKey{ChanID: lnwire.NewShortChanIDFromInt(1), HtlcID: 4}
+	key := models.CircuitKey{
+		ChanID: lnwire.NewShortChanIDFromInt(1),
+		HtlcID: 4,
+	}
 	records := make(map[uint64][]byte)
 
-	var ampData *InvoiceHtlcAMPData
+	var ampData *invpkg.InvoiceHtlcAMPData
 	if isAMP {
 		amp := record.NewAMP([32]byte{1}, [32]byte{2}, 3)
 		preimage := &lntypes.Preimage{4}
 
-		ampData = &InvoiceHtlcAMPData{
+		ampData = &invpkg.InvoiceHtlcAMPData{
 			Record:   *amp,
 			Hash:     preimage.Hash(),
 			Preimage: preimage,
 		}
 	}
 
-	ref := InvoiceRefByHash(payHash)
-	_, err = db.UpdateInvoice(ref, nil,
-		func(invoice *Invoice) (*InvoiceUpdateDesc, error) {
-			return &InvoiceUpdateDesc{
-				AddHtlcs: map[CircuitKey]*HtlcAcceptDesc{
-					key: {
-						Amt:           500,
-						AMP:           ampData,
-						CustomRecords: records,
-					},
-				},
-			}, nil
-		},
-	)
+	callback := func(invoice *invpkg.Invoice) (*invpkg.InvoiceUpdateDesc,
+		error) {
+
+		htlcs := map[models.CircuitKey]*invpkg.HtlcAcceptDesc{
+			key: {
+				Amt:           500,
+				AMP:           ampData,
+				CustomRecords: records,
+			},
+		}
+
+		return &invpkg.InvoiceUpdateDesc{
+			AddHtlcs:   htlcs,
+			UpdateType: invpkg.AddHTLCsUpdate,
+		}, nil
+	}
+
+	ref := invpkg.InvoiceRefByHash(payHash)
+	_, err = db.UpdateInvoice(ref, nil, callback)
 	require.Nil(t, err)
 
 	// Retrieve the invoice from that database and verify that the AMP
@@ -1576,28 +1700,28 @@ func TestInvoiceRef(t *testing.T) {
 
 	// An InvoiceRef by hash should return the provided hash and a nil
 	// payment addr.
-	refByHash := InvoiceRefByHash(payHash)
+	refByHash := invpkg.InvoiceRefByHash(payHash)
 	require.Equal(t, &payHash, refByHash.PayHash())
 	require.Equal(t, (*[32]byte)(nil), refByHash.PayAddr())
 	require.Equal(t, (*[32]byte)(nil), refByHash.SetID())
 
 	// An InvoiceRef by hash and addr should return the payment hash and
 	// payment addr passed to the constructor.
-	refByHashAndAddr := InvoiceRefByHashAndAddr(payHash, payAddr)
+	refByHashAndAddr := invpkg.InvoiceRefByHashAndAddr(payHash, payAddr)
 	require.Equal(t, &payHash, refByHashAndAddr.PayHash())
 	require.Equal(t, &payAddr, refByHashAndAddr.PayAddr())
 	require.Equal(t, (*[32]byte)(nil), refByHashAndAddr.SetID())
 
 	// An InvoiceRef by set id should return an empty pay hash, a nil pay
 	// addr, and a reference to the given set id.
-	refBySetID := InvoiceRefBySetID(setID)
+	refBySetID := invpkg.InvoiceRefBySetID(setID)
 	require.Equal(t, (*lntypes.Hash)(nil), refBySetID.PayHash())
 	require.Equal(t, (*[32]byte)(nil), refBySetID.PayAddr())
 	require.Equal(t, &setID, refBySetID.SetID())
 
 	// An InvoiceRef by pay addr should only return a pay addr, but nil for
 	// pay hash and set id.
-	refByAddr := InvoiceRefByAddr(payAddr)
+	refByAddr := invpkg.InvoiceRefByAddr(payAddr)
 	require.Equal(t, (*lntypes.Hash)(nil), refByAddr.PayHash())
 	require.Equal(t, &payAddr, refByAddr.PayAddr())
 	require.Equal(t, (*[32]byte)(nil), refByAddr.SetID())
@@ -1608,8 +1732,8 @@ func TestInvoiceRef(t *testing.T) {
 // not comingle, and also that HTLCs with disjoint set ids appear in different
 // sets.
 func TestHTLCSet(t *testing.T) {
-	inv := &Invoice{
-		Htlcs: make(map[CircuitKey]*InvoiceHTLC),
+	inv := &invpkg.Invoice{
+		Htlcs: make(map[models.CircuitKey]*invpkg.InvoiceHTLC),
 	}
 
 	// Construct two distinct set id's, in this test we'll also track the
@@ -1619,14 +1743,24 @@ func TestHTLCSet(t *testing.T) {
 
 	// Create the expected htlc sets for each group, these will be updated
 	// as the invoice is modified.
-	expSetNil := make(map[CircuitKey]*InvoiceHTLC)
-	expSet1 := make(map[CircuitKey]*InvoiceHTLC)
-	expSet2 := make(map[CircuitKey]*InvoiceHTLC)
+
+	expSetNil := make(map[models.CircuitKey]*invpkg.InvoiceHTLC)
+	expSet1 := make(map[models.CircuitKey]*invpkg.InvoiceHTLC)
+	expSet2 := make(map[models.CircuitKey]*invpkg.InvoiceHTLC)
 
 	checkHTLCSets := func() {
-		require.Equal(t, expSetNil, inv.HTLCSet(nil, HtlcStateAccepted))
-		require.Equal(t, expSet1, inv.HTLCSet(setID1, HtlcStateAccepted))
-		require.Equal(t, expSet2, inv.HTLCSet(setID2, HtlcStateAccepted))
+		require.Equal(
+			t, expSetNil,
+			inv.HTLCSet(nil, invpkg.HtlcStateAccepted),
+		)
+		require.Equal(
+			t, expSet1,
+			inv.HTLCSet(setID1, invpkg.HtlcStateAccepted),
+		)
+		require.Equal(
+			t, expSet2,
+			inv.HTLCSet(setID2, invpkg.HtlcStateAccepted),
+		)
 	}
 
 	// All HTLC sets should be empty initially.
@@ -1639,34 +1773,35 @@ func TestHTLCSet(t *testing.T) {
 	//   - only accepted htlcs are returned as part of the set.
 	htlcs := []struct {
 		setID *[32]byte
-		state HtlcState
+		state invpkg.HtlcState
 	}{
-		{nil, HtlcStateAccepted},
-		{nil, HtlcStateAccepted},
-		{setID1, HtlcStateAccepted},
-		{setID1, HtlcStateAccepted},
-		{setID2, HtlcStateAccepted},
-		{setID2, HtlcStateAccepted},
-		{nil, HtlcStateCanceled},
-		{setID1, HtlcStateCanceled},
-		{setID2, HtlcStateCanceled},
-		{nil, HtlcStateSettled},
-		{setID1, HtlcStateSettled},
-		{setID2, HtlcStateSettled},
+		{nil, invpkg.HtlcStateAccepted},
+		{nil, invpkg.HtlcStateAccepted},
+		{setID1, invpkg.HtlcStateAccepted},
+		{setID1, invpkg.HtlcStateAccepted},
+		{setID2, invpkg.HtlcStateAccepted},
+		{setID2, invpkg.HtlcStateAccepted},
+		{nil, invpkg.HtlcStateCanceled},
+		{setID1, invpkg.HtlcStateCanceled},
+		{setID2, invpkg.HtlcStateCanceled},
+		{nil, invpkg.HtlcStateSettled},
+		{setID1, invpkg.HtlcStateSettled},
+		{setID2, invpkg.HtlcStateSettled},
 	}
 
 	for i, h := range htlcs {
-		var ampData *InvoiceHtlcAMPData
+		var ampData *invpkg.InvoiceHtlcAMPData
 		if h.setID != nil {
-			ampData = &InvoiceHtlcAMPData{
-				Record: *record.NewAMP([32]byte{0}, *h.setID, 0),
+			ampData = &invpkg.InvoiceHtlcAMPData{
+				Record: *record.NewAMP(
+					[32]byte{0}, *h.setID, 0,
+				),
 			}
-
 		}
 
 		// Add the HTLC to the invoice's set of HTLCs.
-		key := CircuitKey{HtlcID: uint64(i)}
-		htlc := &InvoiceHTLC{
+		key := models.CircuitKey{HtlcID: uint64(i)}
+		htlc := &invpkg.InvoiceHTLC{
 			AMP:   ampData,
 			State: h.state,
 		}
@@ -1674,7 +1809,7 @@ func TestHTLCSet(t *testing.T) {
 
 		// Update our expected htlc set if the htlc is accepted,
 		// otherwise it shouldn't be reflected.
-		if h.state == HtlcStateAccepted {
+		if h.state == invpkg.HtlcStateAccepted {
 			switch h.setID {
 			case nil:
 				expSetNil[key] = htlc
@@ -1694,19 +1829,18 @@ func TestHTLCSet(t *testing.T) {
 // TestAddInvoiceWithHTLCs asserts that you can't insert an invoice that already
 // has HTLCs.
 func TestAddInvoiceWithHTLCs(t *testing.T) {
-	db, cleanUp, err := MakeTestDB()
-	defer cleanUp()
+	db, err := MakeTestDB(t)
 	require.Nil(t, err)
 
 	testInvoice, err := randInvoice(1000)
 	require.Nil(t, err)
 
-	key := CircuitKey{HtlcID: 1}
-	testInvoice.Htlcs[key] = &InvoiceHTLC{}
+	key := models.CircuitKey{HtlcID: 1}
+	testInvoice.Htlcs[key] = &invpkg.InvoiceHTLC{}
 
 	payHash := testInvoice.Terms.PaymentPreimage.Hash()
 	_, err = db.AddInvoice(testInvoice, payHash)
-	require.Equal(t, ErrInvoiceHasHtlcs, err)
+	require.Equal(t, invpkg.ErrInvoiceHasHtlcs, err)
 }
 
 // TestSetIDIndex asserts that the set id index properly adds new invoices as we
@@ -1714,8 +1848,7 @@ func TestAddInvoiceWithHTLCs(t *testing.T) {
 // that invoices with duplicate set ids are disallowed.
 func TestSetIDIndex(t *testing.T) {
 	testClock := clock.NewTestClock(testNow)
-	db, cleanUp, err := MakeTestDB(OptionClock(testClock))
-	defer cleanUp()
+	db, err := MakeTestDB(t, OptionClock(testClock))
 	require.Nil(t, err)
 
 	// We'll start out by creating an invoice and writing it to the DB.
@@ -1736,26 +1869,30 @@ func TestSetIDIndex(t *testing.T) {
 
 	// Update the invoice with an accepted HTLC that also accepts the
 	// invoice.
-	ref := InvoiceRefByHashAndAddr(payHash, invoice.Terms.PaymentAddr)
+	ref := invpkg.InvoiceRefByHashAndAddr(
+		payHash, invoice.Terms.PaymentAddr,
+	)
 	dbInvoice, err := db.UpdateInvoice(
-		ref, (*SetID)(setID), updateAcceptAMPHtlc(0, amt, setID, true),
+		ref, (*invpkg.SetID)(setID),
+		updateAcceptAMPHtlc(0, amt, setID, true),
 	)
 	require.Nil(t, err)
 
 	// We'll update what we expect the accepted invoice to be so that our
 	// comparison below has the correct assumption.
-	invoice.State = ContractOpen
+	invoice.State = invpkg.ContractOpen
 	invoice.AmtPaid = amt
 	invoice.SettleDate = dbInvoice.SettleDate
-	invoice.Htlcs = map[CircuitKey]*InvoiceHTLC{
-		{HtlcID: 0}: makeAMPInvoiceHTLC(amt, *setID, payHash, &preimage),
+	htlc0 := models.CircuitKey{HtlcID: 0}
+	invoice.Htlcs = map[models.CircuitKey]*invpkg.InvoiceHTLC{
+		htlc0: makeAMPInvoiceHTLC(amt, *setID, payHash, &preimage),
 	}
-	invoice.AMPState = map[SetID]InvoiceStateAMP{}
-	invoice.AMPState[*setID] = InvoiceStateAMP{
-		State:   HtlcStateAccepted,
+	invoice.AMPState = map[invpkg.SetID]invpkg.InvoiceStateAMP{}
+	invoice.AMPState[*setID] = invpkg.InvoiceStateAMP{
+		State:   invpkg.HtlcStateAccepted,
 		AmtPaid: amt,
-		InvoiceKeys: map[CircuitKey]struct{}{
-			{HtlcID: 0}: {},
+		InvoiceKeys: map[models.CircuitKey]struct{}{
+			htlc0: {},
 		},
 	}
 
@@ -1763,7 +1900,7 @@ func TestSetIDIndex(t *testing.T) {
 	require.Equal(t, invoice, dbInvoice)
 
 	// Now lookup the invoice by set id and see that we get the same one.
-	refBySetID := InvoiceRefBySetID(*setID)
+	refBySetID := invpkg.InvoiceRefBySetID(*setID)
 	dbInvoiceBySetID, err := db.LookupInvoice(refBySetID)
 	require.Nil(t, err)
 	require.Equal(t, invoice, &dbInvoiceBySetID)
@@ -1781,48 +1918,55 @@ func TestSetIDIndex(t *testing.T) {
 	_, err = db.AddInvoice(invoice2, payHash2)
 	require.Nil(t, err)
 
-	ref2 := InvoiceRefByHashAndAddr(payHash2, invoice2.Terms.PaymentAddr)
-	_, err = db.UpdateInvoice(
-		ref2, (*SetID)(setID), updateAcceptAMPHtlc(0, amt, setID, true),
+	ref2 := invpkg.InvoiceRefByHashAndAddr(
+		payHash2, invoice2.Terms.PaymentAddr,
 	)
-	require.Equal(t, ErrDuplicateSetID{setID: *setID}, err)
+	_, err = db.UpdateInvoice(
+		ref2, (*invpkg.SetID)(setID),
+		updateAcceptAMPHtlc(0, amt, setID, true),
+	)
+	require.Equal(t, invpkg.ErrDuplicateSetID{SetID: *setID}, err)
 
 	// Now, begin constructing a second htlc set under a different set id.
 	// This set will contain two distinct HTLCs.
 	setID2 := &[32]byte{2}
 
 	_, err = db.UpdateInvoice(
-		ref, (*SetID)(setID2), updateAcceptAMPHtlc(1, amt, setID2, false),
+		ref, (*invpkg.SetID)(setID2),
+		updateAcceptAMPHtlc(1, amt, setID2, false),
 	)
 	require.Nil(t, err)
 	dbInvoice, err = db.UpdateInvoice(
-		ref, (*SetID)(setID2), updateAcceptAMPHtlc(2, amt, setID2, false),
+		ref, (*invpkg.SetID)(setID2),
+		updateAcceptAMPHtlc(2, amt, setID2, false),
 	)
 	require.Nil(t, err)
 
 	// We'll update what we expect the settle invoice to be so that our
 	// comparison below has the correct assumption.
-	invoice.State = ContractOpen
+	invoice.State = invpkg.ContractOpen
 	invoice.AmtPaid += 2 * amt
 	invoice.SettleDate = dbInvoice.SettleDate
-	invoice.Htlcs = map[CircuitKey]*InvoiceHTLC{
-		{HtlcID: 0}: makeAMPInvoiceHTLC(amt, *setID, payHash, &preimage),
-		{HtlcID: 1}: makeAMPInvoiceHTLC(amt, *setID2, payHash, nil),
-		{HtlcID: 2}: makeAMPInvoiceHTLC(amt, *setID2, payHash, nil),
+	htlc1 := models.CircuitKey{HtlcID: 1}
+	htlc2 := models.CircuitKey{HtlcID: 2}
+	invoice.Htlcs = map[models.CircuitKey]*invpkg.InvoiceHTLC{
+		htlc0: makeAMPInvoiceHTLC(amt, *setID, payHash, &preimage),
+		htlc1: makeAMPInvoiceHTLC(amt, *setID2, payHash, nil),
+		htlc2: makeAMPInvoiceHTLC(amt, *setID2, payHash, nil),
 	}
-	invoice.AMPState[*setID] = InvoiceStateAMP{
-		State:   HtlcStateAccepted,
+	invoice.AMPState[*setID] = invpkg.InvoiceStateAMP{
+		State:   invpkg.HtlcStateAccepted,
 		AmtPaid: amt,
-		InvoiceKeys: map[CircuitKey]struct{}{
-			{HtlcID: 0}: {},
+		InvoiceKeys: map[models.CircuitKey]struct{}{
+			htlc0: {},
 		},
 	}
-	invoice.AMPState[*setID2] = InvoiceStateAMP{
-		State:   HtlcStateAccepted,
+	invoice.AMPState[*setID2] = invpkg.InvoiceStateAMP{
+		State:   invpkg.HtlcStateAccepted,
 		AmtPaid: amt * 2,
-		InvoiceKeys: map[CircuitKey]struct{}{
-			{HtlcID: 1}: {},
-			{HtlcID: 2}: {},
+		InvoiceKeys: map[models.CircuitKey]struct{}{
+			htlc1: {},
+			htlc2: {},
 		},
 	}
 
@@ -1837,7 +1981,7 @@ func TestSetIDIndex(t *testing.T) {
 
 	// Now lookup the invoice by second set id and see that we get the same
 	// index, including the htlcs under the first set id.
-	refBySetID = InvoiceRefBySetID(*setID2)
+	refBySetID = invpkg.InvoiceRefBySetID(*setID2)
 	dbInvoiceBySetID, err = db.LookupInvoice(refBySetID)
 	require.Nil(t, err)
 	require.Equal(t, invoice, &dbInvoiceBySetID)
@@ -1846,16 +1990,21 @@ func TestSetIDIndex(t *testing.T) {
 	// zero setID so it isn't used for anything internally.
 	_, err = db.UpdateInvoice(
 		ref, nil,
-		getUpdateInvoiceAMPSettle(&[32]byte{}, [32]byte{}, CircuitKey{HtlcID: 99}),
+		getUpdateInvoiceAMPSettle(
+			&[32]byte{}, [32]byte{},
+			models.CircuitKey{HtlcID: 99},
+		),
 	)
-	require.Equal(t, ErrEmptyHTLCSet, err)
+	require.Equal(t, invpkg.ErrEmptyHTLCSet, err)
 
 	// Now settle the first htlc set. The existing HTLCs should remain in
 	// the accepted state and shouldn't be canceled, since we permit an
 	// invoice to be settled multiple times.
 	_, err = db.UpdateInvoice(
-		ref, (*SetID)(setID),
-		getUpdateInvoiceAMPSettle(setID, preimage, CircuitKey{HtlcID: 0}),
+		ref, (*invpkg.SetID)(setID),
+		getUpdateInvoiceAMPSettle(
+			setID, preimage, models.CircuitKey{HtlcID: 0},
+		),
 	)
 	require.Nil(t, err)
 
@@ -1863,40 +2012,43 @@ func TestSetIDIndex(t *testing.T) {
 	require.Nil(t, err)
 	dbInvoice = &freshInvoice
 
-	invoice.State = ContractOpen
+	invoice.State = invpkg.ContractOpen
 
 	// The amount paid should reflect that we have 3 present HTLCs, each
 	// with an amount of the original invoice.
 	invoice.AmtPaid = amt * 3
 
 	ampState := invoice.AMPState[*setID]
-	ampState.State = HtlcStateSettled
+	ampState.State = invpkg.HtlcStateSettled
 	ampState.SettleDate = testNow
 	ampState.SettleIndex = 1
 
 	invoice.AMPState[*setID] = ampState
 
-	invoice.Htlcs[CircuitKey{HtlcID: 0}].State = HtlcStateSettled
-	invoice.Htlcs[CircuitKey{HtlcID: 0}].ResolveTime = time.Unix(1, 0)
+	invoice.Htlcs[htlc0].State = invpkg.HtlcStateSettled
+	invoice.Htlcs[htlc0].ResolveTime = time.Unix(1, 0)
 
 	require.Equal(t, invoice, dbInvoice)
 
 	// If we try to settle the same set ID again, then we should get an
 	// error, as it's already been settled.
 	_, err = db.UpdateInvoice(
-		ref, (*SetID)(setID),
-		getUpdateInvoiceAMPSettle(setID, preimage, CircuitKey{HtlcID: 0}),
+		ref, (*invpkg.SetID)(setID),
+		getUpdateInvoiceAMPSettle(
+			setID, preimage, models.CircuitKey{HtlcID: 0},
+		),
 	)
-	require.Equal(t, ErrEmptyHTLCSet, err)
+	require.Equal(t, invpkg.ErrEmptyHTLCSet, err)
 
 	// Next, let's attempt to settle the other active set ID for this
 	// invoice. This will allow us to exercise the case where we go to
 	// settle an invoice with a new setID after one has already been fully
 	// settled.
 	_, err = db.UpdateInvoice(
-		ref, (*SetID)(setID2),
+		ref, (*invpkg.SetID)(setID2),
 		getUpdateInvoiceAMPSettle(
-			setID2, preimage, CircuitKey{HtlcID: 1}, CircuitKey{HtlcID: 2},
+			setID2, preimage, models.CircuitKey{HtlcID: 1},
+			models.CircuitKey{HtlcID: 2},
 		),
 	)
 	require.Nil(t, err)
@@ -1907,38 +2059,38 @@ func TestSetIDIndex(t *testing.T) {
 
 	// Now the rest of the HTLCs should show as fully settled.
 	ampState = invoice.AMPState[*setID2]
-	ampState.State = HtlcStateSettled
+	ampState.State = invpkg.HtlcStateSettled
 	ampState.SettleDate = testNow
 	ampState.SettleIndex = 2
 
 	invoice.AMPState[*setID2] = ampState
 
-	invoice.Htlcs[CircuitKey{HtlcID: 1}].State = HtlcStateSettled
-	invoice.Htlcs[CircuitKey{HtlcID: 1}].ResolveTime = time.Unix(1, 0)
-	invoice.Htlcs[CircuitKey{HtlcID: 1}].AMP.Preimage = &preimage
+	invoice.Htlcs[htlc1].State = invpkg.HtlcStateSettled
+	invoice.Htlcs[htlc1].ResolveTime = time.Unix(1, 0)
+	invoice.Htlcs[htlc1].AMP.Preimage = &preimage
 
-	invoice.Htlcs[CircuitKey{HtlcID: 2}].State = HtlcStateSettled
-	invoice.Htlcs[CircuitKey{HtlcID: 2}].ResolveTime = time.Unix(1, 0)
-	invoice.Htlcs[CircuitKey{HtlcID: 2}].AMP.Preimage = &preimage
+	invoice.Htlcs[htlc2].State = invpkg.HtlcStateSettled
+	invoice.Htlcs[htlc2].ResolveTime = time.Unix(1, 0)
+	invoice.Htlcs[htlc2].AMP.Preimage = &preimage
 
 	require.Equal(t, invoice, dbInvoice)
 
 	// Lastly, querying for an unknown set id should fail.
-	refUnknownSetID := InvoiceRefBySetID([32]byte{})
+	refUnknownSetID := invpkg.InvoiceRefBySetID([32]byte{})
 	_, err = db.LookupInvoice(refUnknownSetID)
-	require.Equal(t, ErrInvoiceNotFound, err)
+	require.Equal(t, invpkg.ErrInvoiceNotFound, err)
 }
 
 func makeAMPInvoiceHTLC(amt lnwire.MilliSatoshi, setID [32]byte,
-	hash lntypes.Hash, preimage *lntypes.Preimage) *InvoiceHTLC {
+	hash lntypes.Hash, preimage *lntypes.Preimage) *invpkg.InvoiceHTLC {
 
-	return &InvoiceHTLC{
+	return &invpkg.InvoiceHTLC{
 		Amt:           amt,
 		AcceptTime:    testNow,
 		ResolveTime:   time.Time{},
-		State:         HtlcStateAccepted,
+		State:         invpkg.HtlcStateAccepted,
 		CustomRecords: make(record.CustomSet),
-		AMP: &InvoiceHtlcAMPData{
+		AMP: &invpkg.InvoiceHtlcAMPData{
 			Record:   *record.NewAMP([32]byte{}, setID, 0),
 			Hash:     hash,
 			Preimage: preimage,
@@ -1949,65 +2101,77 @@ func makeAMPInvoiceHTLC(amt lnwire.MilliSatoshi, setID [32]byte,
 // updateAcceptAMPHtlc returns an invoice update callback that, when called,
 // settles the invoice with the given amount.
 func updateAcceptAMPHtlc(id uint64, amt lnwire.MilliSatoshi,
-	setID *[32]byte, accept bool) InvoiceUpdateCallback {
+	setID *[32]byte, accept bool) invpkg.InvoiceUpdateCallback {
 
-	return func(invoice *Invoice) (*InvoiceUpdateDesc, error) {
-		if invoice.State == ContractSettled {
-			return nil, ErrInvoiceAlreadySettled
+	return func(invoice *invpkg.Invoice) (*invpkg.InvoiceUpdateDesc,
+		error) {
+
+		if invoice.State == invpkg.ContractSettled {
+			return nil, invpkg.ErrInvoiceAlreadySettled
 		}
 
 		noRecords := make(record.CustomSet)
 
 		var (
-			state    *InvoiceStateUpdateDesc
+			state    *invpkg.InvoiceStateUpdateDesc
 			preimage *lntypes.Preimage
 		)
 		if accept {
-			state = &InvoiceStateUpdateDesc{
-				NewState: ContractAccepted,
+			state = &invpkg.InvoiceStateUpdateDesc{
+				NewState: invpkg.ContractAccepted,
 				SetID:    setID,
 			}
 			pre := *invoice.Terms.PaymentPreimage
 			preimage = &pre
 		}
 
-		ampData := &InvoiceHtlcAMPData{
+		ampData := &invpkg.InvoiceHtlcAMPData{
 			Record:   *record.NewAMP([32]byte{}, *setID, 0),
 			Hash:     invoice.Terms.PaymentPreimage.Hash(),
 			Preimage: preimage,
 		}
-		update := &InvoiceUpdateDesc{
-			State: state,
-			AddHtlcs: map[CircuitKey]*HtlcAcceptDesc{
-				{HtlcID: id}: {
-					Amt:           amt,
-					CustomRecords: noRecords,
-					AMP:           ampData,
-				},
+
+		htlcs := map[models.CircuitKey]*invpkg.HtlcAcceptDesc{
+			{HtlcID: id}: {
+				Amt:           amt,
+				CustomRecords: noRecords,
+				AMP:           ampData,
 			},
+		}
+
+		update := &invpkg.InvoiceUpdateDesc{
+			State:      state,
+			AddHtlcs:   htlcs,
+			UpdateType: invpkg.AddHTLCsUpdate,
 		}
 
 		return update, nil
 	}
 }
 
-func getUpdateInvoiceAMPSettle(setID *[32]byte,
-	preimage [32]byte, circuitKeys ...CircuitKey) InvoiceUpdateCallback {
+func getUpdateInvoiceAMPSettle(setID *[32]byte, preimage [32]byte,
+	circuitKeys ...models.CircuitKey) invpkg.InvoiceUpdateCallback {
 
-	return func(invoice *Invoice) (*InvoiceUpdateDesc, error) {
-		if invoice.State == ContractSettled {
-			return nil, ErrInvoiceAlreadySettled
+	return func(invoice *invpkg.Invoice) (*invpkg.InvoiceUpdateDesc,
+		error) {
+
+		if invoice.State == invpkg.ContractSettled {
+			return nil, invpkg.ErrInvoiceAlreadySettled
 		}
 
-		preImageSet := make(map[CircuitKey]lntypes.Preimage)
+		preImageSet := make(map[models.CircuitKey]lntypes.Preimage)
 		for _, key := range circuitKeys {
 			preImageSet[key] = preimage
 		}
 
-		update := &InvoiceUpdateDesc{
-			State: &InvoiceStateUpdateDesc{
+		update := &invpkg.InvoiceUpdateDesc{
+			// TODO(positiveblue): this would be an invalid update
+			// because tires to settle an AMP invoice without adding
+			// any new htlc.
+			UpdateType: invpkg.AddHTLCsUpdate,
+			State: &invpkg.InvoiceStateUpdateDesc{
 				Preimage:      nil,
-				NewState:      ContractSettled,
+				NewState:      invpkg.ContractSettled,
 				SetID:         setID,
 				HTLCPreimages: preImageSet,
 			},
@@ -2025,8 +2189,7 @@ func getUpdateInvoiceAMPSettle(setID *[32]byte,
 func TestUnexpectedInvoicePreimage(t *testing.T) {
 	t.Parallel()
 
-	db, cleanup, err := MakeTestDB()
-	defer cleanup()
+	db, err := MakeTestDB(t)
 	require.NoError(t, err, "unable to make test db")
 
 	invoice, err := randInvoice(lnwire.MilliSatoshi(100))
@@ -2041,12 +2204,12 @@ func TestUnexpectedInvoicePreimage(t *testing.T) {
 	// in order to settle an MPP invoice, the InvoiceRef must present a
 	// payment hash against which to validate the preimage.
 	_, err = db.UpdateInvoice(
-		InvoiceRefByAddr(invoice.Terms.PaymentAddr), nil,
+		invpkg.InvoiceRefByAddr(invoice.Terms.PaymentAddr), nil,
 		getUpdateInvoice(invoice.Terms.Value),
 	)
 
-	//Assert that we get ErrUnexpectedInvoicePreimage.
-	require.Error(t, ErrUnexpectedInvoicePreimage, err)
+	// Assert that we get ErrUnexpectedInvoicePreimage.
+	require.Error(t, invpkg.ErrUnexpectedInvoicePreimage, err)
 }
 
 type updateHTLCPreimageTestCase struct {
@@ -2069,7 +2232,7 @@ func TestUpdateHTLCPreimages(t *testing.T) {
 		{
 			name:               "diff preimage on settle",
 			settleSamePreimage: false,
-			expError:           ErrHTLCPreimageAlreadyExists,
+			expError:           invpkg.ErrHTLCPreimageAlreadyExists,
 		},
 	}
 
@@ -2082,8 +2245,7 @@ func TestUpdateHTLCPreimages(t *testing.T) {
 }
 
 func testUpdateHTLCPreimages(t *testing.T, test updateHTLCPreimageTestCase) {
-	db, cleanup, err := MakeTestDB()
-	defer cleanup()
+	db, err := MakeTestDB(t)
 	require.NoError(t, err, "unable to make test db")
 
 	// We'll start out by creating an invoice and writing it to the DB.
@@ -2105,13 +2267,14 @@ func testUpdateHTLCPreimages(t *testing.T, test updateHTLCPreimageTestCase) {
 
 	// Update the invoice with an accepted HTLC that also accepts the
 	// invoice.
-	ref := InvoiceRefByAddr(invoice.Terms.PaymentAddr)
+	ref := invpkg.InvoiceRefByAddr(invoice.Terms.PaymentAddr)
 	dbInvoice, err := db.UpdateInvoice(
-		ref, (*SetID)(setID), updateAcceptAMPHtlc(0, amt, setID, true),
+		ref, (*invpkg.SetID)(setID),
+		updateAcceptAMPHtlc(0, amt, setID, true),
 	)
 	require.Nil(t, err)
 
-	htlcPreimages := make(map[CircuitKey]lntypes.Preimage)
+	htlcPreimages := make(map[models.CircuitKey]lntypes.Preimage)
 	for key := range dbInvoice.Htlcs {
 		// Set the either the same preimage used to accept above, or a
 		// blank preimage depending on the test case.
@@ -2122,30 +2285,36 @@ func testUpdateHTLCPreimages(t *testing.T, test updateHTLCPreimageTestCase) {
 		htlcPreimages[key] = pre
 	}
 
-	updateInvoice := func(invoice *Invoice) (*InvoiceUpdateDesc, error) {
-		update := &InvoiceUpdateDesc{
-			State: &InvoiceStateUpdateDesc{
+	updateInvoice := func(
+		invoice *invpkg.Invoice) (*invpkg.InvoiceUpdateDesc, error) {
+
+		update := &invpkg.InvoiceUpdateDesc{
+			// TODO(positiveblue): this would be an invalid update
+			// because tires to settle an AMP invoice without adding
+			// any new htlc.
+			State: &invpkg.InvoiceStateUpdateDesc{
 				Preimage:      nil,
-				NewState:      ContractSettled,
+				NewState:      invpkg.ContractSettled,
 				HTLCPreimages: htlcPreimages,
 				SetID:         setID,
 			},
+			UpdateType: invpkg.AddHTLCsUpdate,
 		}
 
 		return update, nil
 	}
 
 	// Now settle the HTLC set and assert the resulting error.
-	_, err = db.UpdateInvoice(ref, (*SetID)(setID), updateInvoice)
+	_, err = db.UpdateInvoice(ref, (*invpkg.SetID)(setID), updateInvoice)
 	require.Equal(t, test.expError, err)
 }
 
 type updateHTLCTest struct {
 	name     string
-	input    InvoiceHTLC
-	invState ContractState
+	input    invpkg.InvoiceHTLC
+	invState invpkg.ContractState
 	setID    *[32]byte
-	output   InvoiceHTLC
+	output   invpkg.InvoiceHTLC
 	expErr   error
 }
 
@@ -2166,27 +2335,27 @@ func TestUpdateHTLC(t *testing.T) {
 	tests := []updateHTLCTest{
 		{
 			name: "MPP accept",
-			input: InvoiceHTLC{
+			input: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
 				AMP:           nil,
 			},
-			invState: ContractAccepted,
+			invState: invpkg.ContractAccepted,
 			setID:    nil,
-			output: InvoiceHTLC{
+			output: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
 				AMP:           nil,
 			},
@@ -2194,27 +2363,27 @@ func TestUpdateHTLC(t *testing.T) {
 		},
 		{
 			name: "MPP settle",
-			input: InvoiceHTLC{
+			input: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
 				AMP:           nil,
 			},
-			invState: ContractSettled,
+			invState: invpkg.ContractSettled,
 			setID:    nil,
-			output: InvoiceHTLC{
+			output: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   testNow,
 				Expiry:        40,
-				State:         HtlcStateSettled,
+				State:         invpkg.HtlcStateSettled,
 				CustomRecords: make(record.CustomSet),
 				AMP:           nil,
 			},
@@ -2222,27 +2391,27 @@ func TestUpdateHTLC(t *testing.T) {
 		},
 		{
 			name: "MPP cancel",
-			input: InvoiceHTLC{
+			input: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
 				AMP:           nil,
 			},
-			invState: ContractCanceled,
+			invState: invpkg.ContractCanceled,
 			setID:    nil,
-			output: InvoiceHTLC{
+			output: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   testNow,
 				Expiry:        40,
-				State:         HtlcStateCanceled,
+				State:         invpkg.HtlcStateCanceled,
 				CustomRecords: make(record.CustomSet),
 				AMP:           nil,
 			},
@@ -2250,105 +2419,105 @@ func TestUpdateHTLC(t *testing.T) {
 		},
 		{
 			name: "AMP accept missing preimage",
-			input: InvoiceHTLC{
+			input: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: nil,
 				},
 			},
-			invState: ContractAccepted,
+			invState: invpkg.ContractAccepted,
 			setID:    &setID,
-			output: InvoiceHTLC{
+			output: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: nil,
 				},
 			},
-			expErr: ErrHTLCPreimageMissing,
+			expErr: invpkg.ErrHTLCPreimageMissing,
 		},
 		{
 			name: "AMP accept invalid preimage",
-			input: InvoiceHTLC{
+			input: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &fakePreimage,
 				},
 			},
-			invState: ContractAccepted,
+			invState: invpkg.ContractAccepted,
 			setID:    &setID,
-			output: InvoiceHTLC{
+			output: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &fakePreimage,
 				},
 			},
-			expErr: ErrHTLCPreimageMismatch,
+			expErr: invpkg.ErrHTLCPreimageMismatch,
 		},
 		{
 			name: "AMP accept valid preimage",
-			input: InvoiceHTLC{
+			input: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
 				},
 			},
-			invState: ContractAccepted,
+			invState: invpkg.ContractAccepted,
 			setID:    &setID,
-			output: InvoiceHTLC{
+			output: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
@@ -2358,33 +2527,33 @@ func TestUpdateHTLC(t *testing.T) {
 		},
 		{
 			name: "AMP accept valid preimage different htlc set",
-			input: InvoiceHTLC{
+			input: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
 				},
 			},
-			invState: ContractAccepted,
+			invState: invpkg.ContractAccepted,
 			setID:    &diffSetID,
-			output: InvoiceHTLC{
+			output: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
@@ -2394,105 +2563,105 @@ func TestUpdateHTLC(t *testing.T) {
 		},
 		{
 			name: "AMP settle missing preimage",
-			input: InvoiceHTLC{
+			input: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: nil,
 				},
 			},
-			invState: ContractSettled,
+			invState: invpkg.ContractSettled,
 			setID:    &setID,
-			output: InvoiceHTLC{
+			output: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: nil,
 				},
 			},
-			expErr: ErrHTLCPreimageMissing,
+			expErr: invpkg.ErrHTLCPreimageMissing,
 		},
 		{
 			name: "AMP settle invalid preimage",
-			input: InvoiceHTLC{
+			input: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &fakePreimage,
 				},
 			},
-			invState: ContractSettled,
+			invState: invpkg.ContractSettled,
 			setID:    &setID,
-			output: InvoiceHTLC{
+			output: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &fakePreimage,
 				},
 			},
-			expErr: ErrHTLCPreimageMismatch,
+			expErr: invpkg.ErrHTLCPreimageMismatch,
 		},
 		{
 			name: "AMP settle valid preimage",
-			input: InvoiceHTLC{
+			input: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
 				},
 			},
-			invState: ContractSettled,
+			invState: invpkg.ContractSettled,
 			setID:    &setID,
-			output: InvoiceHTLC{
+			output: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   testNow,
 				Expiry:        40,
-				State:         HtlcStateSettled,
+				State:         invpkg.HtlcStateSettled,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
@@ -2506,33 +2675,33 @@ func TestUpdateHTLC(t *testing.T) {
 			// to a given pay_addr. In this case, the HTLC should
 			// remain in the accepted state.
 			name: "AMP settle valid preimage different htlc set",
-			input: InvoiceHTLC{
+			input: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
 				},
 			},
-			invState: ContractSettled,
+			invState: invpkg.ContractSettled,
 			setID:    &diffSetID,
-			output: InvoiceHTLC{
+			output: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
@@ -2542,105 +2711,105 @@ func TestUpdateHTLC(t *testing.T) {
 		},
 		{
 			name: "accept invoice htlc already settled",
-			input: InvoiceHTLC{
+			input: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   testAlreadyNow,
 				Expiry:        40,
-				State:         HtlcStateSettled,
+				State:         invpkg.HtlcStateSettled,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
 				},
 			},
-			invState: ContractAccepted,
+			invState: invpkg.ContractAccepted,
 			setID:    &setID,
-			output: InvoiceHTLC{
+			output: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   testAlreadyNow,
 				Expiry:        40,
-				State:         HtlcStateSettled,
+				State:         invpkg.HtlcStateSettled,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
 				},
 			},
-			expErr: ErrHTLCAlreadySettled,
+			expErr: invpkg.ErrHTLCAlreadySettled,
 		},
 		{
 			name: "cancel invoice htlc already settled",
-			input: InvoiceHTLC{
+			input: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   testAlreadyNow,
 				Expiry:        40,
-				State:         HtlcStateSettled,
+				State:         invpkg.HtlcStateSettled,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
 				},
 			},
-			invState: ContractCanceled,
+			invState: invpkg.ContractCanceled,
 			setID:    &setID,
-			output: InvoiceHTLC{
+			output: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   testAlreadyNow,
 				Expiry:        40,
-				State:         HtlcStateSettled,
+				State:         invpkg.HtlcStateSettled,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
 				},
 			},
-			expErr: ErrHTLCAlreadySettled,
+			expErr: invpkg.ErrHTLCAlreadySettled,
 		},
 		{
 			name: "settle invoice htlc already settled",
-			input: InvoiceHTLC{
+			input: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   testAlreadyNow,
 				Expiry:        40,
-				State:         HtlcStateSettled,
+				State:         invpkg.HtlcStateSettled,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
 				},
 			},
-			invState: ContractSettled,
+			invState: invpkg.ContractSettled,
 			setID:    &setID,
-			output: InvoiceHTLC{
+			output: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   testAlreadyNow,
 				Expiry:        40,
-				State:         HtlcStateSettled,
+				State:         invpkg.HtlcStateSettled,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
@@ -2650,33 +2819,33 @@ func TestUpdateHTLC(t *testing.T) {
 		},
 		{
 			name: "cancel invoice",
-			input: InvoiceHTLC{
+			input: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   time.Time{},
 				Expiry:        40,
-				State:         HtlcStateAccepted,
+				State:         invpkg.HtlcStateAccepted,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
 				},
 			},
-			invState: ContractCanceled,
+			invState: invpkg.ContractCanceled,
 			setID:    &setID,
-			output: InvoiceHTLC{
+			output: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   testNow,
 				Expiry:        40,
-				State:         HtlcStateCanceled,
+				State:         invpkg.HtlcStateCanceled,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
@@ -2686,33 +2855,33 @@ func TestUpdateHTLC(t *testing.T) {
 		},
 		{
 			name: "accept invoice htlc already canceled",
-			input: InvoiceHTLC{
+			input: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   testAlreadyNow,
 				Expiry:        40,
-				State:         HtlcStateCanceled,
+				State:         invpkg.HtlcStateCanceled,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
 				},
 			},
-			invState: ContractAccepted,
+			invState: invpkg.ContractAccepted,
 			setID:    &setID,
-			output: InvoiceHTLC{
+			output: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   testAlreadyNow,
 				Expiry:        40,
-				State:         HtlcStateCanceled,
+				State:         invpkg.HtlcStateCanceled,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
@@ -2722,33 +2891,33 @@ func TestUpdateHTLC(t *testing.T) {
 		},
 		{
 			name: "cancel invoice htlc already canceled",
-			input: InvoiceHTLC{
+			input: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   testAlreadyNow,
 				Expiry:        40,
-				State:         HtlcStateCanceled,
+				State:         invpkg.HtlcStateCanceled,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
 				},
 			},
-			invState: ContractCanceled,
+			invState: invpkg.ContractCanceled,
 			setID:    &setID,
-			output: InvoiceHTLC{
+			output: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   testAlreadyNow,
 				Expiry:        40,
-				State:         HtlcStateCanceled,
+				State:         invpkg.HtlcStateCanceled,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
@@ -2758,33 +2927,33 @@ func TestUpdateHTLC(t *testing.T) {
 		},
 		{
 			name: "settle invoice htlc already canceled",
-			input: InvoiceHTLC{
+			input: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   testAlreadyNow,
 				Expiry:        40,
-				State:         HtlcStateCanceled,
+				State:         invpkg.HtlcStateCanceled,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
 				},
 			},
-			invState: ContractSettled,
+			invState: invpkg.ContractSettled,
 			setID:    &setID,
-			output: InvoiceHTLC{
+			output: invpkg.InvoiceHTLC{
 				Amt:           5000,
 				MppTotalAmt:   5000,
 				AcceptHeight:  100,
 				AcceptTime:    testNow,
 				ResolveTime:   testAlreadyNow,
 				Expiry:        40,
-				State:         HtlcStateCanceled,
+				State:         invpkg.HtlcStateCanceled,
 				CustomRecords: make(record.CustomSet),
-				AMP: &InvoiceHtlcAMPData{
+				AMP: &invpkg.InvoiceHtlcAMPData{
 					Record:   *ampRecord,
 					Hash:     hash,
 					Preimage: &preimage,
@@ -2814,13 +2983,12 @@ func testUpdateHTLC(t *testing.T, test updateHTLCTest) {
 func TestDeleteInvoices(t *testing.T) {
 	t.Parallel()
 
-	db, cleanup, err := MakeTestDB()
-	defer cleanup()
+	db, err := MakeTestDB(t)
 	require.NoError(t, err, "unable to make test db")
 
 	// Add some invoices to the test db.
 	numInvoices := 3
-	invoicesToDelete := make([]InvoiceDeleteRef, numInvoices)
+	invoicesToDelete := make([]invpkg.InvoiceDeleteRef, numInvoices)
 
 	for i := 0; i < numInvoices; i++ {
 		invoice, err := randInvoice(lnwire.MilliSatoshi(i + 1))
@@ -2833,14 +3001,14 @@ func TestDeleteInvoices(t *testing.T) {
 		// Settle the second invoice.
 		if i == 1 {
 			invoice, err = db.UpdateInvoice(
-				InvoiceRefByHash(paymentHash), nil,
+				invpkg.InvoiceRefByHash(paymentHash), nil,
 				getUpdateInvoice(invoice.Terms.Value),
 			)
 			require.NoError(t, err, "unable to settle invoice")
 		}
 
 		// store the delete ref for later.
-		invoicesToDelete[i] = InvoiceDeleteRef{
+		invoicesToDelete[i] = invpkg.InvoiceDeleteRef{
 			PayHash:     paymentHash,
 			PayAddr:     &invoice.Terms.PaymentAddr,
 			AddIndex:    addIndex,
@@ -2852,7 +3020,7 @@ func TestDeleteInvoices(t *testing.T) {
 	// to the passed count.
 	assertInvoiceCount := func(count int) {
 		// Query to collect all invoices.
-		query := InvoiceQuery{
+		query := invpkg.InvoiceQuery{
 			IndexOffset:    0,
 			NumMaxInvoices: math.MaxUint64,
 		}
@@ -2898,9 +3066,8 @@ func TestDeleteInvoices(t *testing.T) {
 func TestAddInvoiceInvalidFeatureDeps(t *testing.T) {
 	t.Parallel()
 
-	db, cleanup, err := MakeTestDB()
+	db, err := MakeTestDB(t)
 	require.NoError(t, err, "unable to make test db")
-	defer cleanup()
 
 	invoice, err := randInvoice(500)
 	require.NoError(t, err)
@@ -2929,43 +3096,43 @@ func TestEncodeDecodeAmpInvoiceState(t *testing.T) {
 	setID2 := [32]byte{2}
 	setID3 := [32]byte{3}
 
-	circuitKey1 := CircuitKey{
+	circuitKey1 := models.CircuitKey{
 		ChanID: lnwire.NewShortChanIDFromInt(1), HtlcID: 1,
 	}
-	circuitKey2 := CircuitKey{
+	circuitKey2 := models.CircuitKey{
 		ChanID: lnwire.NewShortChanIDFromInt(2), HtlcID: 2,
 	}
-	circuitKey3 := CircuitKey{
+	circuitKey3 := models.CircuitKey{
 		ChanID: lnwire.NewShortChanIDFromInt(2), HtlcID: 3,
 	}
 
 	// Make a sample invoice state map that we'll encode then decode to
 	// assert equality of.
-	ampState := AMPInvoiceState{
-		setID1: InvoiceStateAMP{
-			State:       HtlcStateSettled,
+	ampState := invpkg.AMPInvoiceState{
+		setID1: invpkg.InvoiceStateAMP{
+			State:       invpkg.HtlcStateSettled,
 			SettleDate:  testNow,
 			SettleIndex: 1,
-			InvoiceKeys: map[CircuitKey]struct{}{
+			InvoiceKeys: map[models.CircuitKey]struct{}{
 				circuitKey1: {},
 				circuitKey2: {},
 			},
 			AmtPaid: 5,
 		},
-		setID2: InvoiceStateAMP{
-			State:       HtlcStateCanceled,
+		setID2: invpkg.InvoiceStateAMP{
+			State:       invpkg.HtlcStateCanceled,
 			SettleDate:  testNow,
 			SettleIndex: 2,
-			InvoiceKeys: map[CircuitKey]struct{}{
+			InvoiceKeys: map[models.CircuitKey]struct{}{
 				circuitKey1: {},
 			},
 			AmtPaid: 6,
 		},
-		setID3: InvoiceStateAMP{
-			State:       HtlcStateAccepted,
+		setID3: invpkg.InvoiceStateAMP{
+			State:       invpkg.HtlcStateAccepted,
 			SettleDate:  testNow,
 			SettleIndex: 3,
-			InvoiceKeys: map[CircuitKey]struct{}{
+			InvoiceKeys: map[models.CircuitKey]struct{}{
 				circuitKey1: {},
 				circuitKey2: {},
 				circuitKey3: {},
@@ -2978,8 +3145,9 @@ func TestEncodeDecodeAmpInvoiceState(t *testing.T) {
 	// amp state we created above.
 	tlvStream, err := tlv.NewStream(
 		tlv.MakeDynamicRecord(
-			invoiceAmpStateType, &ampState, ampState.recordSize,
-			ampStateEncoder, ampStateDecoder,
+			invoiceAmpStateType, &ampState,
+			ampRecordSize(&ampState), ampStateEncoder,
+			ampStateDecoder,
 		),
 	)
 	require.Nil(t, err)
@@ -2991,7 +3159,7 @@ func TestEncodeDecodeAmpInvoiceState(t *testing.T) {
 
 	// Now create a new blank ampState map, which we'll use to decode the
 	// bytes into.
-	ampState2 := make(AMPInvoiceState)
+	ampState2 := make(invpkg.AMPInvoiceState)
 
 	// Decode from the raw stream into this blank mpa.
 	tlvStream, err = tlv.NewStream(

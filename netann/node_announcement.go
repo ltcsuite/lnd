@@ -1,6 +1,7 @@
 package netann
 
 import (
+	"image/color"
 	"net"
 	"time"
 
@@ -13,11 +14,35 @@ import (
 // lnwire.NodeAnnouncement.
 type NodeAnnModifier func(*lnwire.NodeAnnouncement)
 
+// NodeAnnSetAlias is a functional option that sets the alias of the
+// given node announcement.
+func NodeAnnSetAlias(alias lnwire.NodeAlias) func(*lnwire.NodeAnnouncement) {
+	return func(nodeAnn *lnwire.NodeAnnouncement) {
+		nodeAnn.Alias = alias
+	}
+}
+
 // NodeAnnSetAddrs is a functional option that allows updating the addresses of
 // the given node announcement.
 func NodeAnnSetAddrs(addrs []net.Addr) func(*lnwire.NodeAnnouncement) {
 	return func(nodeAnn *lnwire.NodeAnnouncement) {
 		nodeAnn.Addresses = addrs
+	}
+}
+
+// NodeAnnSetColor is a functional option that sets the color of the
+// given node announcement.
+func NodeAnnSetColor(newColor color.RGBA) func(*lnwire.NodeAnnouncement) {
+	return func(nodeAnn *lnwire.NodeAnnouncement) {
+		nodeAnn.RGBColor = newColor
+	}
+}
+
+// NodeAnnSetFeatures is a functional option that allows updating the features of
+// the given node announcement.
+func NodeAnnSetFeatures(features *lnwire.RawFeatureVector) func(*lnwire.NodeAnnouncement) {
+	return func(nodeAnn *lnwire.NodeAnnouncement) {
+		nodeAnn.Features = features
 	}
 }
 
@@ -35,18 +60,11 @@ func NodeAnnSetTimestamp(nodeAnn *lnwire.NodeAnnouncement) {
 	nodeAnn.Timestamp = newTimestamp
 }
 
-// SignNodeAnnouncement applies the given modifies to the passed
-// lnwire.NodeAnnouncement, then signs the resulting announcement. The provided
-// update should be the most recent, valid update, otherwise the timestamp may
-// not monotonically increase from the prior.
+// SignNodeAnnouncement signs the lnwire.NodeAnnouncement provided, which
+// should be the most recent, valid update, otherwise the timestamp may not
+// monotonically increase from the prior.
 func SignNodeAnnouncement(signer lnwallet.MessageSigner,
-	keyLoc keychain.KeyLocator, nodeAnn *lnwire.NodeAnnouncement,
-	mods ...NodeAnnModifier) error {
-
-	// Apply the requested changes to the node announcement.
-	for _, modifier := range mods {
-		modifier(nodeAnn)
-	}
+	keyLoc keychain.KeyLocator, nodeAnn *lnwire.NodeAnnouncement) error {
 
 	// Create the DER-encoded ECDSA signature over the message digest.
 	sig, err := SignAnnouncement(signer, keyLoc, nodeAnn)

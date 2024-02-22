@@ -124,7 +124,6 @@ func createSweeperTestContext(t *testing.T) *sweeperTestContext {
 		timeoutChan: make(chan chan time.Time, 1),
 	}
 
-	var outputScriptCount byte
 	ctx.sweeper = New(&UtxoSweeperConfig{
 		Notifier: notifier,
 		Wallet:   backend,
@@ -137,8 +136,8 @@ func createSweeperTestContext(t *testing.T) *sweeperTestContext {
 		Signer: &mock.DummySigner{},
 		GenSweepScript: func() ([]byte, error) {
 			script := make([]byte, input.P2WPKHSize)
-			script[0] = outputScriptCount
-			outputScriptCount++
+			script[0] = 0
+			script[1] = 20
 			return script, nil
 		},
 		FeeEstimator:     estimator,
@@ -330,7 +329,8 @@ func assertTxSweepsInputs(t *testing.T, sweepTx *wire.MsgTx,
 // NOTE: This assumes that transactions only have one output, as this is the
 // only type of transaction the UtxoSweeper can create at the moment.
 func assertTxFeeRate(t *testing.T, tx *wire.MsgTx,
-	expectedFeeRate chainfee.SatPerKWeight, inputs ...input.Input) {
+	expectedFeeRate chainfee.SatPerKWeight, changePk []byte,
+	inputs ...input.Input) {
 
 	t.Helper()
 
@@ -355,7 +355,9 @@ func assertTxFeeRate(t *testing.T, tx *wire.MsgTx,
 	outputAmt := tx.TxOut[0].Value
 
 	fee := ltcutil.Amount(inputAmt - outputAmt)
-	_, estimator := getWeightEstimate(inputs, nil, 0)
+	_, estimator, err := getWeightEstimate(inputs, nil, 0, changePk)
+	require.NoError(t, err)
+
 	txWeight := estimator.weight()
 
 	expectedFee := expectedFeeRate.FeeForWeight(int64(txWeight))
@@ -402,16 +404,6 @@ func TestSuccess(t *testing.T) {
 	}
 
 	ctx.finish(1)
-
-	// Assert that last tx is stored in the database so we can republish
-	// on restart.
-	lastTx, err := ctx.store.GetLastPublishedTx()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if lastTx == nil || sweepTx.TxHash() != lastTx.TxHash() {
-		t.Fatalf("last tx not stored")
-	}
 }
 
 // TestDust asserts that inputs that are not big enough to raise above the dust
@@ -778,9 +770,6 @@ func TestRestart(t *testing.T) {
 	// Restart sweeper.
 	ctx.restartSweeper()
 
-	// Expect last tx to be republished.
-	ctx.receiveTx()
-
 	// Simulate other subsystem (e.g. contract resolver) re-offering inputs.
 	spendChan1, err := ctx.sweeper.SweepInput(input1, defaultFeePref)
 	if err != nil {
@@ -828,9 +817,6 @@ func TestRestart(t *testing.T) {
 	// Restart sweeper again. No action is expected.
 	ctx.restartSweeper()
 
-	// Expect last tx to be republished.
-	ctx.receiveTx()
-
 	ctx.finish(1)
 }
 
@@ -858,9 +844,6 @@ func TestRestartRemoteSpend(t *testing.T) {
 
 	// Restart sweeper.
 	ctx.restartSweeper()
-
-	// Expect last tx to be republished.
-	ctx.receiveTx()
 
 	// Replace the sweep tx with a remote tx spending input 1.
 	ctx.backend.deleteUnconfirmed(sweepTx.TxHash())
@@ -916,9 +899,6 @@ func TestRestartConfirmed(t *testing.T) {
 	// Restart sweeper.
 	ctx.restartSweeper()
 
-	// Expect last tx to be republished.
-	ctx.receiveTx()
-
 	// Mine the sweep tx.
 	ctx.backend.mine()
 
@@ -933,35 +913,6 @@ func TestRestartConfirmed(t *testing.T) {
 
 	// Timer started but not needed because spend ntfn was sent.
 	ctx.tick()
-
-	ctx.finish(1)
-}
-
-// TestRestartRepublish asserts that sweeper republishes the last published
-// tx on restart.
-func TestRestartRepublish(t *testing.T) {
-	ctx := createSweeperTestContext(t)
-
-	_, err := ctx.sweeper.SweepInput(spendableInputs[0], defaultFeePref)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	ctx.tick()
-
-	sweepTx := ctx.receiveTx()
-
-	// Restart sweeper again. No action is expected.
-	ctx.restartSweeper()
-
-	republishedTx := ctx.receiveTx()
-
-	if sweepTx.TxHash() != republishedTx.TxHash() {
-		t.Fatalf("last tx not republished")
-	}
-
-	// Mine the tx to conclude the test properly.
-	ctx.backend.mine()
 
 	ctx.finish(1)
 }
@@ -1092,14 +1043,19 @@ func TestDifferentFeePreferences(t *testing.T) {
 	// transactions to be broadcast in order of high to low fee preference.
 	ctx.tick()
 
+	// Generate the same type of sweep script that was used for weight
+	// estimation.
+	changePk, err := ctx.sweeper.cfg.GenSweepScript()
+	require.NoError(t, err)
+
 	// The first transaction broadcast should be the one spending the higher
 	// fee rate inputs.
 	sweepTx1 := ctx.receiveTx()
-	assertTxFeeRate(t, &sweepTx1, highFeeRate, input1, input2)
+	assertTxFeeRate(t, &sweepTx1, highFeeRate, changePk, input1, input2)
 
 	// The second should be the one spending the lower fee rate inputs.
 	sweepTx2 := ctx.receiveTx()
-	assertTxFeeRate(t, &sweepTx2, lowFeeRate, input3)
+	assertTxFeeRate(t, &sweepTx2, lowFeeRate, changePk, input3)
 
 	// With the transactions broadcast, we'll mine a block to so that the
 	// result is delivered to each respective client.
@@ -1218,10 +1174,15 @@ func TestBumpFeeRBF(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Generate the same type of change script used so we can have accurate
+	// weight estimation.
+	changePk, err := ctx.sweeper.cfg.GenSweepScript()
+	require.NoError(t, err)
+
 	// Ensure that a transaction is broadcast with the lower fee preference.
 	ctx.tick()
 	lowFeeTx := ctx.receiveTx()
-	assertTxFeeRate(t, &lowFeeTx, lowFeeRate, &input)
+	assertTxFeeRate(t, &lowFeeTx, lowFeeRate, changePk, &input)
 
 	// We'll then attempt to bump its fee rate.
 	highFeePref := FeePreference{ConfTarget: 6}
@@ -1237,14 +1198,12 @@ func TestBumpFeeRBF(t *testing.T) {
 	bumpResult, err := ctx.sweeper.UpdateParams(
 		*input.OutPoint(), ParamsUpdate{Fee: highFeePref},
 	)
-	if err != nil {
-		t.Fatalf("unable to bump input's fee: %v", err)
-	}
+	require.NoError(t, err, "unable to bump input's fee")
 
 	// A higher fee rate transaction should be immediately broadcast.
 	ctx.tick()
 	highFeeTx := ctx.receiveTx()
-	assertTxFeeRate(t, &highFeeTx, highFeeRate, &input)
+	assertTxFeeRate(t, &highFeeTx, highFeeRate, changePk, &input)
 
 	// We'll finish our test by mining the sweep transaction.
 	ctx.backend.mine()
@@ -1623,7 +1582,9 @@ func (i *testInput) RequiredTxOut() *wire.TxOut {
 // encode the spending outpoint and the tx input index as part of the returned
 // witness.
 func (i *testInput) CraftInputScript(_ input.Signer, txn *wire.MsgTx,
-	hashCache *txscript.TxSigHashes, txinIdx int) (*input.Script, error) {
+	hashCache *txscript.TxSigHashes,
+	prevOutputFetcher txscript.PrevOutputFetcher,
+	txinIdx int) (*input.Script, error) {
 
 	// We'll encode the outpoint in the witness, so we can assert that the
 	// expected input was signed at the correct index.
@@ -1763,7 +1724,6 @@ func TestLockTimes(t *testing.T) {
 				t.Fatalf("Input required locktime %v, sweep "+
 					"tx had locktime %v", lt, sweepTx.LockTime)
 			}
-
 		}
 	}
 

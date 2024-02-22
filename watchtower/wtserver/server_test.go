@@ -16,12 +16,14 @@ import (
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/stretchr/testify/require"
 )
 
 var (
 	// addr is the server's reward address given to watchtower clients.
 	addr, _ = ltcutil.DecodeAddress(
-		"mrX9vMRYLfVy1BnZbc5gZjuyaqH3ZW2ZHz", &chaincfg.TestNet4Params,
+		"mrX9vMRYLfVy1BnZbc5gZjuyaqH3ZW2ZHz",
+		&chaincfg.TestNet4Params,
 	)
 
 	addrScript, _ = txscript.PayToAddrScript(addr)
@@ -36,9 +38,7 @@ func randPubKey(t *testing.T) *btcec.PublicKey {
 	t.Helper()
 
 	sk, err := btcec.NewPrivateKey()
-	if err != nil {
-		t.Fatalf("unable to generate pubkey: %v", err)
-	}
+	require.NoError(t, err, "unable to generate pubkey")
 
 	return sk.PubKey()
 }
@@ -63,13 +63,14 @@ func initServer(t *testing.T, db wtserver.DB,
 		},
 		ChainHash: testnetChainHash,
 	})
-	if err != nil {
-		t.Fatalf("unable to create server: %v", err)
-	}
+	require.NoError(t, err, "unable to create server")
 
 	if err = s.Start(); err != nil {
 		t.Fatalf("unable to start server: %v", err)
 	}
+	t.Cleanup(func() {
+		require.NoError(t, s.Stop())
+	})
 
 	return s
 }
@@ -85,7 +86,6 @@ func TestServerOnlyAcceptOnePeer(t *testing.T) {
 	const timeoutDuration = 500 * time.Millisecond
 
 	s := initServer(t, nil, timeoutDuration)
-	defer s.Stop()
 
 	localPub := randPubKey(t)
 
@@ -101,9 +101,7 @@ func TestServerOnlyAcceptOnePeer(t *testing.T) {
 
 	var b bytes.Buffer
 	_, err := wtwire.WriteMessage(&b, init, 0)
-	if err != nil {
-		t.Fatalf("unable to write message: %v", err)
-	}
+	require.NoError(t, err, "unable to write message")
 
 	msg := b.Bytes()
 
@@ -288,7 +286,6 @@ func testServerCreateSession(t *testing.T, i int, test createSessionTestCase) {
 	const timeoutDuration = 500 * time.Millisecond
 
 	s := initServer(t, nil, timeoutDuration)
-	defer s.Stop()
 
 	localPub := randPubKey(t)
 
@@ -643,7 +640,6 @@ func testServerStateUpdates(t *testing.T, test stateUpdateTestCase) {
 	const timeoutDuration = 100 * time.Millisecond
 
 	s := initServer(t, nil, timeoutDuration)
-	defer s.Stop()
 
 	localPub := randPubKey(t)
 
@@ -751,7 +747,6 @@ func TestServerDeleteSession(t *testing.T) {
 	const timeoutDuration = 100 * time.Millisecond
 
 	s := initServer(t, db, timeoutDuration)
-	defer s.Stop()
 
 	// Create a session for peer2 so that the server's db isn't completely
 	// empty.

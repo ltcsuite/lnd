@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"net"
 	"testing"
+
+	"github.com/ltcsuite/lnd/lnencrypt"
+	"github.com/stretchr/testify/require"
 )
 
 // TestMultiPackUnpack...
@@ -25,7 +28,7 @@ func TestMultiPackUnpack(t *testing.T) {
 		multi.StaticBackups = append(multi.StaticBackups, single)
 	}
 
-	keyRing := &mockKeyRing{}
+	keyRing := &lnencrypt.MockKeyRing{}
 
 	versionTestCases := []struct {
 		// version is the pack/unpack version that we should use to
@@ -91,14 +94,17 @@ func TestMultiPackUnpack(t *testing.T) {
 				)
 			}
 
+			encrypter, err := lnencrypt.KeyRingEncrypter(keyRing)
+			require.NoError(t, err)
+
 			// Next, we'll make a fake packed multi, it'll have an
 			// unknown version relative to what's implemented atm.
 			var fakePackedMulti bytes.Buffer
 			fakeRawMulti := bytes.NewBuffer(
 				bytes.Repeat([]byte{99}, 20),
 			)
-			err := encryptPayloadToWriter(
-				*fakeRawMulti, &fakePackedMulti, keyRing,
+			err = encrypter.EncryptPayloadToWriter(
+				fakeRawMulti.Bytes(), &fakePackedMulti,
 			)
 			if err != nil {
 				t.Fatalf("unable to pack fake multi; %v", err)
@@ -122,13 +128,11 @@ func TestMultiPackUnpack(t *testing.T) {
 func TestPackedMultiUnpack(t *testing.T) {
 	t.Parallel()
 
-	keyRing := &mockKeyRing{}
+	keyRing := &lnencrypt.MockKeyRing{}
 
 	// First, we'll make a new unpacked multi with a random channel.
 	testChannel, err := genRandomOpenChannelShell()
-	if err != nil {
-		t.Fatalf("unable to gen random channel: %v", err)
-	}
+	require.NoError(t, err, "unable to gen random channel")
 	var multi Multi
 	multi.StaticBackups = append(
 		multi.StaticBackups, NewSingle(testChannel, nil),
@@ -143,9 +147,7 @@ func TestPackedMultiUnpack(t *testing.T) {
 	// We should be able to properly unpack this typed packed multi.
 	packedMulti := PackedMulti(b.Bytes())
 	unpackedMulti, err := packedMulti.Unpack(keyRing)
-	if err != nil {
-		t.Fatalf("unable to unpack multi: %v", err)
-	}
+	require.NoError(t, err, "unable to unpack multi")
 
 	// Finally, the versions should match, and the unpacked singles also
 	// identical.

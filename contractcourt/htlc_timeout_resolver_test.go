@@ -10,11 +10,13 @@ import (
 
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/htlcswitch/hop"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/lntest/mock"
 	"github.com/ltcsuite/lnd/lntypes"
 	"github.com/ltcsuite/lnd/lnwallet"
+	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
@@ -36,11 +38,15 @@ func newMockWitnessBeacon() *mockWitnessBeacon {
 	}
 }
 
-func (m *mockWitnessBeacon) SubscribeUpdates() *WitnessSubscription {
+func (m *mockWitnessBeacon) SubscribeUpdates(
+	chanID lnwire.ShortChannelID, htlc *channeldb.HTLC,
+	payload *hop.Payload,
+	nextHopOnionBlob []byte) (*WitnessSubscription, error) {
+
 	return &WitnessSubscription{
 		WitnessUpdates:     m.preImageUpdates,
 		CancelSubscription: func() {},
-	}
+	}, nil
 }
 
 func (m *mockWitnessBeacon) LookupPreimage(payhash lntypes.Hash) (lntypes.Preimage, bool) {
@@ -138,6 +144,7 @@ func TestHtlcTimeoutResolver(t *testing.T) {
 				if reflect.DeepEqual(
 					templateTx.TxIn[0].Witness, witness,
 				) {
+
 					return templateTx, nil
 				}
 				templateTx.TxIn[0].Witness = witness
@@ -169,6 +176,7 @@ func TestHtlcTimeoutResolver(t *testing.T) {
 				if reflect.DeepEqual(
 					templateTx.TxIn[0].Witness, witness,
 				) {
+
 					return templateTx, nil
 				}
 
@@ -206,6 +214,7 @@ func TestHtlcTimeoutResolver(t *testing.T) {
 				if reflect.DeepEqual(
 					templateTx.TxIn[0].Witness, witness,
 				) {
+
 					return templateTx, nil
 				}
 
@@ -239,6 +248,7 @@ func TestHtlcTimeoutResolver(t *testing.T) {
 				if reflect.DeepEqual(
 					templateTx.TxIn[0].Witness, witness,
 				) {
+
 					return templateTx, nil
 				}
 
@@ -750,7 +760,7 @@ func TestHtlcTimeoutSingleStageRemoteSpend(t *testing.T) {
 
 				witnessBeacon := ctx.resolver.(*htlcTimeoutResolver).PreimageDB.(*mockWitnessBeacon)
 
-				// The remote spends the output direcly with
+				// The remote spends the output directly with
 				// the preimage.
 				ctx.notifier.SpendChan <- &chainntnfs.SpendDetail{
 					SpendingTx:    spendTx,
@@ -857,6 +867,7 @@ func TestHtlcTimeoutSecondStageRemoteSpend(t *testing.T) {
 			// success transcation.
 			preCheckpoint: func(ctx *htlcResolverTestContext,
 				_ bool) error {
+
 				ctx.notifier.SpendChan <- &chainntnfs.SpendDetail{
 					SpendingTx:    remoteSuccessTx,
 					SpenderTxHash: &successTxid,
@@ -978,7 +989,7 @@ func TestHtlcTimeoutSecondStageSweeper(t *testing.T) {
 	}
 
 	// twoStageResolution is a resolution for a htlc on the local
-	// party's commitment, where the timout tx can be re-signed.
+	// party's commitment, where the timeout tx can be re-signed.
 	twoStageResolution := lnwallet.OutgoingHtlcResolution{
 		ClaimOutpoint:   htlcOutpoint,
 		SignedTimeoutTx: timeoutTx,
@@ -1041,7 +1052,7 @@ func TestHtlcTimeoutSecondStageSweeper(t *testing.T) {
 			preCheckpoint: func(ctx *htlcResolverTestContext,
 				resumed bool) error {
 
-				// If we are resuming from a checkpoing, we
+				// If we are resuming from a checkpoint, we
 				// expect the resolver to re-subscribe to a
 				// spend, hence we must resend it.
 				if resumed {
@@ -1070,7 +1081,7 @@ func TestHtlcTimeoutSecondStageSweeper(t *testing.T) {
 					Height: 13,
 				}
 
-				// The timout tx output should now be given to
+				// The timeout tx output should now be given to
 				// the sweeper.
 				resolver := ctx.resolver.(*htlcTimeoutResolver)
 				inp := <-resolver.Sweeper.(*mockSweeper).sweptInputs
@@ -1161,7 +1172,7 @@ func TestHtlcTimeoutSecondStageSweeperRemoteSpend(t *testing.T) {
 	spendTxHash := spendTx.TxHash()
 
 	// twoStageResolution is a resolution for a htlc on the local
-	// party's commitment, where the timout tx can be re-signed.
+	// party's commitment, where the timeout tx can be re-signed.
 	twoStageResolution := lnwallet.OutgoingHtlcResolution{
 		ClaimOutpoint:   htlcOutpoint,
 		SignedTimeoutTx: timeoutTx,
@@ -1214,11 +1225,11 @@ func TestHtlcTimeoutSecondStageSweeperRemoteSpend(t *testing.T) {
 			preCheckpoint: func(ctx *htlcResolverTestContext,
 				resumed bool) error {
 
-				// If we are resuming from a checkpoing, we
+				// If we are resuming from a checkpoint, we
 				// expect the resolver to re-subscribe to a
 				// spend, hence we must resend it.
 				if resumed {
-					fmt.Println("resumed")
+					t.Logf("resumed")
 					ctx.notifier.SpendChan <- &chainntnfs.SpendDetail{
 						SpendingTx:    spendTx,
 						SpenderTxHash: &spendTxHash,
@@ -1275,7 +1286,7 @@ func TestHtlcTimeoutSecondStageSweeperRemoteSpend(t *testing.T) {
 func testHtlcTimeout(t *testing.T, resolution lnwallet.OutgoingHtlcResolution,
 	checkpoints []checkpoint) {
 
-	defer timeout(t)()
+	defer timeout()()
 
 	// We first run the resolver from start to finish, ensuring it gets
 	// checkpointed at every expected stage. We store the checkpointed data

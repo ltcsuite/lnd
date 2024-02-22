@@ -93,6 +93,10 @@ type Payload struct {
 	// customRecords are user-defined records in the custom type range that
 	// were included in the payload.
 	customRecords record.CustomSet
+
+	// metadata is additional data that is sent along with the payment to
+	// the payee.
+	metadata []byte
 }
 
 // NewLegacyPayload builds a Payload from the amount, cltv, and next hop
@@ -115,11 +119,12 @@ func NewLegacyPayload(f *sphinx.HopData) *Payload {
 // should correspond to the bytes encapsulated in a TLV onion payload.
 func NewPayloadFromReader(r io.Reader) (*Payload, error) {
 	var (
-		cid  uint64
-		amt  uint64
-		cltv uint32
-		mpp  = &record.MPP{}
-		amp  = &record.AMP{}
+		cid      uint64
+		amt      uint64
+		cltv     uint32
+		mpp      = &record.MPP{}
+		amp      = &record.AMP{}
+		metadata []byte
 	)
 
 	tlvStream, err := tlv.NewStream(
@@ -128,12 +133,15 @@ func NewPayloadFromReader(r io.Reader) (*Payload, error) {
 		record.NewNextHopIDRecord(&cid),
 		mpp.Record(),
 		amp.Record(),
+		record.NewMetadataRecord(&metadata),
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	parsedTypes, err := tlvStream.DecodeWithParsedTypes(r)
+	// Since this data is provided by a potentially malicious peer, pass it
+	// into the P2P decoding variant.
+	parsedTypes, err := tlvStream.DecodeWithParsedTypesP2P(r)
 	if err != nil {
 		return nil, err
 	}
@@ -168,6 +176,12 @@ func NewPayloadFromReader(r io.Reader) (*Payload, error) {
 		amp = nil
 	}
 
+	// If no metadata field was parsed, set the metadata field on the
+	// resulting payload to nil.
+	if _, ok := parsedTypes[record.MetadataOnionType]; !ok {
+		metadata = nil
+	}
+
 	// Filter out the custom records.
 	customRecords := NewCustomRecords(parsedTypes)
 
@@ -180,6 +194,7 @@ func NewPayloadFromReader(r io.Reader) (*Payload, error) {
 		},
 		MPP:           mpp,
 		AMP:           amp,
+		metadata:      metadata,
 		customRecords: customRecords,
 	}, nil
 }
@@ -282,6 +297,12 @@ func (h *Payload) AMPRecord() *record.AMP {
 // payload.
 func (h *Payload) CustomRecords() record.CustomSet {
 	return h.customRecords
+}
+
+// Metadata returns the additional data that is sent along with the
+// payment to the payee.
+func (h *Payload) Metadata() []byte {
+	return h.metadata
 }
 
 // getMinRequiredViolation checks for unrecognized required (even) fields in the

@@ -13,6 +13,7 @@ import (
 	"github.com/ltcsuite/lnd/tor"
 	"github.com/ltcsuite/lnd/watchtower/wtdb"
 	"github.com/ltcsuite/ltcd/btcec/v2"
+	"github.com/stretchr/testify/require"
 )
 
 func randPubKey() (*btcec.PublicKey, error) {
@@ -124,9 +125,9 @@ type dbObject interface {
 	Decode(io.Reader) error
 }
 
-// TestCodec serializes and deserializes wtdb objects in order to test that that
-// the codec understands all of the required field types. The test also asserts
-// that decoding an object into another results in an equivalent object.
+// TestCodec serializes and deserializes wtdb objects in order to test that the
+// codec understands all of the required field types. The test also asserts that
+// decoding an object into another results in an equivalent object.
 func TestCodec(tt *testing.T) {
 
 	var t *testing.T
@@ -134,10 +135,7 @@ func TestCodec(tt *testing.T) {
 		// Ensure encoding the object succeeds.
 		var b bytes.Buffer
 		err := obj.Encode(&b)
-		if err != nil {
-			t.Fatalf("unable to encode: %v", err)
-			return false
-		}
+		require.NoError(t, err)
 
 		var obj2 dbObject
 		switch obj.(type) {
@@ -162,17 +160,10 @@ func TestCodec(tt *testing.T) {
 
 		// Ensure decoding the object succeeds.
 		err = obj2.Decode(bytes.NewReader(b.Bytes()))
-		if err != nil {
-			t.Fatalf("unable to decode: %v", err)
-			return false
-		}
+		require.NoError(t, err)
 
 		// Assert the original and decoded object match.
-		if !reflect.DeepEqual(obj, obj2) {
-			t.Fatalf("encode/decode mismatch, want: %v, "+
-				"got: %v", obj, obj2)
-			return false
-		}
+		require.Equal(t, obj, obj2)
 
 		return true
 	}
@@ -180,16 +171,10 @@ func TestCodec(tt *testing.T) {
 	customTypeGen := map[string]func([]reflect.Value, *rand.Rand){
 		"Tower": func(v []reflect.Value, r *rand.Rand) {
 			pk, err := randPubKey()
-			if err != nil {
-				t.Fatalf("unable to generate pubkey: %v", err)
-				return
-			}
+			require.NoError(t, err)
 
 			addrs, err := randAddrs(r)
-			if err != nil {
-				t.Fatalf("unable to generate addrs: %v", err)
-				return
-			}
+			require.NoError(t, err)
 
 			obj := wtdb.Tower{
 				IdentityKey: pk,
@@ -260,10 +245,7 @@ func TestCodec(tt *testing.T) {
 			}
 
 			err := quick.Check(test.scenario, config)
-			if err != nil {
-				t.Fatalf("fuzz checks for msg=%s failed: %v",
-					test.name, err)
-			}
+			require.NoError(h, err)
 		})
 	}
 }

@@ -2,37 +2,38 @@ package migtest
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"testing"
 
 	"github.com/ltcsuite/lnd/kvdb"
+	"github.com/stretchr/testify/require"
 )
 
-// MakeDB creates a new instance of the ChannelDB for testing purposes. A
-// callback which cleans up the created temporary directories is also returned
-// and intended to be executed after the test completes.
-func MakeDB() (kvdb.Backend, func(), error) {
+// MakeDB creates a new instance of the ChannelDB for testing purposes.
+func MakeDB(t testing.TB) (kvdb.Backend, error) {
 	// Create temporary database for mission control.
-	file, err := ioutil.TempFile("", "*.db")
+	file, err := os.CreateTemp("", "*.db")
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	dbPath := file.Name()
+	t.Cleanup(func() {
+		require.NoError(t, file.Close())
+		require.NoError(t, os.Remove(dbPath))
+	})
+
 	db, err := kvdb.Open(
 		kvdb.BoltBackendName, dbPath, true, kvdb.DefaultDBTimeout,
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
+	t.Cleanup(func() {
+		require.NoError(t, db.Close())
+	})
 
-	cleanUp := func() {
-		db.Close()
-		os.RemoveAll(dbPath)
-	}
-
-	return db, cleanUp, nil
+	return db, nil
 }
 
 // ApplyMigration is a helper test function that encapsulates the general steps
@@ -43,8 +44,7 @@ func ApplyMigration(t *testing.T,
 
 	t.Helper()
 
-	cdb, cleanUp, err := MakeDB()
-	defer cleanUp()
+	cdb, err := MakeDB(t)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,6 +81,48 @@ func ApplyMigration(t *testing.T,
 	err = kvdb.Update(cdb, migrationFunc, func() {})
 	if err != nil {
 		t.Logf("migration error: %v", err)
+	}
+}
+
+// ApplyMigrationWithDB is a helper test function that encapsulates the general
+// steps which are needed to properly check the result of applying migration
+// function. This function differs from ApplyMigration as it requires the
+// supplied migration functions to take a db instance and construct their own
+// database transactions.
+func ApplyMigrationWithDB(t testing.TB, beforeMigration,
+	afterMigration func(db kvdb.Backend) error,
+	migrationFunc func(db kvdb.Backend) error, shouldFail bool) {
+
+	t.Helper()
+
+	cdb, err := MakeDB(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// beforeMigration usually used for populating the database
+	// with test data.
+	if err := beforeMigration(cdb); err != nil {
+		t.Fatalf("beforeMigration error: %v", err)
+	}
+
+	// Apply migration.
+	err = migrationFunc(cdb)
+	if shouldFail {
+		require.Error(t, err)
+	} else {
+		require.NoError(t, err)
+	}
+
+	// If there's no afterMigration, exit here.
+	if afterMigration == nil {
+		return
+	}
+
+	// afterMigration usually used for checking the database state
+	// and throwing the error if something went wrong.
+	if err := afterMigration(cdb); err != nil {
+		t.Fatalf("afterMigration error: %v", err)
 	}
 }
 

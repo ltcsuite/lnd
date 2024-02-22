@@ -1,14 +1,15 @@
 package lnwire
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"io"
 	"reflect"
 	"testing"
 
 	"github.com/davecgh/go-spew/spew"
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -81,6 +82,44 @@ func TestEncodeDecodeCode(t *testing.T) {
 	}
 }
 
+// TestEncodeDecodeTlv tests the ability of onion errors to be properly encoded
+// and decoded with tlv data present.
+func TestEncodeDecodeTlv(t *testing.T) {
+	t.Parallel()
+
+	for _, testFailure := range onionFailures {
+		testFailure := testFailure
+		code := testFailure.Code().String()
+
+		t.Run(code, func(t *testing.T) {
+			t.Parallel()
+
+			testEncodeDecodeTlv(t, testFailure)
+		})
+	}
+}
+
+var testTlv, _ = hex.DecodeString("fd023104deadbeef")
+
+func testEncodeDecodeTlv(t *testing.T, testFailure FailureMessage) {
+	var failureMessageBuffer bytes.Buffer
+
+	err := EncodeFailureMessage(&failureMessageBuffer, testFailure, 0)
+	require.NoError(t, err)
+
+	failureMessageBuffer.Write(testTlv)
+
+	failure, err := DecodeFailureMessage(&failureMessageBuffer, 0)
+	require.NoError(t, err)
+
+	// FailIncorrectDetails already reads tlv data. Adapt the expected data.
+	if incorrectDetails, ok := testFailure.(*FailIncorrectDetails); ok {
+		incorrectDetails.extraOpaqueData = testTlv
+	}
+
+	require.Equal(t, testFailure, failure)
+}
+
 // TestChannelUpdateCompatabilityParsing tests that we're able to properly read
 // out channel update messages encoded in an onion error payload that was
 // written in the legacy (type prefixed) format.
@@ -99,11 +138,9 @@ func TestChannelUpdateCompatabilityParsing(t *testing.T) {
 	// encoded channel update message.
 	var newChanUpdate ChannelUpdate
 	err := parseChannelUpdateCompatabilityMode(
-		bufio.NewReader(&b), &newChanUpdate, 0,
+		&b, uint16(b.Len()), &newChanUpdate, 0,
 	)
-	if err != nil {
-		t.Fatalf("unable to parse channel update: %v", err)
-	}
+	require.NoError(t, err, "unable to parse channel update")
 
 	// At this point, we'll ensure that we get the exact same failure out
 	// on the other side.
@@ -128,11 +165,9 @@ func TestChannelUpdateCompatabilityParsing(t *testing.T) {
 	// message even with the extra two bytes.
 	var newChanUpdate2 ChannelUpdate
 	err = parseChannelUpdateCompatabilityMode(
-		bufio.NewReader(&b), &newChanUpdate2, 0,
+		&b, uint16(b.Len()), &newChanUpdate2, 0,
 	)
-	if err != nil {
-		t.Fatalf("unable to parse channel update: %v", err)
-	}
+	require.NoError(t, err, "unable to parse channel update")
 
 	if !reflect.DeepEqual(newChanUpdate2, newChanUpdate) {
 		t.Fatalf("mismatched channel updates: %v", err)
@@ -158,9 +193,7 @@ func TestWriteOnionErrorChanUpdate(t *testing.T) {
 	// onion error message.
 	var errorBuf bytes.Buffer
 	err := writeOnionErrorChanUpdate(&errorBuf, &update, 0)
-	if err != nil {
-		t.Fatalf("unable to encode onion error: %v", err)
-	}
+	require.NoError(t, err, "unable to encode onion error")
 
 	// Finally, read the length encoded and ensure that it matches the raw
 	// length.
@@ -188,9 +221,7 @@ func TestFailIncorrectDetailsOptionalAmount(t *testing.T) {
 	}
 
 	onionError2, err := DecodeFailure(bytes.NewReader(b.Bytes()), 0)
-	if err != nil {
-		t.Fatalf("unable to decode error: %v", err)
-	}
+	require.NoError(t, err, "unable to decode error")
 
 	invalidDetailsErr, ok := onionError2.(*FailIncorrectDetails)
 	if !ok {
@@ -241,9 +272,7 @@ func TestFailIncorrectDetailsOptionalHeight(t *testing.T) {
 	}
 
 	onionError2, err := DecodeFailure(bytes.NewReader(b.Bytes()), 0)
-	if err != nil {
-		t.Fatalf("unable to decode error: %v", err)
-	}
+	require.NoError(t, err, "unable to decode error")
 
 	invalidDetailsErr, ok := onionError2.(*FailIncorrectDetails)
 	if !ok {

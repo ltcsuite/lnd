@@ -8,6 +8,8 @@ import (
 	"github.com/ltcsuite/lnd/channeldb/migration13"
 	"github.com/ltcsuite/lnd/channeldb/migration16"
 	"github.com/ltcsuite/lnd/channeldb/migration24"
+	"github.com/ltcsuite/lnd/channeldb/migration30"
+	"github.com/ltcsuite/lnd/channeldb/migration31"
 	"github.com/ltcsuite/lnd/channeldb/migration_01_to_11"
 	"github.com/ltcsuite/lnd/kvdb"
 )
@@ -38,5 +40,7 @@ func UseLogger(logger btclog.Logger) {
 	migration13.UseLogger(logger)
 	migration16.UseLogger(logger)
 	migration24.UseLogger(logger)
+	migration30.UseLogger(logger)
+	migration31.UseLogger(logger)
 	kvdb.UseLogger(logger)
 }

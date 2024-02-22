@@ -1,6 +1,6 @@
 # aezeed
 
-[In this PR](https://github.com/ltcsuite/lnd/pull/773) we added a new package implementing the aezeed cipher
+[In this PR](https://github.com/lightningnetwork/lnd/pull/773) we added a new package implementing the aezeed cipher
 seed scheme (based on [aez](http://web.cs.ucdavis.edu/~rogaway/aez/)).
 
 This new scheme aims to address
@@ -14,7 +14,7 @@ scrypt with modern parameters (n=32768, r=8, p=1). A set of benchmarks has
 been added, on my laptop I get about 100ms per attempt):
 
 ```shell
-⛰  go test -run=XXX -bench=.
+$  go test -run=XXX -bench=.
 
 goos: linux
 goarch: amd64

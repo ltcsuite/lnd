@@ -41,14 +41,14 @@ function generate() {
   # Generate the JSON/WASM client stubs.
   falafel=$(which falafel)
   pkg="lnrpc"
-  opts="package_name=$pkg,js_stubs=1,build_tags=// +build js"
+  opts="package_name=$pkg,js_stubs=1"
   protoc -I/usr/local/include -I. -I.. \
     --plugin=protoc-gen-custom=$falafel\
     --custom_out=. \
     --custom_opt="$opts" \
     lightning.proto stateservice.proto walletunlocker.proto
   
-  PACKAGES="autopilotrpc chainrpc invoicesrpc routerrpc signrpc verrpc walletrpc watchtowerrpc wtclientrpc"
+  PACKAGES="autopilotrpc chainrpc invoicesrpc neutrinorpc peersrpc routerrpc signrpc verrpc walletrpc watchtowerrpc wtclientrpc devrpc"
   for package in $PACKAGES; do
     # Special import for the wallet kit.
     manual_import=""
@@ -56,13 +56,18 @@ function generate() {
       manual_import="github.com/ltcsuite/lnd/lnrpc/signrpc"
     fi
 
-    opts="package_name=$package,manual_import=$manual_import,js_stubs=1,build_tags=// +build js"
+    # Special import for devrpc.
+    if [[ "$package" == "devrpc" ]]; then
+        manual_import="github.com/ltcsuite/lnd/lnrpc"
+    fi
+
+    opts="package_name=$package,manual_import=$manual_import,js_stubs=1"
     pushd $package
     protoc -I/usr/local/include -I. -I.. \
       --plugin=protoc-gen-custom=$falafel\
       --custom_out=. \
       --custom_opt="$opts" \
-      "$(find . -name '*.proto')"
+      $(find . -name '*.proto')
     popd
   done
 }

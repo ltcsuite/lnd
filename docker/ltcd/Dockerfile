@@ -1,14 +1,19 @@
-FROM golang:1.17.3-alpine as builder
+FROM golang:1.21.0-alpine as builder
 
 LABEL maintainer="Loshan <loshan1212@gmail.com>"
 
+# Install build dependencies such as git and glide.
 # Grab and install the latest version of roasbeef's fork of ltcd and all
-# related dependencies.
+
 WORKDIR $GOPATH/src/github.com/ltcsuite/ltcd
-RUN apk add --no-cache --update alpine-sdk git
-RUN git clone https://github.com/ltcsuite/ltcd ./
-RUN go install -v . ./cmd/...
-RUN go install . ./cmd/ltcctl ./cmd/gencerts
+
+# Pin down ltcd to a version that we know works with lnd.
+ARG BTCD_VERSION=v0.23.4
+
+# Grab and install the latest version of of ltcd and all related dependencies.
+RUN git clone https://github.com/ltcsuite/ltcd.git . \
+    && git checkout $BTCD_VERSION \
+    && go install -v . ./cmd/...
 
 # Start a new image
 FROM alpine as final
@@ -23,8 +28,10 @@ EXPOSE 19334 19335
 EXPOSE 18555 18556
 
 # Copy the compiled binaries from the builder image.
+COPY --from=builder /go/bin/addblock /bin/ 
 COPY --from=builder /go/bin/ltcctl /bin/
 COPY --from=builder /go/bin/ltcd /bin/
+COPY --from=builder /go/bin/findcheckpoint /bin/
 COPY --from=builder /go/bin/gencerts /bin/
 
 COPY "start-ltcctl.sh" .
@@ -33,10 +40,12 @@ COPY "start-ltcd.sh" .
 RUN apk add --no-cache \
     bash \
     ca-certificates \
+&&  mkdir "/rpc" "/root/.ltcd" "/root/.ltcctl" \ 
+&&  touch "/root/.ltcd/ltcd.conf" \ 
 &&  chmod +x start-ltcctl.sh \
 &&  chmod +x start-ltcd.sh \
-&&  mkdir "/rpc" "/root/.ltcd" "/root/.ltcctl" \
-&&  touch "/root/.ltcd/ltcd.conf" \
+# Manually generate certificate and add all domains, it is needed to connect 
+
 # "ltcctl" and "lnd" to "ltcd" over docker links.
 &&  "/bin/gencerts" --host="*" --directory="/rpc" --force
 

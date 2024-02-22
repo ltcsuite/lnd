@@ -1,66 +1,109 @@
-## Building mobile libraries
+# Building mobile libraries
 
-### Prerequisites
-#### protoc
-Install the dependencies for generating protobuf definitions as stated in
-[lnrpc docs]( ../lnrpc/README.md#generate-protobuf-definitions)
+## Prerequisites
 
-#### gomobile
-Follow [gomobile](https://github.com/golang/go/wiki/Mobile) in order to install
-`gomobile` and dependencies.
+To build for iOS, you need to run macOS with either 
+[Command Line Tools](https://developer.apple.com/download/all/?q=command%20line%20tools) 
+or [Xcode](https://apps.apple.com/app/xcode/id497799835) installed.
 
-Remember to run `gomobile init` (otherwise the `lnd` build might just hang).
+To build for Android, you need either 
+[Android Studio](https://developer.android.com/studio) or 
+[Command Line Tools](https://developer.android.com/studio#downloads) installed, which in turn must be used to install [Android NDK](https://developer.android.com/ndk/).
 
-Note that `gomobile` only supports building projects from `GOPATH` at this
-point.
 
-#### falafel
-Install [`falafel`](https://github.com/lightninglabs/falafel):
+### Go and Go mobile
+
+First, follow the instructions to [install
+Go](https://github.com/lightningnetwork/lnd/blob/master/docs/INSTALL.md#building-a-development-version-from-source).
+
+### Docker
+
+Install and run [Docker](https://www.docker.com/products/docker-desktop).
+
+### Make
+
+Check that `make` is available by running the following command without errors:
+
 ```shell
-⛰  go get -u -v github.com/lightninglabs/falafel
+make --version
 ```
 
-### Building `lnd` for iOS
+## Building the libraries
+
+Note that `gomobile` only supports building projects from `$GOPATH` at this 
+point. However, with the introduction of Go modules, the source code files are 
+no longer installed there by default.
+
 ```shell
-⛰  make ios
+git clone https://github.com/lightningnetwork/lnd.git $GOPATH/src/github.com/lightningnetwork/lnd
 ```
 
-### Building `lnd` for Android
+Finally, let’s change directory to the newly created lnd folder inside `$GOPATH`:
+
 ```shell
-⛰  make android
+cd $GOPATH/src/github.com/lightningnetwork/lnd
 ```
 
-`make mobile` will build both iOS and Android libs.
+It is not recommended building from the master branch for mainnet. To check out
+the latest tagged release of lnd, run
 
-### Libraries
-After the build has succeeded, the libraries will be found in
-`mobile/build/ios/Lndmobile.framework` and
-`mobile/build/android/Lndmobile.aar`. Reference your platforms' SDK
-documentation for how to add the library to your project.
+```shell
+git checkout $(git describe --match "v[0-9]*" --abbrev=0)
+```
 
-#### Generating proto definitions for your language.
+Then, install [Go mobile](https://github.com/golang/go/wiki/Mobile) and
+initialize it:
+
+```shell
+go install golang.org/x/mobile/cmd/gomobile
+gomobile init
+```
+
+### iOS
+
+```shell
+make ios
+```
+
+The Xcode framework file will be found in `mobile/build/ios/Lndmobile.xcframework`.
+
+### Android
+
+```shell
+make android
+```
+
+The AAR library file will be found in `mobile/build/android/Lndmobile.aar`.
+
+---
+Tip: `make mobile` will build both iOS and Android libraries.
+
+---
+
+## Generating proto definitions
+
 In order to call the methods in the generated library, the serialized proto for
 the given RPC call must be provided. Similarly, the response will be a
 serialized proto.
 
-##### iOS
+### iOS
 
 In order to generate protobuf definitions for iOS, add `--swift_out=.` to the
-first `protoc` invocation found in [`gen_protos.sh`](../lnrpc/gen_protos.sh).
+first `protoc` invocation found in [ `gen_protos.sh` ](../lnrpc/gen_protos.sh).
 
-Then, some changes to [Dockerfile]((../lnrpc/Dockerfile)) need to be done in
+Then, some changes to [Dockerfile](../lnrpc/Dockerfile) need to be done in
 order to use the [Swift protobuf](https://github.com/apple/swift-protobuf)
 plugin with protoc:
 
 1. Replace the base image with `FROM swift:focal` so that Swift can be used.
 2. `clang-format='1:7.0*'` is unavailable in Ubuntu Focal. Change that to
-`clang-format='1:10.0*`.
+`clang-format='1:10.0*'`.
 3. On the next line, install Go and set the environment variables by adding the
 following commands:
 
 ```
 RUN apt-get install -y wget \
-    && wget -c https://golang.org/dl/go1.17.2.linux-amd64.tar.gz -O - \
+    && wget -c https://golang.org/dl/go1.17.6.linux-amd64.tar.gz -O - \
     | tar -xz -C /usr/local
 ENV GOPATH=/go
 ENV PATH=$PATH:/usr/local/go/bin:/go/bin
@@ -79,26 +122,112 @@ RUN git clone https://github.com/apple/swift-protobuf.git \
 
 Finally, run `make rpc`.
 
-##### Android
+Tip: The generated Swift files will be found in various folders. If you’d like
+to move them to the same folder as the framework file, run
+
+```shell
+find . -name "*.swift" -print0 | xargs -0 -I {} mv {} mobile/build/ios
+```
+
+`Lndmobile.xcframework` and all Swift files should now be added to your Xcode
+project. You will also need to add [Swift Protobuf](https://github.com/apple/swift-protobuf)
+to your project to support the generated code.  
+
+### Android
+
+#### First option:
 
 In order to generate protobuf definitions for Android, add `--java_out=.`
+
 to the first `protoc` invocation found in
-[`gen_protos.sh`](../lnrpc/gen_protos.sh). Then, run `make rpc`.
+[ `gen_protos.sh` ](../lnrpc/gen_protos.sh). Then, run `make rpc`.
 
-### Options
-Similar to lnd, subservers can be conditionally compiled with the build by
-setting the tags argument:
+
+#### Second option (preferable):
+
+- You have to install the profobuf plugin to your Android application. 
+Please, follow this link https://github.com/google/protobuf-gradle-plugin.
+- Add this line to your `app build.gradle` file.
+```shell
+classpath "com.google.protobuf:protobuf-gradle-plugin:0.8.17"
+```
+- Create a `proto` folder under the `main` folder.
+
+![proto_folder](docs/proto_folder.png)
+
+- Add `aar` file to libs folder.
+
+- After that add these lines to your `module's` `build.gradle` file:
 
 ```shell
-⛰  make ios
-```
+plugins {
+    id "com.google.protobuf"
+}
 
-To support subservers that have APIs with name conflicts, pass the "prefix"
-flag. This will add the subserver name as a prefix to each method name:
+android {
+    sourceSets {
+        main {
+            proto {
+
+            }
+        }
+    }
+}
+
+dependencies {
+    implementation fileTree(dir: "libs", include: ["*.jar"])
+    implementation "com.google.protobuf:protobuf-javalite:${rootProject.ext.javalite_version}"
+}
+
+protobuf {
+    protoc {
+        artifact = "com.google.protobuf:protoc:${rootProject.ext.protoc_version}"
+    }
+    generateProtoTasks {
+        all().each { task ->
+            task.builtins {
+                java {
+                    option "lite"
+                }
+            }
+        }
+    }
+}
+```
+- Then, copy all the proto files from `lnd/lnrpc` to your `proto` folder, saving the structure.
+- Build the project and wait until you see the generated Java proto files in the `build` folder.
+
+
+--- 
+*Note:*
+
+If Android Studio tells you that the `aar` file cannot be included into the `app-bundle`, this is a workaround:
+
+1. Create a separate gradle module
+2. Remove everything from there and leave only `aar` and `build.gradle`.
+
+![separate_gradle_module](docs/separate_gradle_module.png)
+
+3. Gradle file should contain only these lines:
 
 ```shell
-⛰  make ios prefix=1
+configurations.maybeCreate("default")
+artifacts.add("default", file('Lndmobile.aar'))
 ```
 
-### API docs
-TODO(halseth)
+4. In `dependencies` add this line instead of depending on `libs` folder:
+```shell
+implementation project(":lndmobile", { "default" })
+```
+--- 
+
+## Calling the API
+
+In LND v0.15+ all API methods have prefixed the generated methods with the subserver name. This is required to support subservers with name conflicts.
+
+eg. `QueryScores` is now `AutopilotQueryScores`. `GetBlockHeader` is now `NeutrinoKitGetBlockHeader`.
+
+## API docs
+
+- [LND gRPC API Reference](https://api.lightning.community)
+- [LND Builder’s Guide](https://docs.lightning.engineering)

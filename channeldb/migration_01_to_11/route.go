@@ -246,9 +246,7 @@ func (r *Route) ToSphinxPath() (*sphinx.PaymentPath, error) {
 	// to an OnionHop with matching per-hop payload within the path as used
 	// by the sphinx package.
 	for i, hop := range r.Hops {
-		pub, err := btcec.ParsePubKey(
-			hop.PubKeyBytes[:],
-		)
+		pub, err := btcec.ParsePubKey(hop.PubKeyBytes[:])
 		if err != nil {
 			return nil, err
 		}
@@ -279,7 +277,7 @@ func (r *Route) ToSphinxPath() (*sphinx.PaymentPath, error) {
 				hopData.NextAddress[:], nextHop,
 			)
 
-			payload, err = sphinx.NewHopPayload(&hopData, nil)
+			payload, err = sphinx.NewLegacyHopPayload(&hopData)
 			if err != nil {
 				return nil, err
 			}
@@ -296,8 +294,7 @@ func (r *Route) ToSphinxPath() (*sphinx.PaymentPath, error) {
 				return nil, err
 			}
 
-			// TODO(roasbeef): make better API for NewHopPayload?
-			payload, err = sphinx.NewHopPayload(nil, b.Bytes())
+			payload, err = sphinx.NewTLVHopPayload(b.Bytes())
 			if err != nil {
 				return nil, err
 			}

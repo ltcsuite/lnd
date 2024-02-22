@@ -13,10 +13,11 @@ import (
 	flags "github.com/jessevdk/go-flags"
 	"github.com/ltcsuite/lnd"
 	"github.com/ltcsuite/lnd/signal"
+	_ "golang.org/x/mobile/bind"
 	"google.golang.org/grpc"
 )
 
-// lndStarted will be used atomically to ensure only a singel lnd instance is
+// lndStarted will be used atomically to ensure only a single lnd instance is
 // attempted to be started at once.
 var lndStarted int32
 
@@ -24,6 +25,7 @@ var lndStarted int32
 //
 // extraArgs can be used to pass command line arguments to lnd that will
 // override what is found in the config file. Example:
+//
 //	extraArgs = "--bitcoin.testnet --lnddir=\"/tmp/folder name/\" --profile=5050"
 //
 // The rpcReady is called lnd is ready to accept RPC calls.

@@ -1,6 +1,7 @@
 package wtclient
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -25,7 +26,7 @@ type SessionNegotiator interface {
 
 	// NewSessions is a read-only channel where newly negotiated sessions
 	// will be delivered.
-	NewSessions() <-chan *wtdb.ClientSession
+	NewSessions() <-chan *ClientSession
 
 	// Start safely initializes the session negotiator.
 	Start() error
@@ -105,8 +106,8 @@ type sessionNegotiator struct {
 	log btclog.Logger
 
 	dispatcher             chan struct{}
-	newSessions            chan *wtdb.ClientSession
-	successfulNegotiations chan *wtdb.ClientSession
+	newSessions            chan *ClientSession
+	successfulNegotiations chan *ClientSession
 
 	wg   sync.WaitGroup
 	quit chan struct{}
@@ -118,9 +119,9 @@ var _ SessionNegotiator = (*sessionNegotiator)(nil)
 
 // newSessionNegotiator initializes a fresh sessionNegotiator instance.
 func newSessionNegotiator(cfg *NegotiatorConfig) *sessionNegotiator {
-	// Generate the set of features the negitator will present to the tower
+	// Generate the set of features the negotiator will present to the tower
 	// upon connection. For anchor channels, we'll conditionally signal that
-	// we require support for anchor channels depdening on the requested
+	// we require support for anchor channels depending on the requested
 	// policy.
 	features := []lnwire.FeatureBit{
 		wtwire.AltruistSessionsRequired,
@@ -139,8 +140,8 @@ func newSessionNegotiator(cfg *NegotiatorConfig) *sessionNegotiator {
 		log:                    cfg.Log,
 		localInit:              localInit,
 		dispatcher:             make(chan struct{}, 1),
-		newSessions:            make(chan *wtdb.ClientSession),
-		successfulNegotiations: make(chan *wtdb.ClientSession),
+		newSessions:            make(chan *ClientSession),
+		successfulNegotiations: make(chan *ClientSession),
 		quit:                   make(chan struct{}),
 	}
 }
@@ -171,7 +172,7 @@ func (n *sessionNegotiator) Stop() error {
 
 // NewSessions returns a receive-only channel from which newly negotiated
 // sessions will be returned.
-func (n *sessionNegotiator) NewSessions() <-chan *wtdb.ClientSession {
+func (n *sessionNegotiator) NewSessions() <-chan *ClientSession {
 	return n.newSessions
 }
 
@@ -272,6 +273,7 @@ retryWithBackoff:
 		}
 	}
 
+tryNextCandidate:
 	for {
 		select {
 		case <-n.quit:
@@ -302,28 +304,39 @@ retryWithBackoff:
 		n.log.Debugf("Attempting session negotiation with tower=%x",
 			towerPub)
 
-		// Before proceeding, we will reserve a session key index to use
-		// with this specific tower. If one is already reserved, the
-		// existing index will be returned.
-		keyIndex, err := n.cfg.DB.NextSessionKeyIndex(
-			tower.ID, n.cfg.Policy.BlobType,
-		)
-		if err != nil {
-			n.log.Debugf("Unable to reserve session key index "+
-				"for tower=%x: %v", towerPub, err)
-			continue
-		}
+		var forceNextKey bool
+		for {
+			// Before proceeding, we will reserve a session key
+			// index to use with this specific tower. If one is
+			// already reserved, the existing index will be
+			// returned.
+			keyIndex, err := n.cfg.DB.NextSessionKeyIndex(
+				tower.ID, n.cfg.Policy.BlobType, forceNextKey,
+			)
+			if err != nil {
+				n.log.Debugf("Unable to reserve session key "+
+					"index for tower=%x: %v", towerPub, err)
 
-		// We'll now attempt the CreateSession dance with the tower to
-		// get a new session, trying all addresses if necessary.
-		err = n.createSession(tower, keyIndex)
-		if err != nil {
-			// An unexpected error occurred, updpate our backoff.
+				goto tryNextCandidate
+			}
+
+			// We'll now attempt the CreateSession dance with the
+			// tower to get a new session, trying all addresses if
+			// necessary.
+			err = n.createSession(tower, keyIndex)
+			if err == nil {
+				return
+			} else if errors.Is(err, ErrSessionKeyAlreadyUsed) {
+				forceNextKey = true
+				continue
+			}
+
+			// An unexpected error occurred, update our backoff.
 			updateBackoff()
 
 			n.log.Debugf("Session negotiation with tower=%x "+
-				"failed, trying again -- reason: %v",
-				tower.IdentityKey.SerializeCompressed(), err)
+				"failed, trying again -- reason: %v", towerPub,
+				err)
 
 			goto retryWithBackoff
 		}
@@ -333,18 +346,10 @@ retryWithBackoff:
 	}
 }
 
-// createSession takes a tower an attempts to negotiate a session using any of
+// createSession takes a tower and attempts to negotiate a session using any of
 // its stored addresses. This method returns after the first successful
-// negotiation, or after all addresses have failed with ErrFailedNegotiation. If
-// the tower has no addresses, ErrNoTowerAddrs is returned.
-func (n *sessionNegotiator) createSession(tower *wtdb.Tower,
-	keyIndex uint32) error {
-
-	// If the tower has no addresses, there's nothing we can do.
-	if len(tower.Addresses) == 0 {
-		return ErrNoTowerAddrs
-	}
-
+// negotiation, or after all addresses have failed with ErrFailedNegotiation.
+func (n *sessionNegotiator) createSession(tower *Tower, keyIndex uint32) error {
 	sessionKeyDesc, err := n.cfg.SecretKeyRing.DeriveKey(
 		keychain.KeyLocator{
 			Family: keychain.KeyFamilyTowerSession,
@@ -358,10 +363,20 @@ func (n *sessionNegotiator) createSession(tower *wtdb.Tower,
 		sessionKeyDesc, n.cfg.SecretKeyRing,
 	)
 
-	for _, lnAddr := range tower.LNAddrs() {
-		err := n.tryAddress(sessionKey, keyIndex, tower, lnAddr)
+	addr := tower.Addresses.PeekAndLock()
+	for {
+		lnAddr := &lnwire.NetAddress{
+			IdentityKey: tower.IdentityKey,
+			Address:     addr,
+		}
+
+		err = n.tryAddress(sessionKey, keyIndex, tower, lnAddr)
+		tower.Addresses.ReleaseLock(addr)
 		switch {
-		case err == ErrPermanentTowerFailure:
+		case errors.Is(err, ErrSessionKeyAlreadyUsed):
+			return err
+
+		case errors.Is(err, ErrPermanentTowerFailure):
 			// TODO(conner): report to iterator? can then be reset
 			// with restart
 			fallthrough
@@ -370,6 +385,15 @@ func (n *sessionNegotiator) createSession(tower *wtdb.Tower,
 			n.log.Debugf("Request for session negotiation with "+
 				"tower=%s failed, trying again -- reason: "+
 				"%v", lnAddr, err)
+
+			// Get the next tower address if there is one.
+			addr, err = tower.Addresses.NextAndLock()
+			if err == ErrAddressesExhausted {
+				tower.Addresses.Reset()
+
+				return ErrFailedNegotiation
+			}
+
 			continue
 
 		default:
@@ -385,7 +409,7 @@ func (n *sessionNegotiator) createSession(tower *wtdb.Tower,
 // returns true if all steps succeed and the new session has been persisted, and
 // fails otherwise.
 func (n *sessionNegotiator) tryAddress(sessionKey keychain.SingleKeyECDH,
-	keyIndex uint32, tower *wtdb.Tower, lnAddr *lnwire.NetAddress) error {
+	keyIndex uint32, tower *Tower, lnAddr *lnwire.NetAddress) error {
 
 	// Connect to the tower address using our generated session key.
 	conn, err := n.cfg.Dial(sessionKey, lnAddr)
@@ -446,36 +470,36 @@ func (n *sessionNegotiator) tryAddress(sessionKey keychain.SingleKeyECDH,
 	}
 
 	switch createSessionReply.Code {
-	case wtwire.CodeOK, wtwire.CreateSessionCodeAlreadyExists:
-
-		// TODO(conner): add last-applied to create session reply to
-		// handle case where we lose state, session already exists, and
-		// we want to possibly resume using the session
-
+	case wtwire.CodeOK:
 		// TODO(conner): validate reward address
 		rewardPkScript := createSessionReply.Data
 
 		sessionID := wtdb.NewSessionIDFromPubKey(sessionKey.PubKey())
-		clientSession := &wtdb.ClientSession{
+		dbClientSession := &wtdb.ClientSession{
 			ClientSessionBody: wtdb.ClientSessionBody{
 				TowerID:        tower.ID,
 				KeyIndex:       keyIndex,
 				Policy:         n.cfg.Policy,
 				RewardPkScript: rewardPkScript,
 			},
-			Tower:          tower,
-			SessionKeyECDH: sessionKey,
-			ID:             sessionID,
+			ID: sessionID,
 		}
 
-		err = n.cfg.DB.CreateClientSession(clientSession)
+		err = n.cfg.DB.CreateClientSession(dbClientSession)
 		if err != nil {
 			return fmt.Errorf("unable to persist ClientSession: %v",
 				err)
 		}
 
 		n.log.Debugf("New session negotiated with %s, policy: %s",
-			lnAddr, clientSession.Policy)
+			lnAddr, dbClientSession.Policy)
+
+		clientSession := &ClientSession{
+			ID:                sessionID,
+			ClientSessionBody: dbClientSession.ClientSessionBody,
+			Tower:             tower,
+			SessionKeyECDH:    sessionKey,
+		}
 
 		// We have a newly negotiated session, return it to the
 		// dispatcher so that it can update how many outstanding
@@ -486,6 +510,16 @@ func (n *sessionNegotiator) tryAddress(sessionKey keychain.SingleKeyECDH,
 		case <-n.quit:
 			return ErrNegotiatorExiting
 		}
+
+	case wtwire.CreateSessionCodeAlreadyExists:
+		// TODO(conner): use the last-applied in the create session
+		//  reply to handle case where we lose state, session already
+		//  exists, and we want to possibly resume using the session.
+		//  NOTE that this should not be done until the server code
+		//  has been adapted to first check that the CreateSession
+		//  request is for the same blob-type as the initial session.
+
+		return ErrSessionKeyAlreadyUsed
 
 	// TODO(conner): handle error codes properly
 	case wtwire.CreateSessionCodeRejectBlobType:

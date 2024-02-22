@@ -19,90 +19,86 @@ const _ = grpc.SupportPackageIsVersion7
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type RouterClient interface {
-	//
-	//SendPaymentV2 attempts to route a payment described by the passed
-	//PaymentRequest to the final destination. The call returns a stream of
-	//payment updates.
+	// SendPaymentV2 attempts to route a payment described by the passed
+	// PaymentRequest to the final destination. The call returns a stream of
+	// payment updates.
 	SendPaymentV2(ctx context.Context, in *SendPaymentRequest, opts ...grpc.CallOption) (Router_SendPaymentV2Client, error)
-	//
-	//TrackPaymentV2 returns an update stream for the payment identified by the
-	//payment hash.
+	// TrackPaymentV2 returns an update stream for the payment identified by the
+	// payment hash.
 	TrackPaymentV2(ctx context.Context, in *TrackPaymentRequest, opts ...grpc.CallOption) (Router_TrackPaymentV2Client, error)
-	//
-	//EstimateRouteFee allows callers to obtain a lower bound w.r.t how much it
-	//may cost to send an HTLC to the target end destination.
+	// TrackPayments returns an update stream for every payment that is not in a
+	// terminal state. Note that if payments are in-flight while starting a new
+	// subscription, the start of the payment stream could produce out-of-order
+	// and/or duplicate events. In order to get updates for every in-flight
+	// payment attempt make sure to subscribe to this method before initiating any
+	// payments.
+	TrackPayments(ctx context.Context, in *TrackPaymentsRequest, opts ...grpc.CallOption) (Router_TrackPaymentsClient, error)
+	// EstimateRouteFee allows callers to obtain a lower bound w.r.t how much it
+	// may cost to send an HTLC to the target end destination.
 	EstimateRouteFee(ctx context.Context, in *RouteFeeRequest, opts ...grpc.CallOption) (*RouteFeeResponse, error)
 	// Deprecated: Do not use.
 	//
-	//Deprecated, use SendToRouteV2. SendToRoute attempts to make a payment via
-	//the specified route. This method differs from SendPayment in that it
-	//allows users to specify a full route manually. This can be used for
-	//things like rebalancing, and atomic swaps. It differs from the newer
-	//SendToRouteV2 in that it doesn't return the full HTLC information.
+	// Deprecated, use SendToRouteV2. SendToRoute attempts to make a payment via
+	// the specified route. This method differs from SendPayment in that it
+	// allows users to specify a full route manually. This can be used for
+	// things like rebalancing, and atomic swaps. It differs from the newer
+	// SendToRouteV2 in that it doesn't return the full HTLC information.
 	SendToRoute(ctx context.Context, in *SendToRouteRequest, opts ...grpc.CallOption) (*SendToRouteResponse, error)
-	//
-	//SendToRouteV2 attempts to make a payment via the specified route. This
-	//method differs from SendPayment in that it allows users to specify a full
-	//route manually. This can be used for things like rebalancing, and atomic
-	//swaps.
+	// SendToRouteV2 attempts to make a payment via the specified route. This
+	// method differs from SendPayment in that it allows users to specify a full
+	// route manually. This can be used for things like rebalancing, and atomic
+	// swaps.
 	SendToRouteV2(ctx context.Context, in *SendToRouteRequest, opts ...grpc.CallOption) (*lnrpc.HTLCAttempt, error)
-	//
-	//ResetMissionControl clears all mission control state and starts with a clean
-	//slate.
+	// ResetMissionControl clears all mission control state and starts with a clean
+	// slate.
 	ResetMissionControl(ctx context.Context, in *ResetMissionControlRequest, opts ...grpc.CallOption) (*ResetMissionControlResponse, error)
-	//
-	//QueryMissionControl exposes the internal mission control state to callers.
-	//It is a development feature.
+	// QueryMissionControl exposes the internal mission control state to callers.
+	// It is a development feature.
 	QueryMissionControl(ctx context.Context, in *QueryMissionControlRequest, opts ...grpc.CallOption) (*QueryMissionControlResponse, error)
-	//
-	//XImportMissionControl is an experimental API that imports the state provided
-	//to the internal mission control's state, using all results which are more
-	//recent than our existing values. These values will only be imported
-	//in-memory, and will not be persisted across restarts.
+	// XImportMissionControl is an experimental API that imports the state provided
+	// to the internal mission control's state, using all results which are more
+	// recent than our existing values. These values will only be imported
+	// in-memory, and will not be persisted across restarts.
 	XImportMissionControl(ctx context.Context, in *XImportMissionControlRequest, opts ...grpc.CallOption) (*XImportMissionControlResponse, error)
-	//
-	//GetMissionControlConfig returns mission control's current config.
+	// GetMissionControlConfig returns mission control's current config.
 	GetMissionControlConfig(ctx context.Context, in *GetMissionControlConfigRequest, opts ...grpc.CallOption) (*GetMissionControlConfigResponse, error)
-	//
-	//SetMissionControlConfig will set mission control's config, if the config
-	//provided is valid.
+	// SetMissionControlConfig will set mission control's config, if the config
+	// provided is valid.
 	SetMissionControlConfig(ctx context.Context, in *SetMissionControlConfigRequest, opts ...grpc.CallOption) (*SetMissionControlConfigResponse, error)
-	//
-	//QueryProbability returns the current success probability estimate for a
-	//given node pair and amount.
+	// Deprecated. QueryProbability returns the current success probability
+	// estimate for a given node pair and amount. The call returns a zero success
+	// probability if no channel is available or if the amount violates min/max
+	// HTLC constraints.
 	QueryProbability(ctx context.Context, in *QueryProbabilityRequest, opts ...grpc.CallOption) (*QueryProbabilityResponse, error)
-	//
-	//BuildRoute builds a fully specified route based on a list of hop public
-	//keys. It retrieves the relevant channel policies from the graph in order to
-	//calculate the correct fees and time locks.
+	// BuildRoute builds a fully specified route based on a list of hop public
+	// keys. It retrieves the relevant channel policies from the graph in order to
+	// calculate the correct fees and time locks.
 	BuildRoute(ctx context.Context, in *BuildRouteRequest, opts ...grpc.CallOption) (*BuildRouteResponse, error)
-	//
-	//SubscribeHtlcEvents creates a uni-directional stream from the server to
-	//the client which delivers a stream of htlc events.
+	// SubscribeHtlcEvents creates a uni-directional stream from the server to
+	// the client which delivers a stream of htlc events.
 	SubscribeHtlcEvents(ctx context.Context, in *SubscribeHtlcEventsRequest, opts ...grpc.CallOption) (Router_SubscribeHtlcEventsClient, error)
 	// Deprecated: Do not use.
 	//
-	//Deprecated, use SendPaymentV2. SendPayment attempts to route a payment
-	//described by the passed PaymentRequest to the final destination. The call
-	//returns a stream of payment status updates.
+	// Deprecated, use SendPaymentV2. SendPayment attempts to route a payment
+	// described by the passed PaymentRequest to the final destination. The call
+	// returns a stream of payment status updates.
 	SendPayment(ctx context.Context, in *SendPaymentRequest, opts ...grpc.CallOption) (Router_SendPaymentClient, error)
 	// Deprecated: Do not use.
 	//
-	//Deprecated, use TrackPaymentV2. TrackPayment returns an update stream for
-	//the payment identified by the payment hash.
+	// Deprecated, use TrackPaymentV2. TrackPayment returns an update stream for
+	// the payment identified by the payment hash.
 	TrackPayment(ctx context.Context, in *TrackPaymentRequest, opts ...grpc.CallOption) (Router_TrackPaymentClient, error)
-	//*
-	//HtlcInterceptor dispatches a bi-directional streaming RPC in which
-	//Forwarded HTLC requests are sent to the client and the client responds with
-	//a boolean that tells LND if this htlc should be intercepted.
-	//In case of interception, the htlc can be either settled, cancelled or
-	//resumed later by using the ResolveHoldForward endpoint.
+	// *
+	// HtlcInterceptor dispatches a bi-directional streaming RPC in which
+	// Forwarded HTLC requests are sent to the client and the client responds with
+	// a boolean that tells LND if this htlc should be intercepted.
+	// In case of interception, the htlc can be either settled, cancelled or
+	// resumed later by using the ResolveHoldForward endpoint.
 	HtlcInterceptor(ctx context.Context, opts ...grpc.CallOption) (Router_HtlcInterceptorClient, error)
-	//
-	//UpdateChanStatus attempts to manually set the state of a channel
-	//(enabled, disabled, or auto). A manual "disable" request will cause the
-	//channel to stay disabled until a subsequent manual request of either
-	//"enable" or "auto".
+	// UpdateChanStatus attempts to manually set the state of a channel
+	// (enabled, disabled, or auto). A manual "disable" request will cause the
+	// channel to stay disabled until a subsequent manual request of either
+	// "enable" or "auto".
 	UpdateChanStatus(ctx context.Context, in *UpdateChanStatusRequest, opts ...grpc.CallOption) (*UpdateChanStatusResponse, error)
 }
 
@@ -171,6 +167,38 @@ type routerTrackPaymentV2Client struct {
 }
 
 func (x *routerTrackPaymentV2Client) Recv() (*lnrpc.Payment, error) {
+	m := new(lnrpc.Payment)
+	if err := x.ClientStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (c *routerClient) TrackPayments(ctx context.Context, in *TrackPaymentsRequest, opts ...grpc.CallOption) (Router_TrackPaymentsClient, error) {
+	stream, err := c.cc.NewStream(ctx, &Router_ServiceDesc.Streams[2], "/routerrpc.Router/TrackPayments", opts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &routerTrackPaymentsClient{stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+type Router_TrackPaymentsClient interface {
+	Recv() (*lnrpc.Payment, error)
+	grpc.ClientStream
+}
+
+type routerTrackPaymentsClient struct {
+	grpc.ClientStream
+}
+
+func (x *routerTrackPaymentsClient) Recv() (*lnrpc.Payment, error) {
 	m := new(lnrpc.Payment)
 	if err := x.ClientStream.RecvMsg(m); err != nil {
 		return nil, err
@@ -270,7 +298,7 @@ func (c *routerClient) BuildRoute(ctx context.Context, in *BuildRouteRequest, op
 }
 
 func (c *routerClient) SubscribeHtlcEvents(ctx context.Context, in *SubscribeHtlcEventsRequest, opts ...grpc.CallOption) (Router_SubscribeHtlcEventsClient, error) {
-	stream, err := c.cc.NewStream(ctx, &Router_ServiceDesc.Streams[2], "/routerrpc.Router/SubscribeHtlcEvents", opts...)
+	stream, err := c.cc.NewStream(ctx, &Router_ServiceDesc.Streams[3], "/routerrpc.Router/SubscribeHtlcEvents", opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -303,7 +331,7 @@ func (x *routerSubscribeHtlcEventsClient) Recv() (*HtlcEvent, error) {
 
 // Deprecated: Do not use.
 func (c *routerClient) SendPayment(ctx context.Context, in *SendPaymentRequest, opts ...grpc.CallOption) (Router_SendPaymentClient, error) {
-	stream, err := c.cc.NewStream(ctx, &Router_ServiceDesc.Streams[3], "/routerrpc.Router/SendPayment", opts...)
+	stream, err := c.cc.NewStream(ctx, &Router_ServiceDesc.Streams[4], "/routerrpc.Router/SendPayment", opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -336,7 +364,7 @@ func (x *routerSendPaymentClient) Recv() (*PaymentStatus, error) {
 
 // Deprecated: Do not use.
 func (c *routerClient) TrackPayment(ctx context.Context, in *TrackPaymentRequest, opts ...grpc.CallOption) (Router_TrackPaymentClient, error) {
-	stream, err := c.cc.NewStream(ctx, &Router_ServiceDesc.Streams[4], "/routerrpc.Router/TrackPayment", opts...)
+	stream, err := c.cc.NewStream(ctx, &Router_ServiceDesc.Streams[5], "/routerrpc.Router/TrackPayment", opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -368,7 +396,7 @@ func (x *routerTrackPaymentClient) Recv() (*PaymentStatus, error) {
 }
 
 func (c *routerClient) HtlcInterceptor(ctx context.Context, opts ...grpc.CallOption) (Router_HtlcInterceptorClient, error) {
-	stream, err := c.cc.NewStream(ctx, &Router_ServiceDesc.Streams[5], "/routerrpc.Router/HtlcInterceptor", opts...)
+	stream, err := c.cc.NewStream(ctx, &Router_ServiceDesc.Streams[6], "/routerrpc.Router/HtlcInterceptor", opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -411,90 +439,86 @@ func (c *routerClient) UpdateChanStatus(ctx context.Context, in *UpdateChanStatu
 // All implementations must embed UnimplementedRouterServer
 // for forward compatibility
 type RouterServer interface {
-	//
-	//SendPaymentV2 attempts to route a payment described by the passed
-	//PaymentRequest to the final destination. The call returns a stream of
-	//payment updates.
+	// SendPaymentV2 attempts to route a payment described by the passed
+	// PaymentRequest to the final destination. The call returns a stream of
+	// payment updates.
 	SendPaymentV2(*SendPaymentRequest, Router_SendPaymentV2Server) error
-	//
-	//TrackPaymentV2 returns an update stream for the payment identified by the
-	//payment hash.
+	// TrackPaymentV2 returns an update stream for the payment identified by the
+	// payment hash.
 	TrackPaymentV2(*TrackPaymentRequest, Router_TrackPaymentV2Server) error
-	//
-	//EstimateRouteFee allows callers to obtain a lower bound w.r.t how much it
-	//may cost to send an HTLC to the target end destination.
+	// TrackPayments returns an update stream for every payment that is not in a
+	// terminal state. Note that if payments are in-flight while starting a new
+	// subscription, the start of the payment stream could produce out-of-order
+	// and/or duplicate events. In order to get updates for every in-flight
+	// payment attempt make sure to subscribe to this method before initiating any
+	// payments.
+	TrackPayments(*TrackPaymentsRequest, Router_TrackPaymentsServer) error
+	// EstimateRouteFee allows callers to obtain a lower bound w.r.t how much it
+	// may cost to send an HTLC to the target end destination.
 	EstimateRouteFee(context.Context, *RouteFeeRequest) (*RouteFeeResponse, error)
 	// Deprecated: Do not use.
 	//
-	//Deprecated, use SendToRouteV2. SendToRoute attempts to make a payment via
-	//the specified route. This method differs from SendPayment in that it
-	//allows users to specify a full route manually. This can be used for
-	//things like rebalancing, and atomic swaps. It differs from the newer
-	//SendToRouteV2 in that it doesn't return the full HTLC information.
+	// Deprecated, use SendToRouteV2. SendToRoute attempts to make a payment via
+	// the specified route. This method differs from SendPayment in that it
+	// allows users to specify a full route manually. This can be used for
+	// things like rebalancing, and atomic swaps. It differs from the newer
+	// SendToRouteV2 in that it doesn't return the full HTLC information.
 	SendToRoute(context.Context, *SendToRouteRequest) (*SendToRouteResponse, error)
-	//
-	//SendToRouteV2 attempts to make a payment via the specified route. This
-	//method differs from SendPayment in that it allows users to specify a full
-	//route manually. This can be used for things like rebalancing, and atomic
-	//swaps.
+	// SendToRouteV2 attempts to make a payment via the specified route. This
+	// method differs from SendPayment in that it allows users to specify a full
+	// route manually. This can be used for things like rebalancing, and atomic
+	// swaps.
 	SendToRouteV2(context.Context, *SendToRouteRequest) (*lnrpc.HTLCAttempt, error)
-	//
-	//ResetMissionControl clears all mission control state and starts with a clean
-	//slate.
+	// ResetMissionControl clears all mission control state and starts with a clean
+	// slate.
 	ResetMissionControl(context.Context, *ResetMissionControlRequest) (*ResetMissionControlResponse, error)
-	//
-	//QueryMissionControl exposes the internal mission control state to callers.
-	//It is a development feature.
+	// QueryMissionControl exposes the internal mission control state to callers.
+	// It is a development feature.
 	QueryMissionControl(context.Context, *QueryMissionControlRequest) (*QueryMissionControlResponse, error)
-	//
-	//XImportMissionControl is an experimental API that imports the state provided
-	//to the internal mission control's state, using all results which are more
-	//recent than our existing values. These values will only be imported
-	//in-memory, and will not be persisted across restarts.
+	// XImportMissionControl is an experimental API that imports the state provided
+	// to the internal mission control's state, using all results which are more
+	// recent than our existing values. These values will only be imported
+	// in-memory, and will not be persisted across restarts.
 	XImportMissionControl(context.Context, *XImportMissionControlRequest) (*XImportMissionControlResponse, error)
-	//
-	//GetMissionControlConfig returns mission control's current config.
+	// GetMissionControlConfig returns mission control's current config.
 	GetMissionControlConfig(context.Context, *GetMissionControlConfigRequest) (*GetMissionControlConfigResponse, error)
-	//
-	//SetMissionControlConfig will set mission control's config, if the config
-	//provided is valid.
+	// SetMissionControlConfig will set mission control's config, if the config
+	// provided is valid.
 	SetMissionControlConfig(context.Context, *SetMissionControlConfigRequest) (*SetMissionControlConfigResponse, error)
-	//
-	//QueryProbability returns the current success probability estimate for a
-	//given node pair and amount.
+	// Deprecated. QueryProbability returns the current success probability
+	// estimate for a given node pair and amount. The call returns a zero success
+	// probability if no channel is available or if the amount violates min/max
+	// HTLC constraints.
 	QueryProbability(context.Context, *QueryProbabilityRequest) (*QueryProbabilityResponse, error)
-	//
-	//BuildRoute builds a fully specified route based on a list of hop public
-	//keys. It retrieves the relevant channel policies from the graph in order to
-	//calculate the correct fees and time locks.
+	// BuildRoute builds a fully specified route based on a list of hop public
+	// keys. It retrieves the relevant channel policies from the graph in order to
+	// calculate the correct fees and time locks.
 	BuildRoute(context.Context, *BuildRouteRequest) (*BuildRouteResponse, error)
-	//
-	//SubscribeHtlcEvents creates a uni-directional stream from the server to
-	//the client which delivers a stream of htlc events.
+	// SubscribeHtlcEvents creates a uni-directional stream from the server to
+	// the client which delivers a stream of htlc events.
 	SubscribeHtlcEvents(*SubscribeHtlcEventsRequest, Router_SubscribeHtlcEventsServer) error
 	// Deprecated: Do not use.
 	//
-	//Deprecated, use SendPaymentV2. SendPayment attempts to route a payment
-	//described by the passed PaymentRequest to the final destination. The call
-	//returns a stream of payment status updates.
+	// Deprecated, use SendPaymentV2. SendPayment attempts to route a payment
+	// described by the passed PaymentRequest to the final destination. The call
+	// returns a stream of payment status updates.
 	SendPayment(*SendPaymentRequest, Router_SendPaymentServer) error
 	// Deprecated: Do not use.
 	//
-	//Deprecated, use TrackPaymentV2. TrackPayment returns an update stream for
-	//the payment identified by the payment hash.
+	// Deprecated, use TrackPaymentV2. TrackPayment returns an update stream for
+	// the payment identified by the payment hash.
 	TrackPayment(*TrackPaymentRequest, Router_TrackPaymentServer) error
-	//*
-	//HtlcInterceptor dispatches a bi-directional streaming RPC in which
-	//Forwarded HTLC requests are sent to the client and the client responds with
-	//a boolean that tells LND if this htlc should be intercepted.
-	//In case of interception, the htlc can be either settled, cancelled or
-	//resumed later by using the ResolveHoldForward endpoint.
+	// *
+	// HtlcInterceptor dispatches a bi-directional streaming RPC in which
+	// Forwarded HTLC requests are sent to the client and the client responds with
+	// a boolean that tells LND if this htlc should be intercepted.
+	// In case of interception, the htlc can be either settled, cancelled or
+	// resumed later by using the ResolveHoldForward endpoint.
 	HtlcInterceptor(Router_HtlcInterceptorServer) error
-	//
-	//UpdateChanStatus attempts to manually set the state of a channel
-	//(enabled, disabled, or auto). A manual "disable" request will cause the
-	//channel to stay disabled until a subsequent manual request of either
-	//"enable" or "auto".
+	// UpdateChanStatus attempts to manually set the state of a channel
+	// (enabled, disabled, or auto). A manual "disable" request will cause the
+	// channel to stay disabled until a subsequent manual request of either
+	// "enable" or "auto".
 	UpdateChanStatus(context.Context, *UpdateChanStatusRequest) (*UpdateChanStatusResponse, error)
 	mustEmbedUnimplementedRouterServer()
 }
@@ -508,6 +532,9 @@ func (UnimplementedRouterServer) SendPaymentV2(*SendPaymentRequest, Router_SendP
 }
 func (UnimplementedRouterServer) TrackPaymentV2(*TrackPaymentRequest, Router_TrackPaymentV2Server) error {
 	return status.Errorf(codes.Unimplemented, "method TrackPaymentV2 not implemented")
+}
+func (UnimplementedRouterServer) TrackPayments(*TrackPaymentsRequest, Router_TrackPaymentsServer) error {
+	return status.Errorf(codes.Unimplemented, "method TrackPayments not implemented")
 }
 func (UnimplementedRouterServer) EstimateRouteFee(context.Context, *RouteFeeRequest) (*RouteFeeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method EstimateRouteFee not implemented")
@@ -606,6 +633,27 @@ type routerTrackPaymentV2Server struct {
 }
 
 func (x *routerTrackPaymentV2Server) Send(m *lnrpc.Payment) error {
+	return x.ServerStream.SendMsg(m)
+}
+
+func _Router_TrackPayments_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(TrackPaymentsRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(RouterServer).TrackPayments(m, &routerTrackPaymentsServer{stream})
+}
+
+type Router_TrackPaymentsServer interface {
+	Send(*lnrpc.Payment) error
+	grpc.ServerStream
+}
+
+type routerTrackPaymentsServer struct {
+	grpc.ServerStream
+}
+
+func (x *routerTrackPaymentsServer) Send(m *lnrpc.Payment) error {
 	return x.ServerStream.SendMsg(m)
 }
 
@@ -957,6 +1005,11 @@ var Router_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "TrackPaymentV2",
 			Handler:       _Router_TrackPaymentV2_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "TrackPayments",
+			Handler:       _Router_TrackPayments_Handler,
 			ServerStreams: true,
 		},
 		{

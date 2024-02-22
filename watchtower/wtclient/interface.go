@@ -49,24 +49,61 @@ type DB interface {
 	// (tower, blob type) pair until CreateClientSession is invoked for that
 	// tower and index, at which point a new index for that tower can be
 	// reserved. Multiple calls to this method before CreateClientSession is
-	// invoked should return the same index.
-	NextSessionKeyIndex(wtdb.TowerID, blob.Type) (uint32, error)
+	// invoked should return the same index unless forceNext is true.
+	NextSessionKeyIndex(wtdb.TowerID, blob.Type, bool) (uint32, error)
 
 	// CreateClientSession saves a newly negotiated client session to the
 	// client's database. This enables the session to be used across
 	// restarts.
 	CreateClientSession(*wtdb.ClientSession) error
 
-	// ListClientSessions returns all sessions that have not yet been
-	// exhausted. This is used on startup to find any sessions which may
-	// still be able to accept state updates. An optional tower ID can be
-	// used to filter out any client sessions in the response that do not
-	// correspond to this tower.
-	ListClientSessions(*wtdb.TowerID) (map[wtdb.SessionID]*wtdb.ClientSession, error)
+	// ListClientSessions returns the set of all client sessions known to
+	// the db. An optional tower ID can be used to filter out any client
+	// sessions in the response that do not correspond to this tower.
+	ListClientSessions(*wtdb.TowerID, ...wtdb.ClientSessionListOption) (
+		map[wtdb.SessionID]*wtdb.ClientSession, error)
+
+	// GetClientSession loads the ClientSession with the given ID from the
+	// DB.
+	GetClientSession(wtdb.SessionID,
+		...wtdb.ClientSessionListOption) (*wtdb.ClientSession, error)
+
+	// FetchSessionCommittedUpdates retrieves the current set of un-acked
+	// updates of the given session.
+	FetchSessionCommittedUpdates(id *wtdb.SessionID) (
+		[]wtdb.CommittedUpdate, error)
+
+	// IsAcked returns true if the given backup has been backed up using
+	// the given session.
+	IsAcked(id *wtdb.SessionID, backupID *wtdb.BackupID) (bool, error)
+
+	// NumAckedUpdates returns the number of backups that have been
+	// successfully backed up using the given session.
+	NumAckedUpdates(id *wtdb.SessionID) (uint64, error)
 
 	// FetchChanSummaries loads a mapping from all registered channels to
-	// their channel summaries.
+	// their channel summaries. Only the channels that have not yet been
+	// marked as closed will be loaded.
 	FetchChanSummaries() (wtdb.ChannelSummaries, error)
+
+	// MarkChannelClosed will mark a registered channel as closed by setting
+	// its closed-height as the given block height. It returns a list of
+	// session IDs for sessions that are now considered closable due to the
+	// close of this channel. The details for this channel will be deleted
+	// from the DB if there are no more sessions in the DB that contain
+	// updates for this channel.
+	MarkChannelClosed(chanID lnwire.ChannelID, blockHeight uint32) (
+		[]wtdb.SessionID, error)
+
+	// ListClosableSessions fetches and returns the IDs for all sessions
+	// marked as closable.
+	ListClosableSessions() (map[wtdb.SessionID]uint32, error)
+
+	// DeleteSession can be called when a session should be deleted from the
+	// DB. All references to the session will also be deleted from the DB.
+	// A session will only be deleted if it was previously marked as
+	// closable.
+	DeleteSession(id wtdb.SessionID) error
 
 	// RegisterChannel registers a channel for use within the client
 	// database. For now, all that is stored in the channel summary is the
@@ -94,10 +131,18 @@ type DB interface {
 	// update identified by seqNum was received and saved. The returned
 	// lastApplied will be recorded.
 	AckUpdate(id *wtdb.SessionID, seqNum, lastApplied uint16) error
+
+	// GetDBQueue returns a BackupID Queue instance under the given name
+	// space.
+	GetDBQueue(namespace []byte) wtdb.Queue[*wtdb.BackupID]
+
+	// DeleteCommittedUpdate deletes the committed update belonging to the
+	// given session and with the given sequence number from the db.
+	DeleteCommittedUpdate(id *wtdb.SessionID, seqNum uint16) error
 }
 
-// AuthDialer connects to a remote node using an authenticated transport, such as
-// brontide. The dialer argument is used to specify a resolver, which allows
+// AuthDialer connects to a remote node using an authenticated transport, such
+// as brontide. The dialer argument is used to specify a resolver, which allows
 // this method to be used over Tor or clear net connections.
 type AuthDialer func(localKey keychain.SingleKeyECDH,
 	netAddr *lnwire.NetAddress,
@@ -113,4 +158,78 @@ type ECDHKeyRing interface {
 	// or when manually rotating something like our current default node
 	// key.
 	DeriveKey(keyLoc keychain.KeyLocator) (keychain.KeyDescriptor, error)
+}
+
+// Tower represents the info about a watchtower server that a watchtower client
+// needs in order to connect to it.
+type Tower struct {
+	// ID is the unique, db-assigned, identifier for this tower.
+	ID wtdb.TowerID
+
+	// IdentityKey is the public key of the remote node, used to
+	// authenticate the brontide transport.
+	IdentityKey *btcec.PublicKey
+
+	// Addresses is an AddressIterator that can be used to manage the
+	// addresses for this tower.
+	Addresses AddressIterator
+}
+
+// NewTowerFromDBTower converts a wtdb.Tower, which uses a static address list,
+// into a Tower which uses an address iterator.
+func NewTowerFromDBTower(t *wtdb.Tower) (*Tower, error) {
+	addrs, err := newAddressIterator(t.Addresses...)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Tower{
+		ID:          t.ID,
+		IdentityKey: t.IdentityKey,
+		Addresses:   addrs,
+	}, nil
+}
+
+// ClientSession represents the session that a tower client has with a server.
+type ClientSession struct {
+	// ID is the client's public key used when authenticating with the
+	// tower.
+	ID wtdb.SessionID
+
+	wtdb.ClientSessionBody
+
+	// Tower represents the tower that the client session has been made
+	// with.
+	Tower *Tower
+
+	// SessionKeyECDH is the ECDH capable wrapper of the ephemeral secret
+	// key used to connect to the watchtower.
+	SessionKeyECDH keychain.SingleKeyECDH
+}
+
+// NewClientSessionFromDBSession converts a wtdb.ClientSession to a
+// ClientSession.
+func NewClientSessionFromDBSession(s *wtdb.ClientSession, tower *Tower,
+	keyRing ECDHKeyRing) (*ClientSession, error) {
+
+	towerKeyDesc, err := keyRing.DeriveKey(
+		keychain.KeyLocator{
+			Family: keychain.KeyFamilyTowerSession,
+			Index:  s.KeyIndex,
+		},
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	sessionKeyECDH := keychain.NewPubKeyECDH(
+		towerKeyDesc, keyRing,
+	)
+
+	return &ClientSession{
+		ID:                s.ID,
+		ClientSessionBody: s.ClientSessionBody,
+		Tower:             tower,
+		SessionKeyECDH:    sessionKeyECDH,
+	}, nil
 }

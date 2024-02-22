@@ -1,6 +1,3 @@
-//go:build !rpctest
-// +build !rpctest
-
 package contractcourt
 
 import (
@@ -10,6 +7,7 @@ import (
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/wire"
+	"github.com/stretchr/testify/require"
 )
 
 type incubateTest struct {
@@ -52,16 +50,11 @@ func initIncubateTests() {
 // TestNurseryStoreInit verifies basic properties of the nursery store before
 // any modifying calls are made.
 func TestNurseryStoreInit(t *testing.T) {
-	cdb, cleanUp, err := channeldb.MakeTestDB()
-	if err != nil {
-		t.Fatalf("unable to open channel db: %v", err)
-	}
-	defer cleanUp()
+	cdb, err := channeldb.MakeTestDB(t)
+	require.NoError(t, err, "unable to open channel db")
 
 	ns, err := NewNurseryStore(&chainHash, cdb)
-	if err != nil {
-		t.Fatalf("unable to open nursery store: %v", err)
-	}
+	require.NoError(t, err, "unable to open nursery store")
 
 	assertNumChannels(t, ns, 0)
 	assertNumPreschools(t, ns, 0)
@@ -72,16 +65,11 @@ func TestNurseryStoreInit(t *testing.T) {
 // outputs through the nursery store, verifying the properties of the
 // intermediate states.
 func TestNurseryStoreIncubate(t *testing.T) {
-	cdb, cleanUp, err := channeldb.MakeTestDB()
-	if err != nil {
-		t.Fatalf("unable to open channel db: %v", err)
-	}
-	defer cleanUp()
+	cdb, err := channeldb.MakeTestDB(t)
+	require.NoError(t, err, "unable to open channel db")
 
 	ns, err := NewNurseryStore(&chainHash, cdb)
-	if err != nil {
-		t.Fatalf("unable to open nursery store: %v", err)
-	}
+	require.NoError(t, err, "unable to open nursery store")
 
 	for i, test := range incubateTests {
 		// At the beginning of each test, we do not expect to the
@@ -313,16 +301,11 @@ func TestNurseryStoreIncubate(t *testing.T) {
 // populated entries from the height index as it is purged, and that the last
 // purged height is set appropriately.
 func TestNurseryStoreGraduate(t *testing.T) {
-	cdb, cleanUp, err := channeldb.MakeTestDB()
-	if err != nil {
-		t.Fatalf("unable to open channel db: %v", err)
-	}
-	defer cleanUp()
+	cdb, err := channeldb.MakeTestDB(t)
+	require.NoError(t, err, "unable to open channel db")
 
 	ns, err := NewNurseryStore(&chainHash, cdb)
-	if err != nil {
-		t.Fatalf("unable to open nursery store: %v", err)
-	}
+	require.NoError(t, err, "unable to open nursery store")
 
 	kid := &kidOutputs[3]
 
@@ -333,16 +316,12 @@ func TestNurseryStoreGraduate(t *testing.T) {
 	// First, add a commitment output to the nursery store, which is
 	// initially inserted in the preschool bucket.
 	err = ns.Incubate([]kidOutput{*kid}, nil)
-	if err != nil {
-		t.Fatalf("unable to incubate commitment output: %v", err)
-	}
+	require.NoError(t, err, "unable to incubate commitment output")
 
 	// Then, move the commitment output to the kindergarten bucket, such
 	// that it resides in the height index at its maturity height.
 	err = ns.PreschoolToKinder(kid, 0)
-	if err != nil {
-		t.Fatalf("unable to move pscl output to kndr: %v", err)
-	}
+	require.NoError(t, err, "unable to move pscl output to kndr")
 
 	// Now, iteratively purge all height below the target maturity height,
 	// checking that each class is now empty, and that the last purged
@@ -394,9 +373,7 @@ func assertNumChanOutputs(t *testing.T, ns NurseryStorer,
 // matches the expected number.
 func assertNumPreschools(t *testing.T, ns NurseryStorer, expected int) {
 	psclOutputs, err := ns.FetchPreschools()
-	if err != nil {
-		t.Fatalf("unable to retrieve preschool outputs: %v", err)
-	}
+	require.NoError(t, err, "unable to retrieve preschool outputs")
 
 	if len(psclOutputs) != expected {
 		t.Fatalf("expected number of pscl outputs to be %d, got %v",
@@ -534,9 +511,7 @@ func assertChannelMaturity(t *testing.T, ns NurseryStorer,
 	chanPoint *wire.OutPoint, expectedMaturity bool) {
 
 	isMature, err := ns.IsMatureChannel(chanPoint)
-	if err != nil {
-		t.Fatalf("unable to fetch channel maturity: %v", err)
-	}
+	require.NoError(t, err, "unable to fetch channel maturity")
 
 	if isMature != expectedMaturity {
 		t.Fatalf("expected channel maturity: %v, actual: %v",

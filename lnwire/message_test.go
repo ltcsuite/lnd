@@ -197,7 +197,6 @@ func BenchmarkWriteMessage(b *testing.B) {
 		m := msg
 		// Run each message as a sub benchmark test.
 		b.Run(msg.MsgType().String(), func(b *testing.B) {
-
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				// Fetch a buffer from the pool and reset it.
@@ -260,6 +259,7 @@ func BenchmarkReadMessage(b *testing.B) {
 func makeAllMessages(t testing.TB, r *rand.Rand) []lnwire.Message {
 	msgAll := []lnwire.Message{}
 
+	msgAll = append(msgAll, newMsgWarning(t, r))
 	msgAll = append(msgAll, newMsgInit(t, r))
 	msgAll = append(msgAll, newMsgError(t, r))
 	msgAll = append(msgAll, newMsgPing(t, r))
@@ -268,7 +268,7 @@ func makeAllMessages(t testing.TB, r *rand.Rand) []lnwire.Message {
 	msgAll = append(msgAll, newMsgAcceptChannel(t, r))
 	msgAll = append(msgAll, newMsgFundingCreated(t, r))
 	msgAll = append(msgAll, newMsgFundingSigned(t, r))
-	msgAll = append(msgAll, newMsgFundingLocked(t, r))
+	msgAll = append(msgAll, newMsgChannelReady(t, r))
 	msgAll = append(msgAll, newMsgShutdown(t, r))
 	msgAll = append(msgAll, newMsgClosingSigned(t, r))
 	msgAll = append(msgAll, newMsgUpdateAddHTLC(t, r))
@@ -292,6 +292,19 @@ func makeAllMessages(t testing.TB, r *rand.Rand) []lnwire.Message {
 	msgAll = append(msgAll, newMsgReplyChannelRangeZlib(t, r))
 
 	return msgAll
+}
+
+func newMsgWarning(tb testing.TB, r io.Reader) *lnwire.Warning {
+	tb.Helper()
+
+	msg := lnwire.NewWarning()
+
+	_, err := r.Read(msg.ChanID[:])
+	require.NoError(tb, err, "unable to generate chan id")
+
+	msg.Data = createExtraData(tb, r)
+
+	return msg
 }
 
 func newMsgInit(t testing.TB, r io.Reader) *lnwire.Init {
@@ -429,7 +442,7 @@ func newMsgFundingSigned(t testing.TB, r io.Reader) *lnwire.FundingSigned {
 	return msg
 }
 
-func newMsgFundingLocked(t testing.TB, r io.Reader) *lnwire.FundingLocked {
+func newMsgChannelReady(t testing.TB, r io.Reader) *lnwire.ChannelReady {
 	t.Helper()
 
 	var c [32]byte
@@ -439,8 +452,20 @@ func newMsgFundingLocked(t testing.TB, r io.Reader) *lnwire.FundingLocked {
 
 	pubKey := randPubKey(t)
 
-	msg := lnwire.NewFundingLocked(lnwire.ChannelID(c), pubKey)
-	msg.ExtraData = createExtraData(t, r)
+	// When testing the ChannelReady msg type in the WriteMessage
+	// function we need to populate the alias here to test the encoding
+	// of the TLV stream.
+	aliasScid := lnwire.NewShortChanIDFromInt(rand.Uint64())
+	msg := &lnwire.ChannelReady{
+		ChanID:                 lnwire.ChannelID(c),
+		NextPerCommitmentPoint: pubKey,
+		AliasScid:              &aliasScid,
+		ExtraData:              make([]byte, 0),
+	}
+
+	// We do not include the TLV record (aliasScid) into the ExtraData
+	// because when the msg is encoded the ExtraData is overwritten
+	// with the current aliasScid value.
 
 	return msg
 }
@@ -677,7 +702,7 @@ func newMsgChannelUpdate(t testing.TB, r *rand.Rand) *lnwire.ChannelUpdate {
 	// as being part of the ChannelUpdate, to pass
 	// serialization tests, as it will be ignored if the bit
 	// is not set.
-	if msgFlags&lnwire.ChanUpdateOptionMaxHtlc == 0 {
+	if msgFlags&lnwire.ChanUpdateRequiredMaxHtlc == 0 {
 		maxHtlc = 0
 	}
 

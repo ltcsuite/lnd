@@ -2,11 +2,11 @@ package tlv_test
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"reflect"
 	"testing"
 
+	secp "github.com/decred/dcrd/dcrec/secp256k1/v4"
 	"github.com/ltcsuite/lnd/tlv"
 	"github.com/ltcsuite/ltcd/btcec/v2"
 )
@@ -304,7 +304,10 @@ var tlvDecodingFailureTests = []struct {
 			0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
 			0x00, 0x00, 0x00, 0x02,
 		},
-		expErr: errors.New("invalid magic in compressed pubkey string: 4"),
+		expErr: secp.Error{
+			Err:         secp.ErrPubKeyInvalidFormat,
+			Description: "invalid public key: unsupported format: 4",
+		},
 		skipN2: true,
 	},
 	{
@@ -366,12 +369,6 @@ var tlvDecodingFailureTests = []struct {
 		name:   "type wraparound",
 		bytes:  []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00},
 		expErr: tlv.ErrStreamNotCanonical,
-	},
-	{
-		name:   "absurd record length",
-		bytes:  []byte{0xfd, 0x01, 0x91, 0xfe, 0xff, 0xff, 0xff, 0xff},
-		expErr: tlv.ErrRecordTooLarge,
-		skipN2: true,
 	},
 }
 
@@ -528,7 +525,7 @@ func TestTLVDecodingSuccess(t *testing.T) {
 
 			err = n2.Decode(r)
 			if err != nil {
-				t.Fatalf("expected N2 decoding succes, got: %v",
+				t.Fatalf("expected N2 decoding success, got: %v",
 					err)
 			}
 		})

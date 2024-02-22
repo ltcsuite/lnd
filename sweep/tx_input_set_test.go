@@ -43,12 +43,12 @@ func TestTxInputSet(t *testing.T) {
 		t.Fatal("expected dust limit not yet to be reached")
 	}
 
-	// Add a 1000 sat input. This increases the tx fee to 712 sats. The tx
-	// output should now be 1000+700 - 712 = 988 sats.
-	if !set.add(createP2WKHInput(1000), constraintsRegular) {
+	// Add a 3312 sat input. This increases the tx fee to 712 sats. The tx
+	// output should now be 3312+700 - 712 = 3300 sats. TODO:(litecoin) check this numbers
+	if !set.add(createP2WKHInput(3312), constraintsRegular) {
 		t.Fatal("expected add of positively yielding input to succeed")
 	}
-	if set.totalOutput() != 988 {
+	if set.totalOutput() != 3300 {
 		t.Fatal("unexpected output value")
 	}
 	if !set.enoughInput() {
@@ -148,12 +148,12 @@ func TestTxInputSetRequiredOutput(t *testing.T) {
 	require.False(t, set.add(inp, constraintsRegular),
 		"expected adding dust required tx out to fail")
 
-	// Create a 1000 sat input that also has a required TxOut of 1000 sat.
+	// Create a 3000 sat input that also has a required TxOut of 3000 sat.
 	// The fee to sweep this input to a P2WKH output is 439 sats.
 	inp = &reqInput{
-		Input: createP2WKHInput(1000),
+		Input: createP2WKHInput(3000),
 		txOut: &wire.TxOut{
-			Value:    1000,
+			Value:    3000,
 			PkScript: make([]byte, input.P2WPKHSize),
 		},
 	}
@@ -234,7 +234,6 @@ func TestTxInputSetRequiredOutput(t *testing.T) {
 	change = set.changeOutput
 	if change != 1000 {
 		t.Fatalf("expected change to be %v, had %v", 1000, change)
-
 	}
 	require.True(t, set.enoughInput())
 }

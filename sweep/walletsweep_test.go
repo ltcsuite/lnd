@@ -12,6 +12,7 @@ import (
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
+	"github.com/stretchr/testify/require"
 )
 
 // TestDetermineFeePerKw tests that given a fee preference, the
@@ -42,12 +43,20 @@ func TestDetermineFeePerKw(t *testing.T) {
 		// fail determines if this test case should fail or not.
 		fail bool
 	}{
-		// A fee rate below the fee rate floor should output the floor.
+		// A fee rate below the floor should error out.
 		{
 			feePref: FeePreference{
 				FeeRate: chainfee.SatPerKWeight(99),
 			},
-			fee: chainfee.FeePerKwFloor,
+			fail: true,
+		},
+
+		// A fee rate below the relay fee should error out.
+		{
+			feePref: FeePreference{
+				FeeRate: chainfee.SatPerKWeight(299),
+			},
+			fail: true,
 		},
 
 		// A fee rate above the floor, should pass through and return
@@ -352,9 +361,7 @@ func TestCraftSweepAllTx(t *testing.T) {
 		0, 10, nil, deliveryAddr, coinSelectLocker, utxoSource,
 		utxoLocker, feeEstimator, signer, 0,
 	)
-	if err != nil {
-		t.Fatalf("unable to make sweep tx: %v", err)
-	}
+	require.NoError(t, err, "unable to make sweep tx")
 
 	// At this point, all of the UTXOs that we made above should be locked
 	// and none of them unlocked.

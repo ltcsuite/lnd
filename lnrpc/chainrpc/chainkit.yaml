@@ -1,0 +1,13 @@
+type: google.api.Service
+config_version: 3
+
+http:
+  rules:
+    - selector: chainrpc.ChainKit.GetBlock
+      get: "/v2/chainkit/block"
+    - selector: chainrpc.ChainKit.GetBlockHeader
+      get: "/v2/chainkit/blockheader"
+    - selector: chainrpc.ChainKit.GetBestBlock
+      get: "/v2/chainkit/bestblock"
+    - selector: chainrpc.ChainKit.GetBlockHash
+      get: "/v2/chainkit/blockhash"

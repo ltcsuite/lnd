@@ -1,8 +1,8 @@
 package netann
 
 import (
-	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // DB abstracts the required database functionality needed by the

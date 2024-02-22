@@ -5,14 +5,24 @@ import (
 
 	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/btcec/v2/ecdsa"
+	"github.com/ltcsuite/ltcd/btcec/v2/schnorr"
 )
 
 const (
-	// KeyDerivationVersion is the version of the key derivation schema
-	// defined below. We use a version as this means that we'll be able to
-	// accept new seed in the future and be able to discern if the software
-	// is compatible with the version of the seed.
-	KeyDerivationVersion = 0
+	// KeyDerivationVersionLegacy is the previous version of the key
+	// derivation schema defined below. We use a version as this means that
+	// we'll be able to accept new seed in the future and be able to discern
+	// if the software is compatible with the version of the seed.
+	KeyDerivationVersionLegacy = 0
+
+	// KeyDerivationVersionTaproot is the most recent version of the key
+	// derivation scheme that marks the introduction of the Taproot
+	// derivation with BIP0086 support.
+	KeyDerivationVersionTaproot = 1
+
+	// CurrentKeyDerivationVersion is the current default key derivation
+	// version that is used for new seeds.
+	CurrentKeyDerivationVersion = KeyDerivationVersionTaproot
 
 	// BIP0043Purpose is the "purpose" value that we'll use for the first
 	// version or our key derivation scheme. All keys are expected to be
@@ -24,6 +34,13 @@ const (
 	// NOTE: BRICK SQUUUUUAD.
 	BIP0043Purpose = 1017
 )
+
+// IsKnownVersion returns true if the given version is one of the known
+// derivation scheme versions as defined by this package.
+func IsKnownVersion(internalVersion uint8) bool {
+	return internalVersion == KeyDerivationVersionLegacy ||
+		internalVersion == KeyDerivationVersionTaproot
+}
 
 var (
 	// MaxKeyRangeScan is the maximum number of keys that we'll attempt to
@@ -46,7 +63,7 @@ var (
 // The key derivation in this file follows the following hierarchy based on
 // BIP43:
 //
-//   * m/1017'/coinType'/keyFamily'/0/index
+//   - m/1017'/coinType'/keyFamily'/0/index
 type KeyFamily uint32
 
 const (
@@ -85,12 +102,11 @@ const (
 	// p2p level (BOLT-0008).
 	KeyFamilyNodeKey KeyFamily = 6
 
-	// KeyFamilyStaticBackup is the family of keys that will be used to
-	// derive keys that we use to encrypt and decrypt our set of static
-	// backups. These backups may either be stored within watch towers for
-	// a payment, or self stored on disk in a single file containing all
-	// the static channel backups.
-	KeyFamilyStaticBackup KeyFamily = 7
+	// KeyFamilyBaseEncryption is the family of keys that will be used to
+	// derive keys that we use to encrypt and decrypt any general blob data
+	// like static channel backups and the TLS private key. Often used when
+	// encrypting files on disk.
+	KeyFamilyBaseEncryption KeyFamily = 7
 
 	// KeyFamilyTowerSession is the family of keys that will be used to
 	// derive session keys when negotiating sessions with watchtowers. The
@@ -116,7 +132,7 @@ var VersionZeroKeyFamilies = []KeyFamily{
 	KeyFamilyDelayBase,
 	KeyFamilyRevocationRoot,
 	KeyFamilyNodeKey,
-	KeyFamilyStaticBackup,
+	KeyFamilyBaseEncryption,
 	KeyFamilyTowerSession,
 	KeyFamilyTowerID,
 }
@@ -126,7 +142,7 @@ var VersionZeroKeyFamilies = []KeyFamily{
 // Version 0 of our key derivation schema uses the following BIP43-like
 // derivation:
 //
-//   * m/1017'/coinType'/keyFamily'/0/index
+//   - m/1017'/coinType'/keyFamily'/0/index
 //
 // Our purpose is 1017 (chosen arbitrary for now), and the coin type will vary
 // based on which coin/chain the channels are being created on. The key family
@@ -218,6 +234,13 @@ type MessageSignerRing interface {
 	// format.
 	SignMessageCompact(keyLoc KeyLocator, msg []byte,
 		doubleHash bool) ([]byte, error)
+
+	// SignMessageSchnorr signs the given message, single or double SHA256
+	// hashing it first, with the private key described in the key locator
+	// and the optional Taproot tweak applied to the private key.
+	SignMessageSchnorr(keyLoc KeyLocator, msg []byte,
+		doubleHash bool, taprootTweak []byte) (*schnorr.Signature,
+		error)
 }
 
 // SingleKeyMessageSigner is an abstraction interface that hides the

@@ -1,36 +1,27 @@
 // Copyright (c) 2013-2017 The ltcsuite developers
 // Copyright (c) 2015-2016 The Decred developers
-// Copyright (C) 2015-2017 The Lightning Network Developers
+// Copyright (C) 2015-2022 The Lightning Network Developers
 
 package lnd
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
 	"net/http"
-	_ "net/http/pprof" // Blank import to set up profiling HTTP handlers.
+	"net/http/pprof"
 	"os"
-	"runtime/pprof"
+	"runtime"
+	runtimePprof "runtime/pprof"
 	"strings"
 	"sync"
 	"time"
 
 	proxy "github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	"github.com/ltcsuite/ltcd/ltcutil"
-	"golang.org/x/crypto/acme/autocert"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/protobuf/encoding/protojson"
-	"gopkg.in/macaroon-bakery.v2/bakery"
-	"gopkg.in/macaroon.v2"
-
 	"github.com/ltcsuite/lnd/autopilot"
 	"github.com/ltcsuite/lnd/build"
-	"github.com/ltcsuite/lnd/cert"
 	"github.com/ltcsuite/lnd/chanacceptor"
 	"github.com/ltcsuite/lnd/channeldb"
 	"github.com/ltcsuite/lnd/keychain"
@@ -44,6 +35,12 @@ import (
 	"github.com/ltcsuite/lnd/tor"
 	"github.com/ltcsuite/lnd/walletunlocker"
 	"github.com/ltcsuite/lnd/watchtower"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
+	"gopkg.in/macaroon-bakery.v2/bakery"
+	"gopkg.in/macaroon.v2"
 )
 
 const (
@@ -85,7 +82,7 @@ func AdminAuthOptions(cfg *Config, skipMacaroons bool) ([]grpc.DialOption,
 
 	// Get the admin macaroon if macaroons are active.
 	if !skipMacaroons && !cfg.NoMacaroons {
-		// Load the adming macaroon file.
+		// Load the admin macaroon file.
 		macBytes, err := ioutil.ReadFile(cfg.AdminMacPath)
 		if err != nil {
 			return nil, fmt.Errorf("unable to read macaroon "+
@@ -181,14 +178,59 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 		network,
 	)
 
+	ctx := context.Background()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	// Enable http profiling server if requested.
 	if cfg.Profile != "" {
+		// Create the http handler.
+		pprofMux := http.NewServeMux()
+		pprofMux.HandleFunc("/debug/pprof/", pprof.Index)
+		pprofMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+
+		if cfg.BlockingProfile != 0 {
+			runtime.SetBlockProfileRate(cfg.BlockingProfile)
+		}
+		if cfg.MutexProfile != 0 {
+			runtime.SetMutexProfileFraction(cfg.MutexProfile)
+		}
+
+		// Redirect all requests to the pprof handler, thus visiting
+		// `127.0.0.1:6060` will be redirected to
+		// `127.0.0.1:6060/debug/pprof`.
+		pprofMux.Handle("/", http.RedirectHandler(
+			"/debug/pprof/", http.StatusSeeOther,
+		))
+
+		ltndLog.Infof("Pprof listening on %v", cfg.Profile)
+
+		// Create the pprof server.
+		pprofServer := &http.Server{
+			Addr:              cfg.Profile,
+			Handler:           pprofMux,
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+
+		// Shut the server down when lnd is shutting down.
+		defer func() {
+			ltndLog.Info("Stopping pprof server...")
+			err := pprofServer.Shutdown(ctx)
+			if err != nil {
+				ltndLog.Errorf("Stop pprof server got err: %v",
+					err)
+			}
+		}()
+
+		// Start the pprof server.
 		go func() {
-			profileRedirect := http.RedirectHandler("/debug/pprof",
-				http.StatusSeeOther)
-			http.Handle("/", profileRedirect)
-			ltndLog.Infof("Pprof listening on %v", cfg.Profile)
-			fmt.Println(http.ListenAndServe(cfg.Profile, nil))
+			err := pprofServer.ListenAndServe()
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				ltndLog.Errorf("Serving pprof got err: %v", err)
+			}
 		}()
 	}
 
@@ -198,14 +240,12 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 		if err != nil {
 			return mkErr("unable to create CPU profile: %v", err)
 		}
-		pprof.StartCPUProfile(f)
-		defer f.Close()
-		defer pprof.StopCPUProfile()
+		_ = runtimePprof.StartCPUProfile(f)
+		defer func() {
+			_ = f.Close()
+		}()
+		defer runtimePprof.StopCPUProfile()
 	}
-
-	ctx := context.Background()
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
 	// Run configuration dependent DB pre-initialization. Note that this
 	// needs to be done early and once during the startup process, before
@@ -214,13 +254,31 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 		return mkErr("error initializing DBs: %v", err)
 	}
 
-	// Only process macaroons if --no-macaroons isn't set.
-	serverOpts, restDialOpts, restListen, cleanUp, err := getTLSConfig(cfg)
-	if err != nil {
-		return mkErr("unable to load TLS credentials: %v", err)
-	}
+	tlsManagerCfg := &TLSManagerCfg{
+		TLSCertPath:        cfg.TLSCertPath,
+		TLSKeyPath:         cfg.TLSKeyPath,
+		TLSEncryptKey:      cfg.TLSEncryptKey,
+		TLSExtraIPs:        cfg.TLSExtraIPs,
+		TLSExtraDomains:    cfg.TLSExtraDomains,
+		TLSAutoRefresh:     cfg.TLSAutoRefresh,
+		TLSDisableAutofill: cfg.TLSDisableAutofill,
+		TLSCertDuration:    cfg.TLSCertDuration,
 
-	defer cleanUp()
+		LetsEncryptDir:    cfg.LetsEncryptDir,
+		LetsEncryptDomain: cfg.LetsEncryptDomain,
+		LetsEncryptListen: cfg.LetsEncryptListen,
+
+		DisableRestTLS: cfg.DisableRestTLS,
+	}
+	tlsManager := NewTLSManager(tlsManagerCfg)
+	serverOpts, restDialOpts, restListen, cleanUp,
+		err := tlsManager.SetCertificateBeforeUnlock()
+	if err != nil {
+		return mkErr("error setting cert before unlock: %v", err)
+	}
+	if cleanUp != nil {
+		defer cleanUp()
+	}
 
 	// If we have chosen to start with a dedicated listener for the
 	// rpc server, we set it directly.
@@ -263,8 +321,24 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 		}
 	}()
 
+	// Allow the user to overwrite some defaults of the gRPC library related
+	// to connection keepalive (server side and client side pings).
+	serverKeepalive := keepalive.ServerParameters{
+		Time:    cfg.GRPC.ServerPingTime,
+		Timeout: cfg.GRPC.ServerPingTimeout,
+	}
+	clientKeepalive := keepalive.EnforcementPolicy{
+		MinTime:             cfg.GRPC.ClientPingMinWait,
+		PermitWithoutStream: cfg.GRPC.ClientAllowPingWithoutStream,
+	}
+
 	rpcServerOpts := interceptorChain.CreateServerOpts()
 	serverOpts = append(serverOpts, rpcServerOpts...)
+	serverOpts = append(
+		serverOpts, grpc.MaxRecvMsgSize(lnrpc.MaxGrpcMsgSize),
+		grpc.KeepaliveParams(serverKeepalive),
+		grpc.KeepaliveEnforcementPolicy(clientKeepalive),
+	)
 
 	grpcServer := grpc.NewServer(serverOpts...)
 	defer grpcServer.Stop()
@@ -453,7 +527,7 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 			Net:            cfg.net,
 			NewAddress: func() (ltcutil.Address, error) {
 				return activeChainControl.Wallet.NewAddress(
-					lnwallet.WitnessPubKey, false,
+					lnwallet.TaprootPubkey, false,
 					lnwallet.DefaultAccountName,
 				)
 			},
@@ -469,6 +543,8 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 		if torController != nil {
 			wtCfg.TorController = torController
 			wtCfg.WatchtowerKeyPath = cfg.Tor.WatchtowerKeyPath
+			wtCfg.EncryptKey = cfg.Tor.EncryptKey
+			wtCfg.KeyRing = activeChainControl.KeyRing
 
 			switch {
 			case cfg.Tor.V2:
@@ -491,15 +567,22 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 		}
 	}
 
-	// Initialize the ChainedAcceptor.
-	chainedAcceptor := chanacceptor.NewChainedAcceptor()
+	// Initialize the MultiplexAcceptor. If lnd was started with the
+	// zero-conf feature bit, then this will be a ZeroConfAcceptor.
+	// Otherwise, this will be a ChainedAcceptor.
+	var multiAcceptor chanacceptor.MultiplexAcceptor
+	if cfg.ProtocolOptions.ZeroConf() {
+		multiAcceptor = chanacceptor.NewZeroConfAcceptor()
+	} else {
+		multiAcceptor = chanacceptor.NewChainedAcceptor()
+	}
 
 	// Set up the core server which will listen for incoming peer
 	// connections.
 	server, err := newServer(
 		cfg, cfg.Listeners, dbs, activeChainControl, &idKeyDesc,
 		activeChainControl.Cfg.WalletUnlockParams.ChansToRestore,
-		chainedAcceptor, torController,
+		multiAcceptor, torController, tlsManager,
 	)
 	if err != nil {
 		return mkErr("unable to create server: %v", err)
@@ -525,11 +608,17 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 	}
 	defer atplManager.Stop()
 
+	err = tlsManager.LoadPermanentCertificate(activeChainControl.KeyRing)
+	if err != nil {
+		return mkErr("unable to load permanent TLS certificate: %v",
+			err)
+	}
+
 	// Now we have created all dependencies necessary to populate and
 	// start the RPC server.
 	err = rpcServer.addDeps(
 		server, interceptorChain.MacaroonService(), cfg.SubRPCServers,
-		atplManager, server.invoices, tower, chainedAcceptor,
+		atplManager, server.invoices, tower, multiAcceptor,
 	)
 	if err != nil {
 		return mkErr("unable to add deps to RPC server: %v", err)
@@ -563,11 +652,14 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 			return nil
 		}
 
-		synced, _, err := activeChainControl.Wallet.IsSynced()
+		synced, ts, err := activeChainControl.Wallet.IsSynced()
 		if err != nil {
 			return mkErr("unable to determine if wallet is "+
 				"synced: %v", err)
 		}
+
+		ltndLog.Debugf("Syncing to block timestamp: %v, is synced=%v",
+			time.Unix(ts, 0), synced)
 
 		if synced {
 			break
@@ -616,188 +708,6 @@ func Main(cfg *Config, lisCfg ListenerCfg, implCfg *ImplementationCfg,
 	return nil
 }
 
-// getTLSConfig returns a TLS configuration for the gRPC server and credentials
-// and a proxy destination for the REST reverse proxy.
-func getTLSConfig(cfg *Config) ([]grpc.ServerOption, []grpc.DialOption,
-	func(net.Addr) (net.Listener, error), func(), error) {
-
-	// Ensure we create TLS key and certificate if they don't exist.
-	if !fileExists(cfg.TLSCertPath) && !fileExists(cfg.TLSKeyPath) {
-		rpcsLog.Infof("Generating TLS certificates...")
-		err := cert.GenCertPair(
-			"lnd autogenerated cert", cfg.TLSCertPath,
-			cfg.TLSKeyPath, cfg.TLSExtraIPs, cfg.TLSExtraDomains,
-			cfg.TLSDisableAutofill, cfg.TLSCertDuration,
-		)
-		if err != nil {
-			return nil, nil, nil, nil, err
-		}
-		rpcsLog.Infof("Done generating TLS certificates")
-	}
-
-	certData, parsedCert, err := cert.LoadCert(
-		cfg.TLSCertPath, cfg.TLSKeyPath,
-	)
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-
-	// We check whether the certifcate we have on disk match the IPs and
-	// domains specified by the config. If the extra IPs or domains have
-	// changed from when the certificate was created, we will refresh the
-	// certificate if auto refresh is active.
-	refresh := false
-	if cfg.TLSAutoRefresh {
-		refresh, err = cert.IsOutdated(
-			parsedCert, cfg.TLSExtraIPs,
-			cfg.TLSExtraDomains, cfg.TLSDisableAutofill,
-		)
-		if err != nil {
-			return nil, nil, nil, nil, err
-		}
-	}
-
-	// If the certificate expired or it was outdated, delete it and the TLS
-	// key and generate a new pair.
-	if time.Now().After(parsedCert.NotAfter) || refresh {
-		ltndLog.Info("TLS certificate is expired or outdated, " +
-			"generating a new one")
-
-		err := os.Remove(cfg.TLSCertPath)
-		if err != nil {
-			return nil, nil, nil, nil, err
-		}
-
-		err = os.Remove(cfg.TLSKeyPath)
-		if err != nil {
-			return nil, nil, nil, nil, err
-		}
-
-		rpcsLog.Infof("Renewing TLS certificates...")
-		err = cert.GenCertPair(
-			"lnd autogenerated cert", cfg.TLSCertPath,
-			cfg.TLSKeyPath, cfg.TLSExtraIPs, cfg.TLSExtraDomains,
-			cfg.TLSDisableAutofill, cfg.TLSCertDuration,
-		)
-		if err != nil {
-			return nil, nil, nil, nil, err
-		}
-		rpcsLog.Infof("Done renewing TLS certificates")
-
-		// Reload the certificate data.
-		certData, _, err = cert.LoadCert(
-			cfg.TLSCertPath, cfg.TLSKeyPath,
-		)
-		if err != nil {
-			return nil, nil, nil, nil, err
-		}
-	}
-
-	tlsCfg := cert.TLSConfFromCert(certData)
-
-	restCreds, err := credentials.NewClientTLSFromFile(cfg.TLSCertPath, "")
-	if err != nil {
-		return nil, nil, nil, nil, err
-	}
-
-	// If Let's Encrypt is enabled, instantiate autocert to request/renew
-	// the certificates.
-	cleanUp := func() {}
-	if cfg.LetsEncryptDomain != "" {
-		ltndLog.Infof("Using Let's Encrypt certificate for domain %v",
-			cfg.LetsEncryptDomain)
-
-		manager := autocert.Manager{
-			Cache:      autocert.DirCache(cfg.LetsEncryptDir),
-			Prompt:     autocert.AcceptTOS,
-			HostPolicy: autocert.HostWhitelist(cfg.LetsEncryptDomain),
-		}
-
-		srv := &http.Server{
-			Addr:    cfg.LetsEncryptListen,
-			Handler: manager.HTTPHandler(nil),
-		}
-		shutdownCompleted := make(chan struct{})
-		cleanUp = func() {
-			err := srv.Shutdown(context.Background())
-			if err != nil {
-				ltndLog.Errorf("Autocert listener shutdown "+
-					" error: %v", err)
-
-				return
-			}
-			<-shutdownCompleted
-			ltndLog.Infof("Autocert challenge listener stopped")
-		}
-
-		go func() {
-			ltndLog.Infof("Autocert challenge listener started "+
-				"at %v", cfg.LetsEncryptListen)
-
-			err := srv.ListenAndServe()
-			if err != http.ErrServerClosed {
-				ltndLog.Errorf("autocert http: %v", err)
-			}
-			close(shutdownCompleted)
-		}()
-
-		getCertificate := func(h *tls.ClientHelloInfo) (
-			*tls.Certificate, error) {
-
-			lecert, err := manager.GetCertificate(h)
-			if err != nil {
-				ltndLog.Errorf("GetCertificate: %v", err)
-				return &certData, nil
-			}
-
-			return lecert, err
-		}
-
-		// The self-signed tls.cert remains available as fallback.
-		tlsCfg.GetCertificate = getCertificate
-	}
-
-	serverCreds := credentials.NewTLS(tlsCfg)
-	serverOpts := []grpc.ServerOption{grpc.Creds(serverCreds)}
-
-	// For our REST dial options, we'll still use TLS, but also increase
-	// the max message size that we'll decode to allow clients to hit
-	// endpoints which return more data such as the DescribeGraph call.
-	// We set this to 200MiB atm. Should be the same value as maxMsgRecvSize
-	// in cmd/lncli/main.go.
-	restDialOpts := []grpc.DialOption{
-		grpc.WithTransportCredentials(restCreds),
-		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(1 * 1024 * 1024 * 200),
-		),
-	}
-
-	// Return a function closure that can be used to listen on a given
-	// address with the current TLS config.
-	restListen := func(addr net.Addr) (net.Listener, error) {
-		// For restListen we will call ListenOnAddress if TLS is
-		// disabled.
-		if cfg.DisableRestTLS {
-			return lncfg.ListenOnAddress(addr)
-		}
-
-		return lncfg.TLSListenOnAddress(addr, tlsCfg)
-	}
-
-	return serverOpts, restDialOpts, restListen, cleanUp, nil
-}
-
-// fileExists reports whether the named file or directory exists.
-// This function is taken from https://github.com/ltcsuite/ltcd
-func fileExists(name string) bool {
-	if _, err := os.Stat(name); err != nil {
-		if os.IsNotExist(err) {
-			return false
-		}
-	}
-	return true
-}
-
 // bakeMacaroon creates a new macaroon with newest version and the given
 // permissions then returns it binary serialized.
 func bakeMacaroon(ctx context.Context, svc *macaroons.Service,
@@ -813,46 +723,64 @@ func bakeMacaroon(ctx context.Context, svc *macaroons.Service,
 	return mac.M().MarshalBinary()
 }
 
-// genMacaroons generates three macaroon files; one admin-level, one for
-// invoice access and one read-only. These can also be used to generate more
-// granular macaroons.
-func genMacaroons(ctx context.Context, svc *macaroons.Service,
+// saveMacaroon bakes a macaroon with the specified macaroon permissions and
+// writes it to a file with the given filename and file permissions.
+func saveMacaroon(ctx context.Context, svc *macaroons.Service, filename string,
+	macaroonPermissions []bakery.Op, filePermissions os.FileMode) error {
+
+	macaroonBytes, err := bakeMacaroon(ctx, svc, macaroonPermissions)
+	if err != nil {
+		return err
+	}
+	err = os.WriteFile(filename, macaroonBytes, filePermissions)
+	if err != nil {
+		_ = os.Remove(filename)
+		return err
+	}
+
+	return nil
+}
+
+// genDefaultMacaroons checks for three default macaroon files and generates
+// them if they do not exist; one admin-level, one for invoice access and one
+// read-only. Each macaroon is checked and created independently to ensure all
+// three exist. The admin macaroon can also be used to generate more granular
+// macaroons.
+func genDefaultMacaroons(ctx context.Context, svc *macaroons.Service,
 	admFile, roFile, invoiceFile string) error {
 
 	// First, we'll generate a macaroon that only allows the caller to
 	// access invoice related calls. This is useful for merchants and other
 	// services to allow an isolated instance that can only query and
 	// modify invoices.
-	invoiceMacBytes, err := bakeMacaroon(ctx, svc, invoicePermissions)
-	if err != nil {
-		return err
-	}
-	err = ioutil.WriteFile(invoiceFile, invoiceMacBytes, 0644)
-	if err != nil {
-		_ = os.Remove(invoiceFile)
-		return err
+	if !lnrpc.FileExists(invoiceFile) {
+		err := saveMacaroon(
+			ctx, svc, invoiceFile, invoicePermissions, 0644,
+		)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Generate the read-only macaroon and write it to a file.
-	roBytes, err := bakeMacaroon(ctx, svc, readPermissions)
-	if err != nil {
-		return err
-	}
-	if err = ioutil.WriteFile(roFile, roBytes, 0644); err != nil {
-		_ = os.Remove(roFile)
-		return err
+	if !lnrpc.FileExists(roFile) {
+		err := saveMacaroon(
+			ctx, svc, roFile, readPermissions, 0644,
+		)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Generate the admin macaroon and write it to a file.
-	admBytes, err := bakeMacaroon(ctx, svc, adminPermissions())
-	if err != nil {
-		return err
-	}
-
-	err = ioutil.WriteFile(admFile, admBytes, adminMacaroonFilePermissions)
-	if err != nil {
-		_ = os.Remove(admFile)
-		return err
+	if !lnrpc.FileExists(admFile) {
+		err := saveMacaroon(
+			ctx, svc, admFile, adminPermissions(),
+			adminMacaroonFilePermissions,
+		)
+		if err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -962,23 +890,23 @@ func startRestProxy(cfg *Config, rpcServer *rpcServer, restDialOpts []grpc.DialO
 	// that the marshaler prints all values, even if they are falsey.
 	customMarshalerOption := proxy.WithMarshalerOption(
 		proxy.MIMEWildcard, &proxy.JSONPb{
-			MarshalOptions: protojson.MarshalOptions{
-				UseProtoNames:   true,
-				EmitUnpopulated: true,
-			},
+			MarshalOptions:   *lnrpc.RESTJsonMarshalOpts,
+			UnmarshalOptions: *lnrpc.RESTJsonUnmarshalOpts,
 		},
 	)
-	mux := proxy.NewServeMux(customMarshalerOption)
+	mux := proxy.NewServeMux(
+		customMarshalerOption,
+
+		// Don't allow falling back to other HTTP methods, we want exact
+		// matches only. The actual method to be used can be overwritten
+		// by setting X-HTTP-Method-Override so there should be no
+		// reason for not specifying the correct method in the first
+		// place.
+		proxy.WithDisablePathLengthFallback(),
+	)
 
 	// Register our services with the REST proxy.
-	err := lnrpc.RegisterStateHandlerFromEndpoint(
-		ctx, mux, restProxyDest, restDialOpts,
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	err = rpcServer.RegisterWithRestProxy(
+	err := rpcServer.RegisterWithRestProxy(
 		ctx, mux, restDialOpts, restProxyDest,
 	)
 	if err != nil {

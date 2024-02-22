@@ -7,15 +7,20 @@ on:
   pull_request:
     branches:
       - "*"
+  merge_group:
+    branches:
+      - "master"
+
+concurrency:
+  # Cancel any previous workflows if they are from a PR or push.
+  group: ${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 defaults:
   run:
     shell: bash
 
 env:
-  # go needs absolute directories, using the $HOME variable doesn't work here.
-  GOCACHE: /home/runner/work/go/pkg/build
-  GOPATH: /home/runner/work/go
   BITCOIN_VERSION: "0.21.2"
 
   # If you change this value, please change it in the following files as well:
@@ -24,9 +29,32 @@ env:
   # /dev.Dockerfile
   # /make/builder.Dockerfile
   # /.github/workflows/release.yml
-  GO_VERSION: 1.17.3
+  GO_VERSION: 1.21.0
 
 jobs:
+  ########################
+  # SQLC code gen check 
+  ########################
+  sqlc-check:
+    name: Sqlc check
+    runs-on: ubuntu-latest
+    steps:
+      - name: git checkout
+        uses: actions/checkout@v3
+
+      - name: setup go ${{ env.GO_VERSION }}
+        uses: ./.github/actions/setup-go
+        with:
+          go-version: '${{ env.GO_VERSION }}'
+
+      - name: docker image cache
+        uses: satackey/action-docker-layer-caching@v0.0.11
+        # Ignore the failure of a step and avoid terminating the job.
+        continue-on-error: true
+
+      - name: Generate sql models
+        run: make sqlc-check
+
   ########################
   # RPC and mobile compilation check
   ########################
@@ -35,21 +63,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: git checkout
-        uses: actions/checkout@v2
-
-      - name: go cache
-        uses: actions/cache@v1
-        with:
-          path: /home/runner/work/go
-          key: lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-
-            lnd-${{ runner.os }}-go-
+        uses: actions/checkout@v3
 
       - name: setup go ${{ env.GO_VERSION }}
-        uses: actions/setup-go@v2
+        uses: ./.github/actions/setup-go
         with:
           go-version: "${{ env.GO_VERSION }}"
 
@@ -69,68 +86,30 @@ jobs:
   # check commits
   ########################
   check-commits:
+    if: github.event_name == 'pull_request'
     name: check commits
     runs-on: ubuntu-latest
     steps:
       - name: git checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           fetch-depth: 0
 
-      - name: go cache
-        uses: actions/cache@v1
-        with:
-          path: /home/runner/work/go
-          key: lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-
-            lnd-${{ runner.os }}-go-
-
       - name: setup go ${{ env.GO_VERSION }}
-        uses: actions/setup-go@v2
+        uses: ./.github/actions/setup-go
         with:
           go-version: "${{ env.GO_VERSION }}"
 
-      - name: fetch and rebase on master
+      - name: fetch and rebase on ${{ github.base_ref }}
         run: |
-          git remote add upstream https://github.com/ltcsuite/lnd
+          git remote add upstream https://github.com/${{ github.repository }}
           git fetch upstream
           export GIT_COMMITTER_EMAIL="lnd-ci@example.com"
           export GIT_COMMITTER_NAME="LND CI"
-          git rebase upstream/master
+          git rebase upstream/${{ github.base_ref }}
 
       - name: check commits
-        run: scripts/check-each-commit.sh upstream/master
-
-  ########################
-  # check submodules
-  ########################
-  check-submodules:
-    name: check submodules
-    runs-on: ubuntu-latest
-    steps:
-      - name: git checkout
-        uses: actions/checkout@v2
-        with:
-          fetch-depth: 0
-
-      - name: setup go ${{ env.GO_VERSION }}
-        uses: actions/setup-go@v2
-        with:
-          go-version: "${{ env.GO_VERSION }}"
-
-      - name: fetch and rebase on master
-        run: |
-          git remote add upstream https://github.com/ltcsuite/lnd
-          git fetch upstream
-          export GIT_COMMITTER_EMAIL="lnd-ci@example.com"
-          export GIT_COMMITTER_NAME="LND CI"
-          git rebase upstream/master
-
-      - name: check submodules
-        run: scripts/check-submodule-version.sh upstream/master
+        run: scripts/check-each-commit.sh upstream/${{ github.base_ref }}
 
   ########################
   # lint code
@@ -140,26 +119,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: git checkout
-        uses: actions/checkout@v2
-
-      - name: Fetch all history for linter
-        run: git fetch --prune --unshallow
-
-      - name: go cache
-        uses: actions/cache@v1
+        uses: actions/checkout@v3
         with:
-          path: /home/runner/work/go
-          key: lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-
-            lnd-${{ runner.os }}-go-
+          fetch-depth: 0
 
       - name: setup go ${{ env.GO_VERSION }}
-        uses: actions/setup-go@v2
+        uses: ./.github/actions/setup-go
         with:
           go-version: "${{ env.GO_VERSION }}"
+
+      - name: check code format
+        run: make fmt-check
+
+      - name: check go modules tidiness 
+        run: make tidy-module-check
 
       - name: lint
         run: GOGC=50 make lint
@@ -172,21 +145,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: git checkout
-        uses: actions/checkout@v2
-
-      - name: go cache
-        uses: actions/cache@v1
-        with:
-          path: /home/runner/work/go
-          key: lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-
-            lnd-${{ runner.os }}-go-
+        uses: actions/checkout@v3
 
       - name: setup go ${{ env.GO_VERSION }}
-        uses: actions/setup-go@v2
+        uses: ./.github/actions/setup-go
         with:
           go-version: "${{ env.GO_VERSION }}"
 
@@ -201,25 +163,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: git checkout
-        uses: actions/checkout@v2
-
-      - name: go cache
-        uses: actions/cache@v1
-        with:
-          path: /home/runner/work/go
-          key: lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-
-            lnd-${{ runner.os }}-go-
+        uses: actions/checkout@v3
 
       - name: setup go ${{ env.GO_VERSION }}
-        uses: actions/setup-go@v2
+        uses: ./.github/actions/setup-go
         with:
           go-version: "${{ env.GO_VERSION }}"
 
-      - name: check all command line flags exist in sample-lnd.conf file
+      - name: check default values in sample-lnd.conf file
         run: make sample-conf-check
 
   ########################
@@ -233,31 +184,32 @@ jobs:
       fail-fast: false
       matrix:
         unit_type:
-          - btcd unit-cover
+          - ltcd unit-cover
           - unit tags="kvdb_etcd"
           - unit tags="kvdb_postgres"
-          - btcd unit-race
+          - unit tags="kvdb_sqlite"
+          - ltcd unit-race
+          - unit-module
+
     steps:
       - name: git checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
-      - name: go cache
-        uses: actions/cache@v1
+      - name: git checkout fuzzing seeds
+        uses: actions/checkout@v3
         with:
-          path: /home/runner/work/go
-          key: lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-
-            lnd-${{ runner.os }}-go-
+          repository: lightninglabs/lnd-fuzz
+          path: lnd-fuzz
+
+      - name: rsync fuzzing seeds
+        run: rsync -a --ignore-existing lnd-fuzz/ ./
 
       - name: setup go ${{ env.GO_VERSION }}
-        uses: actions/setup-go@v2
+        uses: ./.github/actions/setup-go
         with:
           go-version: "${{ env.GO_VERSION }}"
 
-      - name: install bitcoind
+      - name: install litecoind
         run: ./scripts/install_bitcoind.sh
 
       - name: run ${{ matrix.unit_type }}
@@ -265,55 +217,50 @@ jobs:
 
       - name: Send coverage
         uses: shogo82148/actions-goveralls@v1
-        if: matrix.unit_type == 'btcd unit-cover'
+        if: matrix.unit_type == 'ltcd unit-cover'
         with:
           path-to-profile: coverage.txt
           parallel: true
 
+
   ########################
-  # run integration tests
+  # run ubuntu integration tests
   ########################
-  integration-test:
-    name: run itests
+  ubuntu-integration-test:
+    name: run ubuntu itests
     runs-on: ubuntu-latest
+    if: '!contains(github.event.pull_request.labels.*.name, ''no-itest'')'
     strategy:
       # Allow other tests in the matrix to continue if one fails.
       fail-fast: false
       matrix:
         include:
-          - name: btcd
-            args: backend=btcd
-          - name: bitcoind
-            args: backend=bitcoind
-          - name: bitcoind-notxindex
-            args: backend="bitcoind notxindex"
-          - name: bitcoind-etcd
-            args: backend=bitcoind dbbackend=etcd
-          - name: bitcoind-postgres
-            args: backend=bitcoind dbbackend=postgres
+          - name: ltcd
+            args: backend=ltcd
+          - name: litecoind
+            args: backend=litecoind
+          - name: litecoind-notxindex
+            args: backend="litecoind notxindex"
+          - name: litecoind-rpcpolling
+            args: backend="litecoind rpcpolling"
+          - name: litecoind-etcd
+            args: backend=litecoind dbbackend=etcd
+          - name: litecoind-postgres
+            args: backend=litecoind dbbackend=postgres
+          - name: litecoind-sqlite
+            args: backend=litecoind dbbackend=sqlite
           - name: neutrino
             args: backend=neutrino
     steps:
       - name: git checkout
-        uses: actions/checkout@v2
-
-      - name: go cache
-        uses: actions/cache@v1
-        with:
-          path: /home/runner/work/go
-          key: lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-
-            lnd-${{ runner.os }}-go-
+        uses: actions/checkout@v3
 
       - name: setup go ${{ env.GO_VERSION }}
-        uses: actions/setup-go@v2
+        uses: ./.github/actions/setup-go
         with:
           go-version: "${{ env.GO_VERSION }}"
 
-      - name: install bitcoind
+      - name: install litecoind
         run: ./scripts/install_bitcoind.sh
 
       - name: run ${{ matrix.name }}
@@ -321,15 +268,17 @@ jobs:
 
       - name: Zip log files on failure
         if: ${{ failure() }}
-        run: 7z a logs-itest-${{ matrix.name }}.zip lntest/itest/**/*.log
+        timeout-minutes: 5 # timeout after 5 minute
+        run: 7z a logs-itest-${{ matrix.name }}.zip itest/**/*.log
 
       - name: Upload log files on failure
-        uses: actions/upload-artifact@v2.2.4
+        uses: actions/upload-artifact@v3
         if: ${{ failure() }}
         with:
           name: logs-itest-${{ matrix.name }}
           path: logs-itest-${{ matrix.name }}.zip
           retention-days: 5
+
 
   ########################
   # run windows integration test
@@ -337,43 +286,32 @@ jobs:
   windows-integration-test:
     name: run windows itest
     runs-on: windows-latest
-    env:
-      GOCACHE: ${{ github.workspace }}/go/pkg/build
-      GOPATH: ${{ github.workspace }}/go
+    if: '!contains(github.event.pull_request.labels.*.name, ''no-itest'')'
     steps:
       - name: git checkout
-        uses: actions/checkout@v2
-
-      - name: go cache
-        uses: actions/cache@v1
-        with:
-          path: ${{ env.GOPATH }}
-          key: lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-${{ hashFiles('**/go.sum') }}
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-${{ github.job }}-
-            lnd-${{ runner.os }}-go-${{ env.GO_VERSION }}-
-            lnd-${{ runner.os }}-go-
+        uses: actions/checkout@v3
 
       - name: setup go ${{ env.GO_VERSION }}
-        uses: actions/setup-go@v2
+        uses: ./.github/actions/setup-go
         with:
           go-version: "${{ env.GO_VERSION }}"
 
       - name: run itest
-        run: make itest-parallel windows=1 tranches=2 parallel=2
+        run: make itest-parallel windows=1
 
       - name: Zip log files on failure
         if: ${{ failure() }}
-        run: 7z a logs-itest-windows.zip lntest/itest/**/*.log
+        timeout-minutes: 5 # timeout after 5 minute
+        run: 7z a logs-itest-windows.zip itest/**/*.log
 
       - name: Upload log files on failure
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         if: ${{ failure() }}
         with:
           name: logs-itest-windows
           path: logs-itest-windows.zip
           retention-days: 5
+
 
   ########################
   # check pinned dependencies
@@ -386,14 +324,14 @@ jobs:
       fail-fast: false
       matrix:
         pinned_dep:
-          - google.golang.org/grpc v1.38.0
-          - github.com/golang/protobuf v1.5.2
+          - google.golang.org/grpc v1.56.3
+          - github.com/golang/protobuf v1.5.3
 
     steps:
       - name: git checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
-      - name: ensure dependences at correct version
+      - name: ensure dependencies at correct version
         run: if ! grep -q "${{ matrix.pinned_dep }}" go.mod; then echo dependency ${{ matrix.pinned_dep }} should not be altered ; exit 1 ; fi
 
   ########################
@@ -402,9 +340,10 @@ jobs:
   milestone-check:
     name: check release notes updated
     runs-on: ubuntu-latest
+    if: '!contains(github.event.pull_request.labels.*.name, ''no-changelog'')'
     steps:
       - name: git checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: release notes check
         run: scripts/check-release-notes.sh

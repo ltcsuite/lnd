@@ -4,11 +4,10 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/ltcsuite/ltcd/ltcutil"
-
 	"github.com/ltcsuite/lnd/kvdb"
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/routing/route"
+	"github.com/ltcsuite/ltcd/ltcutil"
 )
 
 // GraphCacheNode is an interface for all the information the cache needs to know
@@ -468,7 +467,6 @@ func (c *GraphCache) ForEachChannel(node route.Vertex,
 		if err := cb(channel); err != nil {
 			return err
 		}
-
 	}
 
 	return nil

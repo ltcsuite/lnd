@@ -3,6 +3,7 @@ package lnwire
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 )
 
@@ -10,6 +11,15 @@ var (
 	// ErrFeaturePairExists signals an error in feature vector construction
 	// where the opposing bit in a feature pair has already been set.
 	ErrFeaturePairExists = errors.New("feature pair exists")
+
+	// ErrFeatureStandard is returned when attempts to modify LND's known
+	// set of features are made.
+	ErrFeatureStandard = errors.New("feature is used in standard " +
+		"protocol set")
+
+	// ErrFeatureBitMaximum is returned when a feature bit exceeds the
+	// maximum allowable value.
+	ErrFeatureBitMaximum = errors.New("feature bit exceeds allowed maximum")
 )
 
 // FeatureBit represents a feature that can be enabled in either a local or
@@ -129,6 +139,18 @@ const (
 	// transactions, which also imply anchor commitments.
 	AnchorsZeroFeeHtlcTxOptional FeatureBit = 23
 
+	// ShutdownAnySegwitRequired is an required feature bit that signals
+	// that the sender is able to properly handle/parse segwit witness
+	// programs up to version 16. This enables utilization of Taproot
+	// addresses for cooperative closure addresses.
+	ShutdownAnySegwitRequired FeatureBit = 26
+
+	// ShutdownAnySegwitOptional is an optional feature bit that signals
+	// that the sender is able to properly handle/parse segwit witness
+	// programs up to version 16. This enables utilization of Taproot
+	// addresses for cooperative closure addresses.
+	ShutdownAnySegwitOptional FeatureBit = 27
+
 	// AMPRequired is a required feature bit that signals that the receiver
 	// of a payment supports accepts spontaneous payments, i.e.
 	// sender-generated preimages according to BOLT XX.
@@ -155,6 +177,42 @@ const (
 	// TODO: Decide on actual feature bit value.
 	ExplicitChannelTypeOptional = 45
 
+	// ScidAliasRequired is a required feature bit that signals that the
+	// node requires understanding of ShortChannelID aliases in the TLV
+	// segment of the channel_ready message.
+	ScidAliasRequired FeatureBit = 46
+
+	// ScidAliasOptional is an optional feature bit that signals that the
+	// node understands ShortChannelID aliases in the TLV segment of the
+	// channel_ready message.
+	ScidAliasOptional FeatureBit = 47
+
+	// PaymentMetadataRequired is a required bit that denotes that if an
+	// invoice contains metadata, it must be passed along with the payment
+	// htlc(s).
+	PaymentMetadataRequired = 48
+
+	// PaymentMetadataOptional is an optional bit that denotes that if an
+	// invoice contains metadata, it may be passed along with the payment
+	// htlc(s).
+	PaymentMetadataOptional = 49
+
+	// ZeroConfRequired is a required feature bit that signals that the
+	// node requires understanding of the zero-conf channel_type.
+	ZeroConfRequired FeatureBit = 50
+
+	// ZeroConfOptional is an optional feature bit that signals that the
+	// node understands the zero-conf channel type.
+	ZeroConfOptional FeatureBit = 51
+
+	// KeysendRequired is a required bit that indicates that the node is
+	// able and willing to accept keysend payments.
+	KeysendRequired = 54
+
+	// KeysendOptional is an optional bit that indicates that the node is
+	// able and willing to accept keysend payments.
+	KeysendOptional = 55
+
 	// ScriptEnforcedLeaseOptional is an optional feature bit that signals
 	// that the node requires channels having zero-fee second-level HTLC
 	// transactions, which also imply anchor commitments, along with an
@@ -164,7 +222,7 @@ const (
 	// TODO: Decide on actual feature bit value.
 	ScriptEnforcedLeaseRequired FeatureBit = 2022
 
-	// ScriptEnforcedLeaseOptional is a required feature bit that signals
+	// ScriptEnforcedLeaseOptional is an optional feature bit that signals
 	// that the node requires channels having zero-fee second-level HTLC
 	// transactions, which also imply anchor commitments, along with an
 	// additional CLTV constraint of a channel lease's expiration height
@@ -173,17 +231,42 @@ const (
 	// TODO: Decide on actual feature bit value.
 	ScriptEnforcedLeaseOptional FeatureBit = 2023
 
-	// maxAllowedSize is a maximum allowed size of feature vector.
+	// SimpleTaprootChannelsRequredFinal is a required bit that indicates
+	// the node is able to create taproot-native channels. This is the
+	// final feature bit to be used once the channel type is finalized.
+	SimpleTaprootChannelsRequiredFinal = 80
+
+	// SimpleTaprootChannelsOptionalFinal is an optional bit that indicates
+	// the node is able to create taproot-native channels. This is the
+	// final
+	// feature bit to be used once the channel type is finalized.
+	SimpleTaprootChannelsOptionalFinal = 81
+
+	// SimpleTaprootChannelsRequredStaging is a required bit that indicates
+	// the node is able to create taproot-native channels. This is a
+	// feature bit used in the wild while the channel type is still being
+	// finalized.
+	SimpleTaprootChannelsRequiredStaging = 180
+
+	// SimpleTaprootChannelsOptionalStaging is an optional bit that
+	// indicates the node is able to create taproot-native channels. This
+	// is a feature
+	// bit used in the wild while the channel type is still being
+	// finalized.
+	SimpleTaprootChannelsOptionalStaging = 181
+
+	// MaxBolt11Feature is the maximum feature bit value allowed in bolt 11
+	// invoices.
 	//
-	// NOTE: Within the protocol, the maximum allowed message size is 65535
-	// bytes for all messages. Accounting for the overhead within the feature
-	// message to signal the type of message, that leaves us with 65533 bytes
-	// for the init message itself.  Next, we reserve 4 bytes to encode the
-	// lengths of both the local and global feature vectors, so 65529 bytes
-	// for the local and global features. Knocking off one byte for the sake
-	// of the calculation, that leads us to 32764 bytes for each feature
-	// vector, or 131056 different features.
-	maxAllowedSize = 32764
+	// The base 32 encoded tagged fields in invoices are limited to 10 bits
+	// to express the length of the field's data.
+	//nolint:lll
+	// See: https://github.com/lightning/bolts/blob/master/11-payment-encoding.md#tagged-fields
+	//
+	// With a maximum length field of 1023 (2^10 -1) and 5 bit encoding,
+	// the highest feature bit that can be expressed is:
+	// 1023 * 5 - 1 = 5114.
+	MaxBolt11Feature = 5114
 )
 
 // IsRequired returns true if the feature bit is even, and false otherwise.
@@ -195,33 +278,47 @@ func (b FeatureBit) IsRequired() bool {
 // feature bits must be assigned a name in this mapping, and feature bit pairs
 // must be assigned together for correct behavior.
 var Features = map[FeatureBit]string{
-	DataLossProtectRequired:       "data-loss-protect",
-	DataLossProtectOptional:       "data-loss-protect",
-	InitialRoutingSync:            "initial-routing-sync",
-	UpfrontShutdownScriptRequired: "upfront-shutdown-script",
-	UpfrontShutdownScriptOptional: "upfront-shutdown-script",
-	GossipQueriesRequired:         "gossip-queries",
-	GossipQueriesOptional:         "gossip-queries",
-	TLVOnionPayloadRequired:       "tlv-onion",
-	TLVOnionPayloadOptional:       "tlv-onion",
-	StaticRemoteKeyOptional:       "static-remote-key",
-	StaticRemoteKeyRequired:       "static-remote-key",
-	PaymentAddrOptional:           "payment-addr",
-	PaymentAddrRequired:           "payment-addr",
-	MPPOptional:                   "multi-path-payments",
-	MPPRequired:                   "multi-path-payments",
-	AnchorsRequired:               "anchor-commitments",
-	AnchorsOptional:               "anchor-commitments",
-	AnchorsZeroFeeHtlcTxRequired:  "anchors-zero-fee-htlc-tx",
-	AnchorsZeroFeeHtlcTxOptional:  "anchors-zero-fee-htlc-tx",
-	WumboChannelsRequired:         "wumbo-channels",
-	WumboChannelsOptional:         "wumbo-channels",
-	AMPRequired:                   "amp",
-	AMPOptional:                   "amp",
-	ExplicitChannelTypeOptional:   "explicit-commitment-type",
-	ExplicitChannelTypeRequired:   "explicit-commitment-type",
-	ScriptEnforcedLeaseRequired:   "script-enforced-lease",
-	ScriptEnforcedLeaseOptional:   "script-enforced-lease",
+	DataLossProtectRequired:              "data-loss-protect",
+	DataLossProtectOptional:              "data-loss-protect",
+	InitialRoutingSync:                   "initial-routing-sync",
+	UpfrontShutdownScriptRequired:        "upfront-shutdown-script",
+	UpfrontShutdownScriptOptional:        "upfront-shutdown-script",
+	GossipQueriesRequired:                "gossip-queries",
+	GossipQueriesOptional:                "gossip-queries",
+	TLVOnionPayloadRequired:              "tlv-onion",
+	TLVOnionPayloadOptional:              "tlv-onion",
+	StaticRemoteKeyOptional:              "static-remote-key",
+	StaticRemoteKeyRequired:              "static-remote-key",
+	PaymentAddrOptional:                  "payment-addr",
+	PaymentAddrRequired:                  "payment-addr",
+	MPPOptional:                          "multi-path-payments",
+	MPPRequired:                          "multi-path-payments",
+	AnchorsRequired:                      "anchor-commitments",
+	AnchorsOptional:                      "anchor-commitments",
+	AnchorsZeroFeeHtlcTxRequired:         "anchors-zero-fee-htlc-tx",
+	AnchorsZeroFeeHtlcTxOptional:         "anchors-zero-fee-htlc-tx",
+	WumboChannelsRequired:                "wumbo-channels",
+	WumboChannelsOptional:                "wumbo-channels",
+	AMPRequired:                          "amp",
+	AMPOptional:                          "amp",
+	PaymentMetadataOptional:              "payment-metadata",
+	PaymentMetadataRequired:              "payment-metadata",
+	ExplicitChannelTypeOptional:          "explicit-commitment-type",
+	ExplicitChannelTypeRequired:          "explicit-commitment-type",
+	KeysendOptional:                      "keysend",
+	KeysendRequired:                      "keysend",
+	ScriptEnforcedLeaseRequired:          "script-enforced-lease",
+	ScriptEnforcedLeaseOptional:          "script-enforced-lease",
+	ScidAliasRequired:                    "scid-alias",
+	ScidAliasOptional:                    "scid-alias",
+	ZeroConfRequired:                     "zero-conf",
+	ZeroConfOptional:                     "zero-conf",
+	ShutdownAnySegwitRequired:            "shutdown-any-segwit",
+	ShutdownAnySegwitOptional:            "shutdown-any-segwit",
+	SimpleTaprootChannelsRequiredFinal:   "simple-taproot-chans",
+	SimpleTaprootChannelsOptionalFinal:   "simple-taproot-chans",
+	SimpleTaprootChannelsRequiredStaging: "simple-taproot-chans-x",
+	SimpleTaprootChannelsOptionalStaging: "simple-taproot-chans-x",
 }
 
 // RawFeatureVector represents a set of feature bits as defined in BOLT-09.  A
@@ -283,6 +380,67 @@ func (fv *RawFeatureVector) Merge(other *RawFeatureVector) error {
 			return err
 		}
 	}
+	return nil
+}
+
+// ValidateUpdate checks whether a feature vector can safely be updated to the
+// new feature vector provided, checking that it does not alter any of the
+// "standard" features that are defined by LND. The new feature vector should
+// be inclusive of all features in the original vector that it still wants to
+// advertise, setting and unsetting updates as desired. Features in the vector
+// are also checked against a maximum inclusive value, as feature vectors in
+// different contexts have different maximum values.
+func (fv *RawFeatureVector) ValidateUpdate(other *RawFeatureVector,
+	maximumValue FeatureBit) error {
+
+	// Run through the new set of features and check that we're not adding
+	// any feature bits that are defined but not set in LND.
+	for feature := range other.features {
+		if fv.IsSet(feature) {
+			continue
+		}
+
+		if feature > maximumValue {
+			return fmt.Errorf("can't set feature bit %d: %w %v",
+				feature, ErrFeatureBitMaximum,
+				maximumValue)
+		}
+
+		if name, known := Features[feature]; known {
+			return fmt.Errorf("can't set feature "+
+				"bit %d (%v): %w", feature, name,
+				ErrFeatureStandard)
+		}
+	}
+
+	// Check that the new feature vector for this set does not unset any
+	// features that are standard in LND by comparing the features in our
+	// current set to the omitted values in the new set.
+	for feature := range fv.features {
+		if other.IsSet(feature) {
+			continue
+		}
+
+		if name, known := Features[feature]; known {
+			return fmt.Errorf("can't unset feature "+
+				"bit %d (%v): %w", feature, name,
+				ErrFeatureStandard)
+		}
+	}
+
+	return nil
+}
+
+// ValidatePairs checks each feature bit in a raw vector to ensure that the
+// opposing bit is not set, validating that the vector has either the optional
+// or required bit set, not both.
+func (fv *RawFeatureVector) ValidatePairs() error {
+	for feature := range fv.features {
+		if _, ok := fv.features[feature^1]; ok {
+			return ErrFeaturePairExists
+		}
+	}
+
 	return nil
 }
 

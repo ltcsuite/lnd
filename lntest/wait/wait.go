@@ -13,19 +13,31 @@ const PollInterval = 200 * time.Millisecond
 // timing doesn't always line up well when running integration tests with
 // several running lnd nodes. This function gives callers a way to assert that
 // some property is upheld within a particular time frame.
+//
+// TODO(yy): build a counter here so we know how many times we've tried the
+// `pred`.
 func Predicate(pred func() bool, timeout time.Duration) error {
 	exitTimer := time.After(timeout)
+	result := make(chan bool, 1)
+
 	for {
 		<-time.After(PollInterval)
 
+		go func() {
+			result <- pred()
+		}()
+
+		// Each time we call the pred(), we expect a result to be
+		// returned otherwise it will timeout.
 		select {
 		case <-exitTimer:
-			return fmt.Errorf("predicate not satisfied after time out")
-		default:
-		}
+			return fmt.Errorf("predicate not satisfied after " +
+				"time out")
 
-		if pred() {
-			return nil
+		case succeed := <-result:
+			if succeed {
+				return nil
+			}
 		}
 	}
 }
@@ -46,6 +58,13 @@ func NoError(f func() error, timeout time.Duration) error {
 	// If f() doesn't succeed within the timeout, return the last
 	// encountered error.
 	if err := Predicate(pred, timeout); err != nil {
+		// Handle the case where the passed in method, f, hangs for the
+		// full timeout
+		if predErr == nil {
+			return fmt.Errorf("method did not return within the " +
+				"timeout")
+		}
+
 		return predErr
 	}
 

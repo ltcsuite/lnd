@@ -10,6 +10,11 @@ import (
 // Signer implementations such as hardware wallets, hardware tokens, HSM's, or
 // simply a regular wallet.
 type Signer interface {
+	// MuSig2Signer is an embedded interface to make sure all our signers
+	// also support MuSig2 signing, so we can forward calls to a remote
+	// signer as well.
+	MuSig2Signer
+
 	// SignOutputRaw generates a signature for the passed transaction
 	// according to the data within the passed SignDescriptor.
 	//
@@ -20,12 +25,12 @@ type Signer interface {
 	// ComputeInputScript generates a complete InputIndex for the passed
 	// transaction with the signature as defined within the passed
 	// SignDescriptor. This method should be capable of generating the
-	// proper input script for both regular p2wkh output and p2wkh outputs
-	// nested within a regular p2sh output.
+	// proper input script for both regular p2wkh/p2tr outputs and p2wkh
+	// outputs nested within a regular p2sh output.
 	//
 	// NOTE: This method will ignore any tweak parameters set within the
 	// passed SignDescriptor as it assumes a set of typical script
-	// templates (p2wkh, np2wkh, etc).
+	// templates (p2wkh, p2tr, np2wkh, etc).
 	ComputeInputScript(tx *wire.MsgTx, signDesc *SignDescriptor) (*Script,
 		error)
 }

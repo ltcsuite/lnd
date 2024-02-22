@@ -31,7 +31,8 @@ var (
 			65536: []byte{},
 			80001: []byte{},
 		},
-		MPP: record.NewMPP(32, [32]byte{0x42}),
+		MPP:      record.NewMPP(32, [32]byte{0x42}),
+		Metadata: []byte{1, 2, 3},
 	}
 
 	testHop2 = &route.Hop{
@@ -86,9 +87,7 @@ func TestSentPaymentSerialization(t *testing.T) {
 	}
 
 	newCreationInfo, err := deserializePaymentCreationInfo(&b)
-	if err != nil {
-		t.Fatalf("unable to deserialize creation info: %v", err)
-	}
+	require.NoError(t, err, "unable to deserialize creation info")
 
 	if !reflect.DeepEqual(c, newCreationInfo) {
 		t.Fatalf("Payments do not match after "+
@@ -103,9 +102,7 @@ func TestSentPaymentSerialization(t *testing.T) {
 	}
 
 	newWireInfo, err := deserializeHTLCAttemptInfo(&b)
-	if err != nil {
-		t.Fatalf("unable to deserialize info: %v", err)
-	}
+	require.NoError(t, err, "unable to deserialize info")
 	newWireInfo.AttemptID = s.AttemptID
 
 	// First we verify all the records match up porperly, as they aren't
@@ -394,6 +391,48 @@ func TestQueryPayments(t *testing.T) {
 			lastIndex:      4,
 			expectedSeqNrs: []uint64{3, 4},
 		},
+		{
+			name: "query in forwards order, with start creation " +
+				"time",
+			query: PaymentsQuery{
+				IndexOffset:       0,
+				MaxPayments:       2,
+				Reversed:          false,
+				IncludeIncomplete: true,
+				CreationDateStart: time.Unix(0, 5),
+			},
+			firstIndex:     5,
+			lastIndex:      6,
+			expectedSeqNrs: []uint64{5, 6},
+		},
+		{
+			name: "query in forwards order, with start creation " +
+				"time at end, overflow",
+			query: PaymentsQuery{
+				IndexOffset:       0,
+				MaxPayments:       2,
+				Reversed:          false,
+				IncludeIncomplete: true,
+				CreationDateStart: time.Unix(0, 7),
+			},
+			firstIndex:     7,
+			lastIndex:      7,
+			expectedSeqNrs: []uint64{7},
+		},
+		{
+			name: "query with start and end creation time",
+			query: PaymentsQuery{
+				IndexOffset:       9,
+				MaxPayments:       math.MaxUint64,
+				Reversed:          true,
+				IncludeIncomplete: true,
+				CreationDateStart: time.Unix(0, 3),
+				CreationDateEnd:   time.Unix(0, 5),
+			},
+			firstIndex:     3,
+			lastIndex:      5,
+			expectedSeqNrs: []uint64{3, 4, 5},
+		},
 	}
 
 	for _, tt := range tests {
@@ -401,11 +440,10 @@ func TestQueryPayments(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			db, cleanup, err := MakeTestDB()
+			db, err := MakeTestDB(t)
 			if err != nil {
 				t.Fatalf("unable to init db: %v", err)
 			}
-			defer cleanup()
 
 			// Make a preliminary query to make sure it's ok to
 			// query when we have no payments.
@@ -430,6 +468,9 @@ func TestQueryPayments(t *testing.T) {
 					t.Fatalf("unable to create test "+
 						"payment: %v", err)
 				}
+				// Override creation time to allow for testing
+				// of CreationDateStart and CreationDateEnd.
+				info.CreationTime = time.Unix(0, int64(i+1))
 
 				// Create a new payment entry in the database.
 				err = pControl.InitPayment(info.PaymentIdentifier, info)
@@ -487,6 +528,7 @@ func TestQueryPayments(t *testing.T) {
 			}
 			if tt.firstIndex != querySlice.FirstIndexOffset ||
 				tt.lastIndex != querySlice.LastIndexOffset {
+
 				t.Errorf("First or last index does not match "+
 					"expected index. Want (%d, %d), got (%d, %d).",
 					tt.firstIndex, tt.lastIndex,
@@ -516,10 +558,8 @@ func TestQueryPayments(t *testing.T) {
 // case where a specific duplicate is not found and the duplicates bucket is not
 // present when we expect it to be.
 func TestFetchPaymentWithSequenceNumber(t *testing.T) {
-	db, cleanup, err := MakeTestDB()
+	db, err := MakeTestDB(t)
 	require.NoError(t, err)
-
-	defer cleanup()
 
 	pControl := NewPaymentControl(db)
 
@@ -614,9 +654,8 @@ func TestFetchPaymentWithSequenceNumber(t *testing.T) {
 		test := test
 
 		t.Run(test.name, func(t *testing.T) {
-			err := kvdb.Update(db,
-				func(tx walletdb.ReadWriteTx) error {
-
+			err := kvdb.Update(
+				db, func(tx walletdb.ReadWriteTx) error {
 					var seqNrBytes [8]byte
 					byteOrder.PutUint64(
 						seqNrBytes[:], test.sequenceNumber,
@@ -626,7 +665,8 @@ func TestFetchPaymentWithSequenceNumber(t *testing.T) {
 						tx, test.paymentHash, seqNrBytes[:],
 					)
 					return err
-				}, func() {})
+				}, func() {},
+			)
 			require.Equal(t, test.expectedErr, err)
 		})
 	}
@@ -671,9 +711,7 @@ func appendDuplicatePayment(t *testing.T, db *DB, paymentHash lntypes.Hash,
 
 		return nil
 	}, func() {})
-	if err != nil {
-		t.Fatalf("could not create payment: %v", err)
-	}
+	require.NoError(t, err, "could not create payment")
 }
 
 // putDuplicatePayment creates a duplicate payment in the duplicates bucket

@@ -21,7 +21,10 @@ import (
 	"github.com/ltcsuite/lnd/invoices"
 	"github.com/ltcsuite/lnd/lnrpc/autopilotrpc"
 	"github.com/ltcsuite/lnd/lnrpc/chainrpc"
+	"github.com/ltcsuite/lnd/lnrpc/devrpc"
 	"github.com/ltcsuite/lnd/lnrpc/invoicesrpc"
+	"github.com/ltcsuite/lnd/lnrpc/neutrinorpc"
+	"github.com/ltcsuite/lnd/lnrpc/peersrpc"
 	"github.com/ltcsuite/lnd/lnrpc/routerrpc"
 	"github.com/ltcsuite/lnd/lnrpc/signrpc"
 	"github.com/ltcsuite/lnd/lnrpc/verrpc"
@@ -36,7 +39,6 @@ import (
 	"github.com/ltcsuite/lnd/peer"
 	"github.com/ltcsuite/lnd/peernotifier"
 	"github.com/ltcsuite/lnd/routing"
-	"github.com/ltcsuite/lnd/routing/localchans"
 	"github.com/ltcsuite/lnd/rpcperms"
 	"github.com/ltcsuite/lnd/signal"
 	"github.com/ltcsuite/lnd/sweep"
@@ -120,6 +122,15 @@ func SetupLoggers(root *build.RotatingLogWriter, interceptor signal.Interceptor)
 		SetSubLogger(root, l.subsystem, l.Logger)
 	}
 
+	// Initialize loggers from packages outside of `lnd` first. The
+	// packages below will overwrite the names of the loggers they import.
+	// For instance, the logger in `neutrino.query` is overwritten by
+	// `ltcwallet.chain`, which is overwritten by `lnwallet`. To ensure the
+	// overwriting works, we need to initialize the loggers here so they
+	// can be overwritten later.
+	AddSubLogger(root, "BTCN", interceptor, neutrino.UseLogger)
+	AddSubLogger(root, "CMGR", interceptor, connmgr.UseLogger)
+
 	// Some of the loggers declared in the main lnd package are also used
 	// in sub packages.
 	signal.UseLogger(ltndLog)
@@ -130,8 +141,6 @@ func SetupLoggers(root *build.RotatingLogWriter, interceptor signal.Interceptor)
 	AddSubLogger(root, "NTFN", interceptor, chainntnfs.UseLogger)
 	AddSubLogger(root, "CHDB", interceptor, channeldb.UseLogger)
 	AddSubLogger(root, "HSWC", interceptor, htlcswitch.UseLogger)
-	AddSubLogger(root, "CMGR", interceptor, connmgr.UseLogger)
-	AddSubLogger(root, "BTCN", interceptor, neutrino.UseLogger)
 	AddSubLogger(root, "CNCT", interceptor, contractcourt.UseLogger)
 	AddSubLogger(root, "UTXN", interceptor, contractcourt.UseNurseryLogger)
 	AddSubLogger(root, "BRAR", interceptor, contractcourt.UseBreachLogger)
@@ -140,6 +149,8 @@ func SetupLoggers(root *build.RotatingLogWriter, interceptor signal.Interceptor)
 	AddSubLogger(root, "SGNR", interceptor, signrpc.UseLogger)
 	AddSubLogger(root, "WLKT", interceptor, walletrpc.UseLogger)
 	AddSubLogger(root, "ARPC", interceptor, autopilotrpc.UseLogger)
+	AddSubLogger(root, "NRPC", interceptor, neutrinorpc.UseLogger)
+	AddSubLogger(root, "DRPC", interceptor, devrpc.UseLogger)
 	AddSubLogger(root, "INVC", interceptor, invoices.UseLogger)
 	AddSubLogger(root, "NANN", interceptor, netann.UseLogger)
 	AddSubLogger(root, "WTWR", interceptor, watchtower.UseLogger)
@@ -154,7 +165,7 @@ func SetupLoggers(root *build.RotatingLogWriter, interceptor signal.Interceptor)
 	AddSubLogger(root, "PEER", interceptor, peer.UseLogger)
 	AddSubLogger(root, "CHCL", interceptor, chancloser.UseLogger)
 
-	AddSubLogger(root, routing.Subsystem, interceptor, routing.UseLogger, localchans.UseLogger)
+	AddSubLogger(root, routing.Subsystem, interceptor, routing.UseLogger)
 	AddSubLogger(root, routerrpc.Subsystem, interceptor, routerrpc.UseLogger)
 	AddSubLogger(root, chanfitness.Subsystem, interceptor, chanfitness.UseLogger)
 	AddSubLogger(root, verrpc.Subsystem, interceptor, verrpc.UseLogger)
@@ -167,6 +178,7 @@ func SetupLoggers(root *build.RotatingLogWriter, interceptor signal.Interceptor)
 	AddSubLogger(root, tor.Subsystem, interceptor, tor.UseLogger)
 	AddSubLogger(root, btcwallet.Subsystem, interceptor, btcwallet.UseLogger)
 	AddSubLogger(root, rpcwallet.Subsystem, interceptor, rpcwallet.UseLogger)
+	AddSubLogger(root, peersrpc.Subsystem, interceptor, peersrpc.UseLogger)
 }
 
 // AddSubLogger is a helper method to conveniently create and register the

@@ -1,12 +1,12 @@
-FROM swift:focal
+FROM swift:jammy
 
 RUN apt-get update && apt-get install -y \
   git \
-  protobuf-compiler='3.6.1*' \
-  clang-format='1:10.0*'
+  protobuf-compiler \
+  clang-format='1:14.0*'
 
 RUN apt-get install -y wget \
-    && wget -c https://golang.org/dl/go1.17.6.linux-arm64.tar.gz -O - \
+    && wget -c https://golang.org/dl/go1.21.0.linux-arm64.tar.gz -O - \
     | tar -xz -C /usr/local
 ENV GOPATH=/go
 ENV PATH=$PATH:/usr/local/go/bin:/go/bin

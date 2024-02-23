@@ -386,19 +386,28 @@ func _walletBalance(ts *testscript.TestScript, neg bool, args []string) {
 	ts.Stdout().Write([]byte(fmt.Sprint(walletBalance(ts))))
 }
 
-func getTransactionFee(ts *testscript.TestScript, txid string) float64 {
-	client := walletrpc.NewWalletKitClient(rpcConn)
-	resp, err := client.GetTransaction(context.Background(),
-		&walletrpc.GetTransactionRequest{Txid: txid})
+func getTransaction(ts *testscript.TestScript, txid string) *lnrpc.Transaction {
+	client := lnrpc.NewLightningClient(rpcConn)
+	resp, err := client.GetTransactions(context.Background(),
+		&lnrpc.GetTransactionsRequest{})
 	ts.Check(err)
+	index := slices.IndexFunc(resp.Transactions,
+		func(tx *lnrpc.Transaction) bool {
+			return tx.TxHash == txid
+		})
+	if index < 0 {
+		ts.Fatalf("txid %v not found", txid)
+	}
+	return resp.Transactions[index]
+}
+
+func getTransactionFee(ts *testscript.TestScript, txid string) float64 {
+	resp := getTransaction(ts, txid)
 	return float64(resp.TotalFees) / ltcutil.SatoshiPerBitcoin
 }
 
 func isMwebTransaction(ts *testscript.TestScript, txid string) bool {
-	client := walletrpc.NewWalletKitClient(rpcConn)
-	resp, err := client.GetTransaction(context.Background(),
-		&walletrpc.GetTransactionRequest{Txid: txid})
-	ts.Check(err)
+	resp := getTransaction(ts, txid)
 	var tx wire.MsgTx
 	ts.Check(tx.Deserialize(hex.NewDecoder(strings.NewReader(resp.RawTxHex))))
 	return tx.Mweb != nil

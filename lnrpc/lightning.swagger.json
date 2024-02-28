@@ -6755,7 +6755,7 @@
         },
         "send_all": {
           "type": "boolean",
-          "description": "If set, then the amount field will be ignored, and lnd will attempt to\nsend all the coins under control of the internal wallet to the specified\naddress."
+          "description": "If set, the amount field should be unset. It indicates lnd will send all\nwallet coins or all selected coins to the specified address."
         },
         "label": {
           "type": "string",
@@ -6769,6 +6769,13 @@
         "spend_unconfirmed": {
           "type": "boolean",
           "description": "Whether unconfirmed outputs should be used as inputs for the transaction."
+        },
+        "outpoints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/lnrpcOutPoint"
+          },
+          "description": "A list of selected outpoints as inputs for the transaction."
         }
       }
     },

@@ -169,6 +169,10 @@ func MarshallOutputType(o txscript.ScriptClass) OutputScriptType {
 		return OutputScriptType_SCRIPT_TYPE_WITNESS_UNKNOWN
 	case txscript.WitnessV1TaprootTy:
 		return OutputScriptType_SCRIPT_TYPE_WITNESS_V1_TAPROOT
+	case txscript.WitnessMwebHogAddrTy:
+		return OutputScriptType_SCRIPT_TYPE_WITNESS_MWEB_HOGADDR
+	case txscript.WitnessMwebPeginTy:
+		return OutputScriptType_SCRIPT_TYPE_WITNESS_MWEB_PEGIN
 	case txscript.MwebTy:
 		return OutputScriptType_SCRIPT_TYPE_MWEB
 	default:

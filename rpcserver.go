@@ -1062,7 +1062,7 @@ func (r *rpcServer) sendCoinsOnChain(paymentMap map[string]int64,
 	// We first do a dry run, to sanity check we won't spend our wallet
 	// balance below the reserved amount.
 	authoredTx, err := r.server.cc.Wallet.CreateSimpleTx(
-		outputs, feeRate, minConfs, true,
+		nil, outputs, feeRate, minConfs, true,
 	)
 	if err != nil {
 		return nil, err
@@ -1083,7 +1083,7 @@ func (r *rpcServer) sendCoinsOnChain(paymentMap map[string]int64,
 	// If that checks out, we're fairly confident that creating sending to
 	// these outputs will keep the wallet balance above the reserve.
 	tx, err := r.server.cc.Wallet.SendOutputs(
-		outputs, feeRate, minConfs, label,
+		nil, outputs, feeRate, minConfs, label,
 	)
 	if err != nil {
 		return nil, err
@@ -1181,7 +1181,9 @@ func (r *rpcServer) EstimateFee(ctx context.Context,
 	var tx *txauthor.AuthoredTx
 	wallet := r.server.cc.Wallet
 	err = wallet.WithCoinSelectLock(func() error {
-		tx, err = wallet.CreateSimpleTx(outputs, feePerKw, minConfs, true)
+		tx, err = wallet.CreateSimpleTx(
+			nil, outputs, feePerKw, minConfs, true
+		)
 		return err
 	})
 	if err != nil {

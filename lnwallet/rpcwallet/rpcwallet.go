@@ -10,6 +10,7 @@ import (
 	"io/ioutil"
 	"time"
 
+	"github.com/ltcsuite/lnd/fn"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/lncfg"
@@ -120,12 +121,12 @@ func (r *RPCKeyRing) NewAddress(addrType lnwallet.AddressType, change bool,
 // NOTE: This is a part of the WalletController interface.
 //
 // NOTE: This method only signs with BIP49/84 keys.
-func (r *RPCKeyRing) SendOutputs(outputs []*wire.TxOut,
-	feeRate chainfee.SatPerKWeight, minConfs int32,
-	label string) (*wire.MsgTx, error) {
+func (r *RPCKeyRing) SendOutputs(inputs fn.Set[wire.OutPoint],
+	outputs []*wire.TxOut, feeRate chainfee.SatPerKWeight,
+	minConfs int32, label string) (*wire.MsgTx, error) {
 
 	tx, err := r.WalletController.SendOutputs(
-		outputs, feeRate, minConfs, label,
+		inputs, outputs, feeRate, minConfs, label,
 	)
 	if err != nil && err != basewallet.ErrTxUnsigned {
 		return nil, err

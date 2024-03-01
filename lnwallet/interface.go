@@ -20,6 +20,8 @@ import (
 	base "github.com/ltcsuite/ltcwallet/wallet"
 	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
+
+	"github.com/ltcsuite/lnd/fn"
 )
 
 const (
@@ -344,8 +346,9 @@ type WalletController interface {
 	// be used when crafting the transaction.
 	//
 	// NOTE: This method requires the global coin selection lock to be held.
-	SendOutputs(outputs []*wire.TxOut, feeRate chainfee.SatPerKWeight,
-		minConfs int32, label string) (*wire.MsgTx, error)
+	SendOutputs(inputs fn.Set[wire.OutPoint], outputs []*wire.TxOut,
+		feeRate chainfee.SatPerKWeight, minConfs int32, label string
+	) (*wire.MsgTx, error)
 
 	// CreateSimpleTx creates a Bitcoin transaction paying to the specified
 	// outputs. The transaction is not broadcasted to the network. In the
@@ -359,8 +362,9 @@ type WalletController interface {
 	// SHOULD NOT be broadcasted.
 	//
 	// NOTE: This method requires the global coin selection lock to be held.
-	CreateSimpleTx(outputs []*wire.TxOut, feeRate chainfee.SatPerKWeight,
-		minConfs int32, dryRun bool) (*txauthor.AuthoredTx, error)
+	CreateSimpleTx(inputs fn.Set[wire.OutPoint], outputs []*wire.TxOut,
+		feeRate chainfee.SatPerKWeight, minConfs int32, dryRun bool) (
+		*txauthor.AuthoredTx, error)
 
 	// ListUnspentWitness returns all unspent outputs which are version 0
 	// witness programs. The 'minConfs' and 'maxConfs' parameters

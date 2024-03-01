@@ -330,12 +330,18 @@ func checkTxnHistory(ts *testscript.TestScript, index int,
 	}
 
 	var unknownAddrs []string
-	for _, addr := range tx.DestAddresses {
+	for _, output := range tx.OutputDetails {
+		addr := output.Address
 		if expectedAddrs[addr] > 0 {
 			if expectedAddrs[addr]--; expectedAddrs[addr] == 0 {
 				delete(expectedAddrs, addr)
 			}
-		} else {
+			continue
+		}
+		switch output.OutputType {
+		case lnrpc.OutputScriptType_SCRIPT_TYPE_WITNESS_MWEB_HOGADDR:
+		case lnrpc.OutputScriptType_SCRIPT_TYPE_WITNESS_MWEB_PEGIN:
+		default:
 			unknownAddrs = append(unknownAddrs, addr)
 		}
 	}

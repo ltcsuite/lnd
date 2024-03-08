@@ -77,3 +77,4 @@ coverage.txt
 /lnd-*/
 
 *.pb.swift
+*.java

@@ -1,15 +1,18 @@
 package sweep
 
 import (
+	"errors"
 	"fmt"
 	"math"
 
+	"github.com/ltcsuite/lnd/fn"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
+	"golang.org/x/exp/maps"
 )
 
 const (
@@ -17,6 +20,12 @@ const (
 	// to issuing an estimate for if a fee pre fence doesn't specify an
 	// explicit conf target or fee rate.
 	defaultNumBlocksEstimate = 6
+)
+
+var (
+	// ErrUnknownUTXO is returned when creating a sweeping tx using an UTXO
+	// that's unknown to the wallet.
+	ErrUnknownUTXO = errors.New("unknown utxo")
 )
 
 // FeePreference allows callers to express their time value for inclusion of a
@@ -148,11 +157,11 @@ type OutpointLocker interface {
 }
 
 // WalletSweepPackage is a package that gives the caller the ability to sweep
-// ALL funds from a wallet in a single transaction. We also package a function
-// closure that allows one to abort the operation.
+// relevant funds from a wallet in a single transaction. We also package a
+// function closure that allows one to abort the operation.
 type WalletSweepPackage struct {
 	// SweepTx is a fully signed, and valid transaction that is broadcast,
-	// will sweep ALL confirmed coins in the wallet with a single
+	// will sweep ALL relevant confirmed coins in the wallet with a single
 	// transaction.
 	SweepTx *wire.MsgTx
 
@@ -184,26 +193,27 @@ func CraftSweepAllTx(feeRate chainfee.SatPerKWeight, blockHeight uint32,
 	deliveryAddrs []DeliveryAddr, changeAddr ltcutil.Address,
 	coinSelectLocker CoinSelectionLocker, utxoSource UtxoSource,
 	outpointLocker OutpointLocker, feeEstimator chainfee.Estimator,
-	signer input.Signer, minConfs int32) (*WalletSweepPackage, error) {
+	signer input.Signer, minConfs int32,
+	selectUtxos fn.Set[wire.OutPoint]) (*WalletSweepPackage, error) {
 
 	// TODO(roasbeef): turn off ATPL as well when available?
 
-	var allOutputs []*lnwallet.Utxo
+	var outputsForSweep []*lnwallet.Utxo
 
 	// We'll make a function closure up front that allows us to unlock all
 	// selected outputs to ensure that they become available again in the
 	// case of an error after the outputs have been locked, but before we
 	// can actually craft a sweeping transaction.
 	unlockOutputs := func() {
-		for _, utxo := range allOutputs {
+		for _, utxo := range outputsForSweep {
 			outpointLocker.UnlockOutpoint(utxo.OutPoint)
 		}
 	}
 
 	// Next, we'll use the coinSelectLocker to ensure that no coin
-	// selection takes place while we fetch and lock all outputs the wallet
-	// knows of.  Otherwise, it may be possible for a new funding flow to
-	// lock an output while we fetch the set of unspent witnesses.
+	// selection takes place while we fetch and lock outputs in the
+	// wallet. Otherwise, it may be possible for a new funding flow to lock
+	// an output while we fetch the set of unspent witnesses.
 	err := coinSelectLocker.WithCoinSelectLock(func() error {
 		// Now that we can be sure that no other coin selection
 		// operations are going on, we can grab a clean snapshot of the
@@ -215,6 +225,18 @@ func CraftSweepAllTx(feeRate chainfee.SatPerKWeight, blockHeight uint32,
 			return err
 		}
 
+		log.Trace("[WithCoinSelectLock] finished fetching UTXOs")
+
+		// Use select utxos, if provided.
+		if len(selectUtxos) > 0 {
+			utxos, err = fetchUtxosFromOutpoints(
+				utxos, selectUtxos.ToSlice(),
+			)
+			if err != nil {
+				return err
+			}
+		}
+
 		// We'll now lock each UTXO to ensure that other callers don't
 		// attempt to use these UTXOs in transactions while we're
 		// crafting out sweep all transaction.
@@ -222,7 +244,9 @@ func CraftSweepAllTx(feeRate chainfee.SatPerKWeight, blockHeight uint32,
 			outpointLocker.LockOutpoint(utxo.OutPoint)
 		}
 
-		allOutputs = append(allOutputs, utxos...)
+		log.Trace("[WithCoinSelectLock] exited the lock")
+
+		outputsForSweep = append(outputsForSweep, utxos...)
 
 		return nil
 	})
@@ -231,15 +255,15 @@ func CraftSweepAllTx(feeRate chainfee.SatPerKWeight, blockHeight uint32,
 		// in case we had any lingering outputs.
 		unlockOutputs()
 
-		return nil, fmt.Errorf("unable to fetch+lock wallet "+
-			"utxos: %v", err)
+		return nil, fmt.Errorf("unable to fetch+lock wallet utxos: %w",
+			err)
 	}
 
 	// Now that we've locked all the potential outputs to sweep, we'll
 	// assemble an input for each of them, so we can hand it off to the
 	// sweeper to generate and sign a transaction for us.
 	var inputsToSweep []input.Input
-	for _, output := range allOutputs {
+	for _, output := range outputsForSweep {
 		// As we'll be signing for outputs under control of the wallet,
 		// we only need to populate the output value and output script.
 		// The rest of the items will be populated internally within
@@ -333,4 +357,25 @@ func CraftSweepAllTx(feeRate chainfee.SatPerKWeight, blockHeight uint32,
 		SweepTx:            sweepTx,
 		CancelSweepAttempt: unlockOutputs,
 	}, nil
+}
+
+// fetchUtxosFromOutpoints returns UTXOs for given outpoints. Errors if any
+// outpoint is not in the passed slice of utxos.
+func fetchUtxosFromOutpoints(utxos []*lnwallet.Utxo,
+	outpoints []wire.OutPoint) ([]*lnwallet.Utxo, error) {
+
+	lookup := fn.SliceToMap(utxos, func(utxo *lnwallet.Utxo) wire.OutPoint {
+		return utxo.OutPoint
+	}, func(utxo *lnwallet.Utxo) *lnwallet.Utxo {
+		return utxo
+	})
+
+	subMap, err := fn.NewSubMap(lookup, outpoints)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnknownUTXO, err.Error())
+	}
+
+	fetchedUtxos := maps.Values(subMap)
+
+	return fetchedUtxos, nil
 }

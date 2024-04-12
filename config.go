@@ -1385,13 +1385,13 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 	// At least one RPCListener is required. So listen on localhost per
 	// default.
 	if len(cfg.RawRPCListeners) == 0 {
-		addr := fmt.Sprintf("localhost:%d", defaultRPCPort)
+		addr := fmt.Sprintf("127.0.0.1:%d", defaultRPCPort)
 		cfg.RawRPCListeners = append(cfg.RawRPCListeners, addr)
 	}
 
 	// Listen on localhost if no REST listeners were specified.
 	if len(cfg.RawRESTListeners) == 0 {
-		addr := fmt.Sprintf("localhost:%d", defaultRESTPort)
+		addr := fmt.Sprintf("127.0.0.1:%d", defaultRESTPort)
 		cfg.RawRESTListeners = append(cfg.RawRESTListeners, addr)
 	}
 
@@ -1403,7 +1403,7 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 	if len(cfg.RawListeners) == 0 {
 		addr := fmt.Sprintf(":%d", defaultPeerPort)
 		if cfg.Tor.Active && !cfg.Tor.SkipProxyForClearNetTargets {
-			addr = fmt.Sprintf("localhost:%d", defaultPeerPort)
+			addr = fmt.Sprintf("127.0.0.1:%d", defaultPeerPort)
 		}
 		cfg.RawListeners = append(cfg.RawListeners, addr)
 	}

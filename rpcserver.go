@@ -1051,8 +1051,8 @@ func allowCORS(handler http.Handler, origins []string) http.Handler {
 // more addresses specified in the passed payment map. The payment map maps an
 // address to a specified output value to be sent to that address.
 func (r *rpcServer) sendCoinsOnChain(paymentMap map[string]int64,
-	feeRate chainfee.SatPerKWeight, minConfs int32,
-	label string) (*chainhash.Hash, error) {
+	feeRate chainfee.SatPerKWeight, minConfs int32, label string,
+	selectedUtxos fn.Set[wire.OutPoint]) (*chainhash.Hash, error) {
 
 	outputs, err := addrPairsToOutputs(paymentMap, r.cfg.ActiveNetParams.Params)
 	if err != nil {
@@ -1062,7 +1062,7 @@ func (r *rpcServer) sendCoinsOnChain(paymentMap map[string]int64,
 	// We first do a dry run, to sanity check we won't spend our wallet
 	// balance below the reserved amount.
 	authoredTx, err := r.server.cc.Wallet.CreateSimpleTx(
-		nil, outputs, feeRate, minConfs, true,
+		selectedUtxos, outputs, feeRate, minConfs, true,
 	)
 	if err != nil {
 		return nil, err
@@ -1083,7 +1083,7 @@ func (r *rpcServer) sendCoinsOnChain(paymentMap map[string]int64,
 	// If that checks out, we're fairly confident that creating sending to
 	// these outputs will keep the wallet balance above the reserve.
 	tx, err := r.server.cc.Wallet.SendOutputs(
-		nil, outputs, feeRate, minConfs, label,
+		selectedUtxos, outputs, feeRate, minConfs, label,
 	)
 	if err != nil {
 		return nil, err
@@ -1233,9 +1233,9 @@ func (r *rpcServer) SendCoins(ctx context.Context,
 	}
 
 	rpcsLog.Infof("[sendcoins] addr=%v, amt=%v, sat/kw=%v, min_confs=%v, "+
-		"send_all=%v",
+		"send_all=%v, select_outpoints=%v",
 		in.Addr, ltcutil.Amount(in.Amount), int64(feePerKw), minConfs,
-		in.SendAll)
+		in.SendAll, len(in.Outpoints))
 
 	// Decode the address receiving the coins, we need to check whether the
 	// address is valid for this network.
@@ -1271,6 +1271,22 @@ func (r *rpcServer) SendCoins(ctx context.Context,
 
 	wallet := r.server.cc.Wallet
 
+	var selectOutpoints fn.Set[wire.OutPoint]
+	if len(in.Outpoints) != 0 {
+		wireOutpoints, err := toWireOutpoints(in.Outpoints)
+		if err != nil {
+			return nil, fmt.Errorf("can't create outpoints "+
+				"%w", err)
+		}
+
+		if fn.HasDuplicates(wireOutpoints) {
+			return nil, fmt.Errorf("selected outpoints contain " +
+				"duplicate values")
+		}
+
+		selectOutpoints = fn.NewSet(wireOutpoints...)
+	}
+
 	// If the send all flag is active, then we'll attempt to sweep all the
 	// coins in the wallet in a single transaction (if possible),
 	// otherwise, we'll respect the amount, and attempt a regular 2-output
@@ -1295,10 +1311,9 @@ func (r *rpcServer) SendCoins(ctx context.Context,
 		// pay to the change address created above if we needed to
 		// reserve any value, the rest will go to targetAddr.
 		sweepTxPkg, err := sweep.CraftSweepAllTx(
-			feePerKw, uint32(bestHeight), nil, targetAddr, wallet,
-			wallet, wallet.WalletController,
-			r.server.cc.FeeEstimator, r.server.cc.Signer,
-			minConfs, nil,
+			feePerKw,  uint32(bestHeight), nil, targetAddr, wallet,
+			wallet, wallet.WalletController, r.server.cc.FeeEstimator,
+			r.server.cc.Signer, minConfs, selectOutpoints,
 		)
 		if err != nil {
 			return nil, err
@@ -1353,7 +1368,7 @@ func (r *rpcServer) SendCoins(ctx context.Context,
 				targetAddr, wallet, wallet,
 				wallet.WalletController,
 				r.server.cc.FeeEstimator, r.server.cc.Signer,
-				minConfs, nil
+				minConfs, selectOutpoints,
 			)
 			if err != nil {
 				return nil, err
@@ -1379,7 +1394,7 @@ func (r *rpcServer) SendCoins(ctx context.Context,
 			return nil, err
 		}
 
-		rpcsLog.Debugf("Sweeping all coins from wallet to addr=%v, "+
+		rpcsLog.Debugf("Sweeping coins from wallet to addr=%v, "+
 			"with tx=%v", in.Addr, spew.Sdump(sweepTxPkg.SweepTx))
 
 		// As our sweep transaction was created, successfully, we'll
@@ -1405,6 +1420,7 @@ func (r *rpcServer) SendCoins(ctx context.Context,
 		err := wallet.WithCoinSelectLock(func() error {
 			newTXID, err := r.sendCoinsOnChain(
 				paymentMap, feePerKw, minConfs, label,
+				selectOutpoints,
 			)
 			if err != nil {
 				return err
@@ -1462,6 +1478,7 @@ func (r *rpcServer) SendMany(ctx context.Context,
 	err = wallet.WithCoinSelectLock(func() error {
 		sendManyTXID, err := r.sendCoinsOnChain(
 			in.AddrToAmount, feePerKw, minConfs, label,
+			nil,
 		)
 		if err != nil {
 			return err

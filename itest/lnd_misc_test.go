@@ -1263,3 +1263,259 @@ func testSignVerifyMessageWithAddr(ht *lntest.HarnessTest) {
 
 	require.False(ht, respValid.Valid, "external signature did validate")
 }
+
+// testSendSelectedCoins tests that we're able to properly send the selected
+// coins from the wallet to a single target address.
+func testSendSelectedCoins(ht *lntest.HarnessTest) {
+	// First, we'll make a new node, Alice who'll we'll use to test wallet
+	// sweeping.
+	alice := ht.NewNode("Alice", nil)
+
+	// Next, we'll give Alice exactly 3 utxos of 1 BTC of different address
+	// types.
+	ht.FundCoins(ltcutil.SatoshiPerBitcoin, alice)
+	ht.FundCoinsNP2WKH(ltcutil.SatoshiPerBitcoin, alice)
+	ht.FundCoinsP2TR(ltcutil.SatoshiPerBitcoin, alice)
+
+	// Get all the utxos in the wallet and assert there are three.
+	utxos := ht.AssertNumUTXOs(alice, 3)
+
+	// Ensure that we can't send duplicate coins.
+	//
+	// Create duplciate outpoints.
+	dupOutpoints := []*lnrpc.OutPoint{
+		utxos[0].Outpoint,
+		utxos[0].Outpoint,
+	}
+
+	// Send the duplicate outpoints and assert there's an error.
+	err := alice.RPC.SendCoinsAssertErr(&lnrpc.SendCoinsRequest{
+		Addr:      ht.Miner.NewMinerAddress().String(),
+		Outpoints: dupOutpoints,
+	})
+	require.ErrorContains(ht, err, "selected outpoints contain duplicate")
+
+	// Send a selected coin with a specific amount.
+	//
+	// We'll send the first utxo with an amount of 0.5 BTC.
+	amt := ltcutil.Amount(0.5 * ltcutil.SatoshiPerBitcoin)
+	alice.RPC.SendCoins(&lnrpc.SendCoinsRequest{
+		Addr: ht.Miner.NewMinerAddress().String(),
+		Outpoints: []*lnrpc.OutPoint{
+			utxos[0].Outpoint,
+		},
+		Amount: int64(amt),
+	})
+
+	// We expect to see the above tx in the mempool.
+	tx := ht.Miner.GetNumTxsFromMempool(1)[0]
+
+	// Assert the tx has the expected shape. It should have 1 input and 2
+	// outputs - the input is the selected UTXO, and the outputs are the
+	// specified amount and the change amount.
+	require.Len(ht, tx.TxIn, 1)
+	require.Len(ht, tx.TxOut, 2)
+
+	// Check it's using the selected UTXO as input.
+	require.Equal(ht, utxos[0].Outpoint.TxidStr,
+		tx.TxIn[0].PreviousOutPoint.Hash.String())
+
+	// Mine a block to confirm the above tx.
+	ht.MineBlocksAndAssertNumTxes(1, 1)
+
+	// We now test we can send the selected coins to a single target
+	// address with `SendAll` flag.
+	//
+	// Get all the utxos in the wallet and assert there are three.
+	utxos = ht.AssertNumUTXOs(alice, 3)
+
+	// Select the first two coins and send them to a single target address.
+	alice.RPC.SendCoins(&lnrpc.SendCoinsRequest{
+		Addr: ht.Miner.NewMinerAddress().String(),
+		Outpoints: []*lnrpc.OutPoint{
+			utxos[0].Outpoint,
+			utxos[1].Outpoint,
+		},
+		SendAll: true,
+	})
+
+	// We expect to see the above tx in the mempool.
+	tx = ht.Miner.GetNumTxsFromMempool(1)[0]
+
+	// Assert the tx has the expected shape. It should have 2 inputs and 1
+	// output.
+	require.Len(ht, tx.TxIn, 2)
+	require.Len(ht, tx.TxOut, 1)
+
+	// Check it's using the selected UTXOs as inputs.
+	prevOutpoint1 := tx.TxIn[0].PreviousOutPoint.Hash.String()
+	prevOutpoint2 := tx.TxIn[1].PreviousOutPoint.Hash.String()
+
+	if prevOutpoint1 == utxos[0].Outpoint.TxidStr {
+		require.Equal(ht, utxos[1].Outpoint.TxidStr, prevOutpoint2)
+	} else {
+		require.Equal(ht, utxos[1].Outpoint.TxidStr, prevOutpoint1)
+		require.Equal(ht, utxos[0].Outpoint.TxidStr, prevOutpoint2)
+	}
+
+	// Mine a block to confirm the above tx.
+	ht.MineBlocksAndAssertNumTxes(1, 1)
+
+	// Since the first two UTXOs have been sent to an address outside her
+	// wallet, Alice should see a single UTXO now.
+	ht.AssertNumUTXOs(alice, 1)
+}
+
+// LITECOIN: currently disabled due to missing createSimpleNetwork
+// testSendSelectedCoinsChannelReserve tests that if sending selected coins
+// would violate the channel reserve requirement the RPC call will fail. It
+// also checks that change outputs will be created automatically if `SendAll`
+// flag is set.
+func testSendSelectedCoinsChannelReserve(ht *lntest.HarnessTest) {
+	chanAmt := ltcutil.Amount(100_000)
+
+	// Create a two-hop network: Alice -> Bob.
+	//
+	// NOTE: Alice will have one UTXO after the funding.
+	_, nodes := createSimpleNetwork(
+		ht, []string{"--protocol.anchors"}, 2,
+		lntest.OpenChannelParams{
+			Amt: chanAmt,
+		},
+	)
+
+	alice := nodes[0]
+
+	// Fund Alice one more UTXO.
+	ht.FundCoins(ltcutil.SatoshiPerBitcoin, alice)
+
+	// Get all the utxos in the wallet and assert there are two:
+	// - one from the above `FundCoins`.
+	// - one from the change output after the channel funding.
+	utxos := ht.AssertNumUTXOs(alice, 2)
+
+	// Get all the outpoints.
+	outpoints := []*lnrpc.OutPoint{
+		utxos[0].Outpoint,
+		utxos[1].Outpoint,
+	}
+
+	// Calculate the total amount of the two UTXOs.
+	totalAmt := utxos[0].AmountSat + utxos[1].AmountSat
+
+	// Send the total amount of the two UTXOs and expect an error since
+	// fees cannot be covered.
+	err := alice.RPC.SendCoinsAssertErr(&lnrpc.SendCoinsRequest{
+		Addr:      ht.Miner.NewMinerAddress().String(),
+		Outpoints: outpoints,
+		Amount:    totalAmt,
+	})
+	require.ErrorContains(ht, err, "insufficient funds available to "+
+		"construct transaction")
+
+	// Get the required reserve amount.
+	resp := alice.RPC.RequiredReserve(
+		&walletrpc.RequiredReserveRequest{
+			AdditionalPublicChannels: 1,
+		},
+	)
+
+	// Calculate an amount which, after sending it, would violate the
+	// channel reserve requirement.
+	amt := totalAmt - resp.RequiredReserve
+
+	// Send the amount and expect an error since the channel reserve cannot
+	// be covered.
+	err = alice.RPC.SendCoinsAssertErr(&lnrpc.SendCoinsRequest{
+		Addr:      ht.Miner.NewMinerAddress().String(),
+		Outpoints: outpoints,
+		Amount:    amt,
+	})
+	require.ErrorContains(ht, err, "reserved wallet balance invalidated")
+
+	// Finally, check that we can send all the selected coins with the help
+	// of the `SendAll` flag as it will automatically handle reserving
+	// change outputs based on the channel reserve requirements.
+	alice.RPC.SendCoins(&lnrpc.SendCoinsRequest{
+		Addr:      ht.Miner.NewMinerAddress().String(),
+		Outpoints: outpoints,
+		SendAll:   true,
+	})
+
+	// We expect to see the above tx in the mempool.
+	tx := ht.Miner.GetNumTxsFromMempool(1)[0]
+
+	// Assert the tx has the expected shape. It should have 2 inputs and 2
+	// outputs.
+	require.Len(ht, tx.TxIn, 2)
+	require.Len(ht, tx.TxOut, 2)
+
+	// Mine a block to confirm the above tx.
+	ht.MineBlocksAndAssertNumTxes(1, 1)
+
+	// Alice should have one reserved UTXO now.
+	ht.AssertNumUTXOs(alice, 1)
+}
+
+// createSimpleNetwork creates the specified number of nodes and makes a
+// topology of `node1 -> node2 -> node3...`. Each node is created using the
+// specified config, the neighbors are connected, and the channels are opened.
+// Each node will be funded with a single UTXO of 1 BTC except the last one.
+func createSimpleNetwork(ht *lntest.HarnessTest, nodeCfg []string,
+	numNodes int, p lntest.OpenChannelParams) ([]*lnrpc.ChannelPoint,
+	[]*node.HarnessNode) {
+	// Make a slice of nodes.
+	nodes := make([]*node.HarnessNode, numNodes)
+
+	// Create new nodes.
+	for i := range nodes {
+		nodeName := fmt.Sprintf("Node%q", string(rune('A'+i)))
+		n := ht.NewNode(nodeName, nodeCfg)
+		nodes[i] = n
+	}
+
+	// Connect the nodes in a chain.
+	for i := 1; i < len(nodes); i++ {
+		nodeA := nodes[i-1]
+		nodeB := nodes[i]
+		ht.EnsureConnected(nodeA, nodeB)
+	}
+
+	// Fund all the nodes expect the last one.
+	for i := 0; i < len(nodes)-1; i++ {
+		node := nodes[i]
+		ht.FundCoinsUnconfirmed(ltcutil.SatoshiPerBitcoin, node)
+	}
+
+	// Mine 1 block to get the above coins confirmed.
+	ht.MineBlocks(1)
+
+	// Open channels in batch to save blocks mined.
+	reqs := make([]*lntest.OpenChannelRequest, 0, len(nodes)-1)
+
+	for i := 0; i < len(nodes)-1; i++ {
+		nodeA := nodes[i]
+		nodeB := nodes[i+1]
+
+		req := &lntest.OpenChannelRequest{
+			Local:  nodeA,
+			Remote: nodeB,
+			Param:  p,
+		}
+		reqs = append(reqs, req)
+	}
+
+	resp := ht.OpenMultiChannelsAsync(reqs)
+
+	// Make sure the nodes know each other's channels if they are public.
+	if !p.Private {
+		for _, node := range nodes {
+			for _, chanPoint := range resp {
+				ht.AssertTopologyChannelOpen(node, chanPoint)
+			}
+		}
+	}
+
+	return resp, nodes
+
+}

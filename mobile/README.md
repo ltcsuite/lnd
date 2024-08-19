@@ -2,12 +2,12 @@
 
 ## Prerequisites
 
-To build for iOS, you need to run macOS with either 
-[Command Line Tools](https://developer.apple.com/download/all/?q=command%20line%20tools) 
+To build for iOS, you need to run macOS with either
+[Command Line Tools](https://developer.apple.com/download/all/?q=command%20line%20tools)
 or [Xcode](https://apps.apple.com/app/xcode/id497799835) installed.
 
-To build for Android, you need either 
-[Android Studio](https://developer.android.com/studio) or 
+To build for Android, you need either
+[Android Studio](https://developer.android.com/studio) or
 [Command Line Tools](https://developer.android.com/studio#downloads) installed, which in turn must be used to install [Android NDK](https://developer.android.com/ndk/).
 
 
@@ -30,8 +30,8 @@ make --version
 
 ## Building the libraries
 
-Note that `gomobile` only supports building projects from `$GOPATH` at this 
-point. However, with the introduction of Go modules, the source code files are 
+Note that `gomobile` only supports building projects from `$GOPATH` at this
+point. However, with the introduction of Go modules, the source code files are
 no longer installed there by default.
 
 ```shell
@@ -114,7 +114,7 @@ This will download and compile the latest tagged release of Swift protobuf.
 
 ```
 RUN git clone https://github.com/apple/swift-protobuf.git \
-&& cd swift-protobuf \ 
+&& cd swift-protobuf \
 && git checkout $(git describe --tags --abbrev=0) \
 && swift build -c release \
 && mv .build/release/protoc-gen-swift /bin
@@ -131,7 +131,7 @@ find . -name "*.swift" -print0 | xargs -0 -I {} mv {} mobile/build/ios
 
 `Lndmobile.xcframework` and all Swift files should now be added to your Xcode
 project. You will also need to add [Swift Protobuf](https://github.com/apple/swift-protobuf)
-to your project to support the generated code.  
+to your project to support the generated code.
 
 ### Android
 
@@ -145,7 +145,7 @@ to the first `protoc` invocation found in
 
 #### Second option (preferable):
 
-- You have to install the profobuf plugin to your Android application. 
+- You have to install the profobuf plugin to your Android application.
 Please, follow this link https://github.com/google/protobuf-gradle-plugin.
 - Add this line to your `app build.gradle` file.
 ```shell
@@ -198,7 +198,7 @@ protobuf {
 - Build the project and wait until you see the generated Java proto files in the `build` folder.
 
 
---- 
+---
 *Note:*
 
 If Android Studio tells you that the `aar` file cannot be included into the `app-bundle`, this is a workaround:
@@ -219,7 +219,7 @@ artifacts.add("default", file('Lndmobile.aar'))
 ```shell
 implementation project(":lndmobile", { "default" })
 ```
---- 
+---
 
 ## Calling the API
 
@@ -231,3 +231,82 @@ eg. `QueryScores` is now `AutopilotQueryScores`. `GetBlockHeader` is now `Neutri
 
 - [LND gRPC API Reference](https://api.lightning.community)
 - [LND Builder’s Guide](https://docs.lightning.engineering)
+
+# CGO build
+
+Falafel bindings also work for compiling lnd into .so/.a/.dll library files for
+Android, iOS, Linux, macOS, and Windows.
+
+## iOS
+
+Run `make ios-cgo`
+
+```
+mobile/build/cgo
+└── ios
+    ├── liblnd-arm64.a
+    ├── liblnd-arm64.h
+    ├── liblnd-fat.a
+    ├── liblnd-simulator-amd64.a
+    ├── liblnd-simulator-amd64.h
+    └── liblnd.h
+```
+
+liblnd-fat.a is a universal binary for both ARM64 and AMD64. To use lnd in your
+iOS project, rename liblnd-fat.a to liblnd.a, and then drag in
+liblnd.a and liblnd.h into your Xcode project.
+
+## macOS
+
+Run `make ios-cgo`
+
+```
+mobile/build/cgo
+└── macos
+    ├── liblnd-amd64.a
+    ├── liblnd-amd64.h
+    ├── liblnd-arm64.a
+    ├── liblnd-arm64.h
+    ├── liblnd-fat.a
+    └── liblnd.h
+```
+
+liblnd-fat.a is a universal binary for both ARM64 and AMD64. To use lnd in your
+macOS project, rename liblnd-fat.a to liblnd.a, and then drag in
+liblnd.a and liblnd.h into your Xcode project.
+
+
+## Android
+
+Make sure that ANDROID_NDK_HOME is set to the path of your Android NDK.
+
+Then, run `make android-cgo` to build the .so files.
+
+```
+mobile/build/cgo
+└── android
+    ├── arm64-v8a
+    │   ├── liblnd.h
+    │   └── liblnd.so
+    ├── armeabi-v7a
+    │   ├── liblnd.h
+    │   └── liblnd.so
+    ├── x86
+    │   ├── liblnd.h
+    │   └── liblnd.so
+    └── x86_64
+        ├── liblnd.h
+        └── liblnd.so
+```
+
+These files can then be used in your Android project by adding them to
+`app/src/main/jniLibs`. Lnd can either be accesssed in JVM via
+`System.loadLibrary("lnd")` or in C++ via CMake.
+
+## Windows
+
+[TODO]
+
+## Linux
+
+[TODO]

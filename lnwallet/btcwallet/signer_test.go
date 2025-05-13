@@ -34,7 +34,7 @@ var (
 	seedBytes, _ = hex.DecodeString("4a7611b6979ba7c4bc5c5cd2239b2973")
 
 	// firstAddress is the first address that we should get from the wallet,
-	// corresponding to the derivation path m/84'/0'/0'/0/0 (even on regtest
+	// corresponding to the derivation path m/84'/2'/0'/0/0 (even on regtest
 	// which is a special case for the BIP49/84 addresses in btcwallet).
 	firstAddress = "rltc1qlkp8904tzjyd8qwzjl550k040qz08ulaeajgcn"
 
@@ -77,33 +77,33 @@ var (
 		path: []uint32{
 			hardenedKey(84), hardenedKey(2), hardenedKey(0), 1, 0,
 		},
-		wif: "cVB5fJvzvEexUySMYMAUUem3LJQiRCCqXBkgexGJfYCZgPChDfUk",
+		wif: "cPFUoSzJsRtSzwHn4MqCHFf5L2a9Rf3go3mphn1qbMYqQqBsGSeA",
 	}, {
 		name: "m/84'/2'/0'/0/12345",
 		path: []uint32{
 			hardenedKey(84), hardenedKey(2), hardenedKey(0), 0,
 			12345,
 		},
-		wif: "cMfjrTfDZDCH5TKfVF1inPdXkTUpcrfahPCJVFah3sxsSgW2d3cm",
+		wif: "cSC2hJgB8EUSkx1pnUcmsATig2B9pjYrBULe9Lc2JzuifFPmsjKn",
 	}, {
 		name: "m/49'/2'/0'/0/0",
 		path: []uint32{
 			hardenedKey(49), hardenedKey(2), hardenedKey(0), 0, 0,
 		},
-		wif: "cPfwSUFdyGRQm7CNKoRC8oeHMvbruQSM1hvsJ1MPmUh7L3DJfXw7",
+		wif: "cPBTUYttsuETaHW1QaLAgBbaKdDBcmp3vsupdca4U8nUoENMQx4n",
 	}, {
 		name: "m/49'/2'/0'/1/0",
 		path: []uint32{
 			hardenedKey(49), hardenedKey(2), hardenedKey(0), 1, 0,
 		},
-		wif: "cPJ2c2bQyWSf9FTUJHJ2mdNZB6pmXT16F48hDNcYNxThr1yanhAL",
+		wif: "cSjVRcEZ1Zd6tfaePLpQnmUTDBdCSragye3bXPQfVUEbsgUkCLHZ",
 	}, {
 		name: "m/49'/2'/0'/1/12345",
 		path: []uint32{
 			hardenedKey(49), hardenedKey(2), hardenedKey(0), 1,
 			12345,
 		},
-		wif: "cNX5cYueBJGpHdGv4dLS7tMwQpkV4iRVrSmeoomFZ2Zd2FQY1kNH",
+		wif: "cQtEwCJxef6NsX8r9vE4bYU4SjcotCxqQHe5fEyzZUWiiHmGHeko",
 	}, {
 		name: "m/1017'/1'/0'/0/0",
 		path: []uint32{

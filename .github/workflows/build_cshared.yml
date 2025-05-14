@@ -2,9 +2,9 @@ name: Build LND Mobile RPC
 
 on:
   push:
-    branches: [cshared]
+    branches: [cgo]
   pull_request:
-    branches: [cshared]
+    branches: [cgo]
   workflow_dispatch:
 
 jobs:
@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: cshared
+          ref: cgo
 
       - name: Set up Go
         uses: actions/setup-go@v4
@@ -59,7 +59,7 @@ jobs:
           zip -r ../../mobile-build.zip .
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: mobile-build
           path: mobile-build.zip

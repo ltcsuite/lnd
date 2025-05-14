@@ -227,11 +227,15 @@ func (s *Server) AddPeer(ctx context.Context,
 	}
 
 	peer := s.cfg.NeutrinoCS.PeerByAddr(in.PeerAddrs)
-	if peer == nil {
-		return nil,
-			fmt.Errorf("could not found peer: %s", in.PeerAddrs)
+	if peer != nil {
+		s.cfg.NeutrinoCS.AddPeer(peer)
+		return &AddPeerResponse{}, nil
 	}
-	s.cfg.NeutrinoCS.AddPeer(peer)
+
+	err := s.cfg.NeutrinoCS.ConnectPeer(in.PeerAddrs)
+	if err != nil {
+		return nil, fmt.Errorf("could not add peer %s: %s", in.PeerAddrs, err)
+	}
 
 	return &AddPeerResponse{}, nil
 }

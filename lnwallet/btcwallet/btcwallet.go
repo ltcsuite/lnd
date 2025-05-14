@@ -504,6 +504,8 @@ func (b *BtcWallet) keyScopeForAccountAddr(accountName string,
 		addrKeyScope = waddrmgr.KeyScopeBIP0049Plus
 	case lnwallet.TaprootPubkey:
 		addrKeyScope = waddrmgr.KeyScopeBIP0086
+	case lnwallet.Mweb:
+		addrKeyScope = waddrmgr.KeyScopeMweb
 	default:
 		return waddrmgr.KeyScope{}, 0,
 			fmt.Errorf("unknown address type")
@@ -1148,21 +1150,23 @@ func (b *BtcWallet) ListUnspentWitness(minConfs, maxConfs int32,
 		}
 
 		addressType := lnwallet.UnknownAddressType
-		if txscript.IsPayToWitnessPubKeyHash(pkScript) {
+		switch {
+		case txscript.IsPayToPubKeyHash(pkScript):
+			addressType = lnwallet.PubKeyHash
+		case txscript.IsPayToWitnessPubKeyHash(pkScript):
 			addressType = lnwallet.WitnessPubKey
-		} else if txscript.IsPayToScriptHash(pkScript) {
+		case txscript.IsPayToScriptHash(pkScript):
 			// TODO(roasbeef): This assumes all p2sh outputs returned by the
 			// wallet are nested p2pkh. We can't check the redeem script because
 			// the ltcwallet service does not include it.
 			addressType = lnwallet.NestedWitnessPubKey
-		} else if txscript.IsPayToTaproot(pkScript) {
+		case txscript.IsPayToTaproot(pkScript):
 			addressType = lnwallet.TaprootPubkey
+		case txscript.IsMweb(pkScript):
+			addressType = lnwallet.Mweb
 		}
 
-		if addressType == lnwallet.WitnessPubKey ||
-			addressType == lnwallet.NestedWitnessPubKey ||
-			addressType == lnwallet.TaprootPubkey {
-
+		if addressType != lnwallet.UnknownAddressType {
 			txid, err := chainhash.NewHashFromStr(output.TxID)
 			if err != nil {
 				return nil, err
@@ -1355,6 +1359,10 @@ func minedTransactionsToDetails(
 		}
 		txDetail.Value = balanceDelta
 
+		if tx.Broadcast != nil {
+			txDetail.RawTx = tx.Broadcast
+		}
+
 		details = append(details, txDetail)
 	}
 
@@ -1423,6 +1431,10 @@ func unminedTransactionsToDetail(
 		return nil, err
 	}
 	txDetail.Value = balanceDelta
+
+	if summary.Broadcast != nil {
+		txDetail.RawTx = summary.Broadcast
+	}
 
 	return txDetail, nil
 }

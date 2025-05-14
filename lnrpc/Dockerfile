@@ -1,9 +1,15 @@
-FROM golang:1.21.0-bookworm
+FROM swift:jammy
 
 RUN apt-get update && apt-get install -y \
   git \
-  protobuf-compiler='3.21.12*' \
+  protobuf-compiler \
   clang-format='1:14.0*'
+
+RUN apt-get install -y wget \
+    && wget -c https://golang.org/dl/go1.21.0.linux-arm64.tar.gz -O - \
+    | tar -xz -C /usr/local
+ENV GOPATH=/go
+ENV PATH=$PATH:/usr/local/go/bin:/go/bin
 
 # We don't want any default values for these variables to make sure they're
 # explicitly provided by parsing the go.mod file. Otherwise we might forget to
@@ -28,5 +34,11 @@ RUN cd /tmp \
   && chmod -R 777 /tmp/build/
 
 WORKDIR /build
+
+RUN git clone https://github.com/apple/swift-protobuf.git \
+&& cd swift-protobuf \
+&& git checkout $(git describe --tags --abbrev=0) \
+&& swift build -c release \
+&& mv .build/release/protoc-gen-swift /bin
 
 CMD ["/bin/bash", "/build/lnrpc/gen_protos.sh"]

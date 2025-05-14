@@ -1,0 +1,195 @@
+# Start litecoind
+exec mkdir $WORK/litecoin
+exec litecoind -datadir=$WORK/litecoin -regtest -port=$P2P_PORT &
+litecoin-cli -rpcwait createwallet test
+
+# Start lnd
+exec lnd &
+openRpcConn $WORK/lnd 0
+createWallet
+openRpcConn $WORK/lnd 1
+
+# Generate pre-MWEB blocks
+generate 431
+
+# Send pegin transaction
+litecoin-cli getnewaddress '' mweb
+getResult LITECOIND_MWEB_ADDR_1
+litecoin-cli sendtoaddress $LITECOIND_MWEB_ADDR_1 1
+generate 1
+
+# Send to lnd
+newAddress mweb
+getResult LND_MWEB_ADDR_1
+litecoin-cli sendtoaddress $LND_MWEB_ADDR_1 100
+generate 1
+
+# Verify that lnd received coins
+waitForUtxos 1
+checkUtxo 0 $LND_MWEB_ADDR_1 100
+checkTxnHistory 0 '' 100 0 $LND_MWEB_ADDR_1
+
+# Send mweb within lnd wallet
+newAddress mweb
+getResult LND_MWEB_ADDR_2
+sendCoins $LND_MWEB_ADDR_2 50
+getResult TXID
+generate 1
+waitForUtxos 2
+checkUtxo 0 $LND_MWEB_ADDR_1 49.999961
+checkUtxo 1 $LND_MWEB_ADDR_2 50
+checkTxnHistory 0 $TXID -0.000039 0.000039 $LND_MWEB_ADDR_1,$LND_MWEB_ADDR_2
+
+# Send pegout within lnd wallet
+newAddress p2wkh
+getResult LND_P2WKH_ADDR_1
+sendCoins $LND_P2WKH_ADDR_1 50
+getResult TXID
+checkTxnHistory 0 $TXID -50.000084 0.000084 $LND_P2WKH_ADDR_1,$LND_MWEB_ADDR_2
+generate 1
+waitForUtxos 1
+checkUtxo 0 $LND_MWEB_ADDR_2 49.999877
+checkTxnHistory 0 '' 50 0 $LND_P2WKH_ADDR_1
+checkTxnHistory 1 $TXID -50.000084 0.000084 $LND_P2WKH_ADDR_1,$LND_MWEB_ADDR_2
+generate 4
+waitForUtxos 1 5
+generate 1
+waitForUtxos 2 6
+checkUtxo 0 $LND_MWEB_ADDR_2 49.999877
+checkUtxo 1 $LND_P2WKH_ADDR_1 50
+
+# Send pegin within lnd wallet
+newAddress mweb
+getResult LND_MWEB_ADDR_3
+sendCoins $LND_MWEB_ADDR_3 50
+getResult TXID
+generate 1
+waitForUtxos 2
+checkUtxo 0 $LND_MWEB_ADDR_3 49.999512
+checkUtxo 1 $LND_MWEB_ADDR_3 50
+checkTxnHistory 0 $TXID -0.000365 0.000365 $LND_MWEB_ADDR_3,$LND_MWEB_ADDR_3
+
+# Send mweb to litecoind
+newAddress mweb
+getResult LND_MWEB_ADDR_4
+litecoin-cli getnewaddress '' mweb
+getResult LITECOIND_MWEB_ADDR_2
+sendCoins $LITECOIND_MWEB_ADDR_2 50
+getResult TXID
+checkTxnHistory 0 $TXID -50.000039 0.000039 $LITECOIND_MWEB_ADDR_2,$LND_MWEB_ADDR_4
+waitForUtxos 1
+checkUtxo 0 $LND_MWEB_ADDR_4 49.999473
+generate 1
+litecoin-cli listunspent 0 1
+getResult RESULT
+checkResult $TXID RESULT 0 txid
+checkResult 50 RESULT 0 amount
+checkResult $LITECOIND_MWEB_ADDR_2 RESULT 0 address
+
+# Pegout to litecoind
+newAddress mweb
+getResult LND_MWEB_ADDR_5
+litecoin-cli getnewaddress
+getResult LITECOIND_P2WKH_ADDR_1
+sendCoins $LITECOIND_P2WKH_ADDR_1 25
+getResult TXID
+checkTxnHistory 0 $TXID -25.000084 0.000084 $LITECOIND_P2WKH_ADDR_1,$LND_MWEB_ADDR_5
+generate 1
+waitForUtxos 1
+checkUtxo 0 $LND_MWEB_ADDR_5 24.999389
+litecoin-cli listunspent 0 1
+stdout ^\[\n]\n$
+generate 5
+litecoin-cli listunspent 0 6
+getResult RESULT
+checkResult 25 RESULT 0 amount
+checkResult $LITECOIND_P2WKH_ADDR_1 RESULT 0 address
+
+# Complex pegin-pegout transaction
+newAddress mweb
+getResult LND_MWEB_ADDR_6
+newAddress p2wkh
+getResult LND_P2WKH_ADDR_2
+litecoin-cli sendtoaddress $LND_P2WKH_ADDR_2 25
+generate 6
+waitForUtxos 1 6
+checkUtxo 0 $LND_P2WKH_ADDR_2 25
+litecoin-cli getnewaddress
+getResult LITECOIND_P2WKH_ADDR_2
+sendCoins $LITECOIND_P2WKH_ADDR_2 25
+getResult TXID
+generate 1
+waitForUtxos 1
+checkUtxo 0 $LND_MWEB_ADDR_6 24.998979
+checkTxnHistory 0 $TXID -25.00041 0.00041 $LITECOIND_P2WKH_ADDR_2,$LND_MWEB_ADDR_6
+litecoin-cli listunspent 0 1
+stdout ^\[\n]\n$
+generate 5
+litecoin-cli listunspent 0 6
+getResult RESULT
+checkResult 25 RESULT 0 amount
+checkResult $LITECOIND_P2WKH_ADDR_2 RESULT 0 address
+
+# Many inputs/outputs
+newAddress mweb
+getResult LND_MWEB_ADDR_7
+newAddress p2wkh
+getResult LND_P2WKH_ADDR_3
+litecoin-cli sendtoaddress $LND_MWEB_ADDR_7 10
+litecoin-cli sendtoaddress $LND_MWEB_ADDR_7 10
+litecoin-cli sendtoaddress $LND_MWEB_ADDR_7 10
+litecoin-cli sendtoaddress $LND_MWEB_ADDR_7 10
+litecoin-cli sendtoaddress $LND_MWEB_ADDR_7 10
+litecoin-cli sendtoaddress $LND_MWEB_ADDR_7 10
+litecoin-cli sendtoaddress $LND_MWEB_ADDR_7 10
+litecoin-cli sendtoaddress $LND_MWEB_ADDR_7 10
+litecoin-cli sendtoaddress $LND_MWEB_ADDR_7 10
+litecoin-cli sendtoaddress $LND_MWEB_ADDR_7 10
+litecoin-cli sendtoaddress $LND_P2WKH_ADDR_3 20
+litecoin-cli sendtoaddress $LND_P2WKH_ADDR_3 20
+litecoin-cli sendtoaddress $LND_P2WKH_ADDR_3 20
+litecoin-cli sendtoaddress $LND_P2WKH_ADDR_3 20
+litecoin-cli sendtoaddress $LND_P2WKH_ADDR_3 20
+litecoin-cli sendtoaddress $LND_P2WKH_ADDR_3 20
+litecoin-cli sendtoaddress $LND_P2WKH_ADDR_3 20
+litecoin-cli sendtoaddress $LND_P2WKH_ADDR_3 20
+litecoin-cli sendtoaddress $LND_P2WKH_ADDR_3 20
+litecoin-cli sendtoaddress $LND_P2WKH_ADDR_3 20
+generate 6
+waitForUtxos 20 6
+checkUtxo 0 $LND_MWEB_ADDR_7 10
+checkUtxo 1 $LND_MWEB_ADDR_7 10
+checkUtxo 2 $LND_MWEB_ADDR_7 10
+checkUtxo 3 $LND_MWEB_ADDR_7 10
+checkUtxo 4 $LND_MWEB_ADDR_7 10
+checkUtxo 5 $LND_MWEB_ADDR_7 10
+checkUtxo 6 $LND_MWEB_ADDR_7 10
+checkUtxo 7 $LND_MWEB_ADDR_7 10
+checkUtxo 8 $LND_MWEB_ADDR_7 10
+checkUtxo 9 $LND_MWEB_ADDR_7 10
+checkUtxo 10 $LND_P2WKH_ADDR_3 20
+checkUtxo 11 $LND_P2WKH_ADDR_3 20
+checkUtxo 12 $LND_P2WKH_ADDR_3 20
+checkUtxo 13 $LND_P2WKH_ADDR_3 20
+checkUtxo 14 $LND_P2WKH_ADDR_3 20
+checkUtxo 15 $LND_P2WKH_ADDR_3 20
+checkUtxo 16 $LND_P2WKH_ADDR_3 20
+checkUtxo 17 $LND_P2WKH_ADDR_3 20
+checkUtxo 18 $LND_P2WKH_ADDR_3 20
+checkUtxo 19 $LND_P2WKH_ADDR_3 20
+litecoin-cli getnewaddress '' mweb
+getResult LITECOIND_MWEB_ADDR_3
+sendCoins $LITECOIND_MWEB_ADDR_3 320
+getResult TXID
+generate 1
+waitForUtxos 1
+checkUtxo 0 $LND_MWEB_ADDR_7 4.997384
+checkTxnHistory 0 $TXID -320.001595 0.001595 $LITECOIND_MWEB_ADDR_3,$LND_MWEB_ADDR_7
+litecoin-cli listunspent 0 1
+getResult RESULT
+checkResult $TXID RESULT 0 txid
+checkResult 320 RESULT 0 amount
+checkResult $LITECOIND_MWEB_ADDR_3 RESULT 0 address
+
+# Stress test
+stressTest 100

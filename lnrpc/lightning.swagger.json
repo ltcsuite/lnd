@@ -2049,7 +2049,9 @@
               "UNUSED_WITNESS_PUBKEY_HASH",
               "UNUSED_NESTED_PUBKEY_HASH",
               "TAPROOT_PUBKEY",
-              "UNUSED_TAPROOT_PUBKEY"
+              "UNUSED_TAPROOT_PUBKEY",
+              "MWEB",
+              "UNUSED_MWEB"
             ],
             "default": "WITNESS_PUBKEY_HASH"
           },
@@ -3201,10 +3203,12 @@
         "UNUSED_WITNESS_PUBKEY_HASH",
         "UNUSED_NESTED_PUBKEY_HASH",
         "TAPROOT_PUBKEY",
-        "UNUSED_TAPROOT_PUBKEY"
+        "UNUSED_TAPROOT_PUBKEY",
+        "MWEB",
+        "UNUSED_MWEB"
       ],
       "default": "WITNESS_PUBKEY_HASH",
-      "description": "- `p2wkh`: Pay to witness key hash (`WITNESS_PUBKEY_HASH` = 0)\n- `np2wkh`: Pay to nested witness key hash (`NESTED_PUBKEY_HASH` = 1)\n- `p2tr`: Pay to taproot pubkey (`TAPROOT_PUBKEY` = 4)",
+      "description": "- `p2wkh`: Pay to witness key hash (`WITNESS_PUBKEY_HASH` = 0)\n- `np2wkh`: Pay to nested witness key hash (`NESTED_PUBKEY_HASH` = 1)\n- `p2tr`: Pay to taproot pubkey (`TAPROOT_PUBKEY` = 4)\n- `mweb`: MWEB (`MWEB` = 6)",
       "title": "`AddressType` has to be one of:"
     },
     "lnrpcAliasMap": {
@@ -5995,7 +5999,10 @@
         "SCRIPT_TYPE_NULLDATA",
         "SCRIPT_TYPE_NON_STANDARD",
         "SCRIPT_TYPE_WITNESS_UNKNOWN",
-        "SCRIPT_TYPE_WITNESS_V1_TAPROOT"
+        "SCRIPT_TYPE_WITNESS_V1_TAPROOT",
+        "SCRIPT_TYPE_WITNESS_MWEB_HOGADDR",
+        "SCRIPT_TYPE_WITNESS_MWEB_PEGIN",
+        "SCRIPT_TYPE_MWEB"
       ],
       "default": "SCRIPT_TYPE_PUBKEY_HASH"
     },

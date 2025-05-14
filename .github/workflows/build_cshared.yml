@@ -43,15 +43,27 @@ jobs:
       - name: Generate mobile RPC
         run: make mobile-rpc
 
-      - name: Add required header and build CGO
+      - name: Patch Makefile and build CGO
         run: |
-          # Create temporary file with header
-          echo '#include <stdint.h>' > temp_header
-          # Prepend header to the generated file
-          cat temp_header mobile/cgo_utils_generated.go > mobile/cgo_utils_generated.go.new
-          mv mobile/cgo_utils_generated.go.new mobile/cgo_utils_generated.go
-          # Run CGO build
-          make cgo
+          # Add required headers
+          find mobile -name "*.go" | xargs grep -l "/\*" | while read file; do
+            if ! grep -q "#include <stdint.h>" "$file"; then
+              if grep -q "#include" "$file"; then
+                sed -i '/#include/a #include <stdint.h>' "$file"
+              else
+                sed -i '/\/\*/a #include <stdint.h>' "$file"
+              fi
+            fi
+          done
+
+          # Patch the Makefile to use a relative path
+          sed -i 's|MOBILE_BUILD_DIR :=${GOPATH}/src/$(MOBILE_PKG)/build|MOBILE_BUILD_DIR :=./mobile/build|' Makefile
+
+          # Create the directory
+          mkdir -p ./mobile/build/cgo
+
+          # Build with the modified Makefile
+          CGO_ENABLED=1 make cgo
 
       - name: Archive mobile build
         run: |

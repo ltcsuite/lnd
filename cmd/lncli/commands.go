@@ -207,7 +207,7 @@ func newAddress(ctx *cli.Context) error {
 var estimateFeeCommand = cli.Command{
 	Name:      "estimatefee",
 	Category:  "On-chain",
-	Usage:     "Get fee estimates for sending bitcoin on-chain to multiple addresses.",
+	Usage:     "Get fee estimates for sending litecoin on-chain to multiple addresses.",
 	ArgsUsage: "send-json-string [--conf_target=N]",
 	Description: `
 	Get fee estimates for sending a transaction paying the specified amount(s) to the passed address(es).
@@ -258,10 +258,10 @@ var txLabelFlag = cli.StringFlag{
 var sendCoinsCommand = cli.Command{
 	Name:      "sendcoins",
 	Category:  "On-chain",
-	Usage:     "Send bitcoin on-chain to an address.",
+	Usage:     "Send litecoin on-chain to an address.",
 	ArgsUsage: "addr amt",
 	Description: `
-	Send amt coins in satoshis to the base58 or bech32 encoded bitcoin address addr.
+	Send amt coins in satoshis to the base58 or bech32 encoded litecoin address addr.
 
 	Fees used when sending the transaction can be specified via the --conf_target, or
 	--sat_per_vbyte optional flags.
@@ -271,19 +271,20 @@ var sendCoinsCommand = cli.Command{
 	Flags: []cli.Flag{
 		cli.StringFlag{
 			Name: "addr",
-			Usage: "the base58 or bech32 encoded bitcoin address to send coins " +
+			Usage: "the base58 or bech32 encoded litecoin address to send coins " +
 				"to on-chain",
 		},
 		cli.BoolFlag{
 			Name: "sweepall",
-			Usage: "if set, then the amount field will be ignored, " +
-				"and the wallet will attempt to sweep all " +
-				"outputs within the wallet to the target " +
-				"address",
+			Usage: "if set, then the amount field should be " +
+				"unset. This indicates that the wallet will " +
+				"attempt to sweep all outputs within the " +
+				"wallet or all funds in select utxos (when " +
+				"supplied) to the target address",
 		},
 		cli.Int64Flag{
 			Name:  "amt",
-			Usage: "the number of bitcoin denominated in satoshis to send",
+			Usage: "the number of litecoin denominated in satoshis to send",
 		},
 		cli.Int64Flag{
 			Name: "conf_target",
@@ -317,6 +318,17 @@ var sendCoinsCommand = cli.Command{
 				"terminal avoid breaking existing shell " +
 				"scripts",
 		},
+		cli.StringSliceFlag{
+			Name: "utxo",
+			Usage: "a utxo specified as outpoint(tx:idx) which " +
+				"will be used as input for the transaction. " +
+				"This flag can be repeatedly used to specify " +
+				"multiple utxos as inputs. The selected " +
+				"utxos can either be entirely spent by " +
+				"specifying the sweepall flag or a specified " +
+				"amount can be spent in the utxos through " +
+				"the amt flag",
+		},
 		txLabelFlag,
 	},
 	Action: actionDecorator(sendCoins),
@@ -324,9 +336,10 @@ var sendCoinsCommand = cli.Command{
 
 func sendCoins(ctx *cli.Context) error {
 	var (
-		addr string
-		amt  int64
-		err  error
+		addr      string
+		amt       int64
+		err       error
+		outpoints []*lnrpc.OutPoint
 	)
 	ctxc := getContext()
 	args := ctx.Args()
@@ -379,6 +392,15 @@ func sendCoins(ctx *cli.Context) error {
 			"sweep all coins out of the wallet")
 	}
 
+	if ctx.IsSet("utxo") {
+		utxos := ctx.StringSlice("utxo")
+
+		outpoints, err = UtxosToOutpoints(utxos)
+		if err != nil {
+			return fmt.Errorf("unable to decode utxos: %w", err)
+		}
+	}
+
 	// Ask for confirmation if we're on an actual terminal and the output is
 	// not being redirected to another command. This prevents existing shell
 	// scripts from breaking.
@@ -405,6 +427,7 @@ func sendCoins(ctx *cli.Context) error {
 		Label:            ctx.String(txLabelFlag.Name),
 		MinConfs:         minConfs,
 		SpendUnconfirmed: minConfs == 0,
+		Outpoints:        outpoints,
 	}
 	txid, err := client.SendCoins(ctxc, req)
 	if err != nil {
@@ -539,7 +562,7 @@ func listUnspent(ctx *cli.Context) error {
 var sendManyCommand = cli.Command{
 	Name:      "sendmany",
 	Category:  "On-chain",
-	Usage:     "Send bitcoin on-chain to multiple addresses.",
+	Usage:     "Send litecoin on-chain to multiple addresses.",
 	ArgsUsage: "send-json-string [--conf_target=N] [--sat_per_vbyte=P]",
 	Description: `
 	Create and broadcast a transaction paying the specified amount(s) to the passed address(es).
@@ -2052,7 +2075,7 @@ var updateChannelPolicyCommand = cli.Command{
 		"[--max_htlc_msat=N] [channel_point]",
 	Description: `
 	Updates the channel policy for all channels, or just a particular
-        channel identified by its channel point. The update will be committed, 
+        channel identified by its channel point. The update will be committed,
 	and broadcast to the rest of the network within the next batch. Channel
         points are encoded as: funding_txid:output_index
 	`,
@@ -2486,7 +2509,7 @@ var verifyChanBackupCommand = cli.Command{
 
        * A packed multi-channel SCB, which couples several individual
 	 static channel backups in single blob.
-	
+
        * A file path which points to a packed single-channel backup within a
          file, using the same format that lnd does in its channel.backup file.
 

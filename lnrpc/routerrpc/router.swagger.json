@@ -78,7 +78,7 @@
         "parameters": [
           {
             "name": "body",
-            "description": " (streaming inputs)",
+            "description": "*\nForwardHtlcInterceptResponse enables the caller to resolve a previously hold\nforward. The caller can choose either to:\n- `Resume`: Execute the default behavior (usually forward).\n- `Reject`: Fail the htlc backwards.\n- `Settle`: Settle this htlc with a given preimage. (streaming inputs)",
             "in": "body",
             "required": true,
             "schema": {
@@ -1072,14 +1072,11 @@
     "protobufAny": {
       "type": "object",
       "properties": {
-        "type_url": {
+        "@type": {
           "type": "string"
-        },
-        "value": {
-          "type": "string",
-          "format": "byte"
         }
-      }
+      },
+      "additionalProperties": {}
     },
     "routerrpcAprioriParameters": {
       "type": "object",

@@ -712,8 +712,8 @@ func (w *WalletKit) SendOutputs(ctx context.Context,
 	// requirement, we can request that the wallet attempts to create this
 	// transaction.
 	tx, err := w.cfg.Wallet.SendOutputs(
-		outputsToCreate, chainfee.SatPerKWeight(req.SatPerKw), minConfs,
-		label,
+		nil, outputsToCreate, chainfee.SatPerKWeight(req.SatPerKw),
+		minConfs, label,
 	)
 	if err != nil {
 		return nil, err
@@ -1109,6 +1109,7 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 			}
 
 			pkScript, err := txscript.PayToAddrScript(addr)
+
 			if err != nil {
 				return nil, fmt.Errorf("error getting pk "+
 					"script for address %s: %v", addrStr,

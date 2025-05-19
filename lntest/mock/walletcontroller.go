@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ltcsuite/lnd/fn"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/ltcd/btcec/v2"
@@ -32,6 +33,10 @@ type WalletController struct {
 	index                 uint32
 	Utxos                 []*lnwallet.Utxo
 }
+
+// A compile time check to ensure this mocked WalletController implements the
+// WalletController.
+var _ lnwallet.WalletController = (*WalletController)(nil)
 
 // BackEnd returns "mock" to signify a mock wallet controller.
 func (w *WalletController) BackEnd() string {
@@ -140,14 +145,15 @@ func (w *WalletController) ImportTaprootScript(waddrmgr.KeyScope,
 }
 
 // SendOutputs currently returns dummy values.
-func (w *WalletController) SendOutputs([]*wire.TxOut,
-	chainfee.SatPerKWeight, int32, string) (*wire.MsgTx, error) {
+func (w *WalletController) SendOutputs(fn.Set[wire.OutPoint], []*wire.TxOut,
+	chainfee.SatPerKWeight, int32, string) (
+	*wire.MsgTx, error) {
 
 	return nil, nil
 }
 
 // CreateSimpleTx currently returns dummy values.
-func (w *WalletController) CreateSimpleTx([]*wire.TxOut,
+func (w *WalletController) CreateSimpleTx(fn.Set[wire.OutPoint], []*wire.TxOut,
 	chainfee.SatPerKWeight, int32, bool) (*txauthor.AuthoredTx, error) {
 
 	return nil, nil

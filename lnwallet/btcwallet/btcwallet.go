@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ltcsuite/lnd/blockcache"
+	"github.com/ltcsuite/lnd/fn"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/kvdb"
@@ -960,9 +961,9 @@ func (b *BtcWallet) ImportTaprootScript(scope waddrmgr.KeyScope,
 // NOTE: This method requires the global coin selection lock to be held.
 //
 // This is a part of the WalletController interface.
-func (b *BtcWallet) SendOutputs(outputs []*wire.TxOut,
-	feeRate chainfee.SatPerKWeight, minConfs int32,
-	label string) (*wire.MsgTx, error) {
+func (b *BtcWallet) SendOutputs(inputs fn.Set[wire.OutPoint],
+	outputs []*wire.TxOut, feeRate chainfee.SatPerKWeight,
+	minConfs int32, label string) (*wire.MsgTx, error) {
 
 	// Convert our fee rate from sat/kw to sat/kb since it's required by
 	// SendOutputs.
@@ -976,6 +977,14 @@ func (b *BtcWallet) SendOutputs(outputs []*wire.TxOut,
 	// Sanity check minConfs.
 	if minConfs < 0 {
 		return nil, lnwallet.ErrInvalidMinconf
+	}
+
+	// Use selected UTXOs if specified, otherwise default selection.
+	if len(inputs) != 0 {
+		return b.wallet.SendOutputsWithInput(
+			outputs, nil, defaultAccount, minConfs, feeSatPerKB,
+			b.cfg.CoinSelectionStrategy, label, inputs.ToSlice(),
+		)
 	}
 
 	return b.wallet.SendOutputs(
@@ -997,8 +1006,8 @@ func (b *BtcWallet) SendOutputs(outputs []*wire.TxOut,
 // NOTE: This method requires the global coin selection lock to be held.
 //
 // This is a part of the WalletController interface.
-func (b *BtcWallet) CreateSimpleTx(outputs []*wire.TxOut,
-	feeRate chainfee.SatPerKWeight, minConfs int32,
+func (b *BtcWallet) CreateSimpleTx(inputs fn.Set[wire.OutPoint],
+	outputs []*wire.TxOut, feeRate chainfee.SatPerKWeight, minConfs int32,
 	dryRun bool) (*txauthor.AuthoredTx, error) {
 
 	// The fee rate is passed in using units of sat/kw, so we'll convert
@@ -1029,9 +1038,12 @@ func (b *BtcWallet) CreateSimpleTx(outputs []*wire.TxOut,
 		}
 	}
 
+	// Add the optional inputs to the transaction.
+	optFunc := wallet.WithCustomSelectUtxos(inputs.ToSlice())
+
 	return b.wallet.CreateSimpleTx(
 		nil, defaultAccount, outputs, minConfs, feeSatPerKB,
-		b.cfg.CoinSelectionStrategy, dryRun,
+		b.cfg.CoinSelectionStrategy, dryRun, []wallet.TxCreateOption{optFunc}...,
 	)
 }
 

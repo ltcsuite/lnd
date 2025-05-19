@@ -9,7 +9,6 @@ require (
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1
 	github.com/go-errors/errors v1.0.1
 	github.com/golang-migrate/migrate/v4 v4.16.1
-	github.com/golang/protobuf v1.5.3
 	github.com/gorilla/websocket v1.4.2
 	github.com/grpc-ecosystem/go-grpc-middleware v1.3.0
 	github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0
@@ -25,21 +24,21 @@ require (
 	github.com/kkdai/bstream v1.0.0
 	github.com/lib/pq v1.10.7
 	github.com/ltcsuite/lightning-onion v1.2.1
-	github.com/ltcsuite/lnd/cert v1.1.0
+	github.com/ltcsuite/lnd/cert v1.2.2
 	github.com/ltcsuite/lnd/clock v1.1.0
-	github.com/ltcsuite/lnd/fn v0.0.0-00010101000000-000000000000
+	github.com/ltcsuite/lnd/fn v1.0.0
 	github.com/ltcsuite/lnd/healthcheck v1.2.0
-	github.com/ltcsuite/lnd/kvdb v0.0.0-00010101000000-000000000000
+	github.com/ltcsuite/lnd/kvdb v1.4.4
 	github.com/ltcsuite/lnd/queue v1.1.0
 	github.com/ltcsuite/lnd/ticker v1.1.0
-	github.com/ltcsuite/lnd/tlv v0.0.0-20240222214433-454d35886119
+	github.com/ltcsuite/lnd/tlv v1.1.1
 	github.com/ltcsuite/lnd/tor v0.0.0-20240222214433-454d35886119
 	github.com/ltcsuite/ltcd v0.23.6
 	github.com/ltcsuite/ltcd/btcec/v2 v2.3.2
 	github.com/ltcsuite/ltcd/chaincfg/chainhash v1.0.2
 	github.com/ltcsuite/ltcd/ltcutil v1.1.4
 	github.com/ltcsuite/ltcd/ltcutil/psbt v1.1.8
-	github.com/ltcsuite/ltcwallet v0.16.9
+	github.com/ltcsuite/ltcwallet v0.16.10
 	github.com/ltcsuite/ltcwallet/wallet/txauthor v1.3.2
 	github.com/ltcsuite/ltcwallet/wallet/txrules v1.2.0
 	github.com/ltcsuite/ltcwallet/walletdb v1.3.5
@@ -101,6 +100,7 @@ require (
 	github.com/go-sql-driver/mysql v1.7.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang-jwt/jwt/v4 v4.4.2 // indirect
+	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/google/btree v1.0.1 // indirect
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
@@ -216,13 +216,5 @@ replace google.golang.org/protobuf => github.com/lightninglabs/protobuf-go-hex-d
 go 1.23.0
 
 toolchain go1.24.2
-
-replace github.com/ltcsuite/lnd/kvdb => ./kvdb
-
-replace github.com/ltcsuite/lnd/cert => ./cert
-
-replace github.com/ltcsuite/lnd/tlv => ./tlv
-
-replace github.com/ltcsuite/lnd/fn => ./fn
 
 retract v0.0.2

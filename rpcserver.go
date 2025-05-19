@@ -31,6 +31,7 @@ import (
 	"github.com/ltcsuite/lnd/contractcourt"
 	"github.com/ltcsuite/lnd/discovery"
 	"github.com/ltcsuite/lnd/feature"
+	"github.com/ltcsuite/lnd/fn"
 	"github.com/ltcsuite/lnd/funding"
 	"github.com/ltcsuite/lnd/htlcswitch"
 	"github.com/ltcsuite/lnd/htlcswitch/hop"
@@ -1182,7 +1183,7 @@ func (r *rpcServer) EstimateFee(ctx context.Context,
 	wallet := r.server.cc.Wallet
 	err = wallet.WithCoinSelectLock(func() error {
 		tx, err = wallet.CreateSimpleTx(
-			nil, outputs, feePerKw, minConfs, true
+			nil, outputs, feePerKw, minConfs, true,
 		)
 		return err
 	})
@@ -1311,7 +1312,7 @@ func (r *rpcServer) SendCoins(ctx context.Context,
 		// pay to the change address created above if we needed to
 		// reserve any value, the rest will go to targetAddr.
 		sweepTxPkg, err := sweep.CraftSweepAllTx(
-			feePerKw,  uint32(bestHeight), nil, targetAddr, wallet,
+			feePerKw, uint32(bestHeight), nil, targetAddr, wallet,
 			wallet, wallet.WalletController, r.server.cc.FeeEstimator,
 			r.server.cc.Signer, minConfs, selectOutpoints,
 		)

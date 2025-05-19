@@ -299,7 +299,7 @@ func TestCraftSweepAllTxCoinSelectFail(t *testing.T) {
 
 	_, err := CraftSweepAllTx(
 		0, 10, nil, nil, coinSelectLocker, utxoSource, utxoLocker,
-		nil, 0, nil,
+		nil, nil, 0, nil,
 	)
 
 	// Since we instructed the coin select locker to fail above, we should

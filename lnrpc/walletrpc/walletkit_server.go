@@ -1109,6 +1109,7 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 			}
 
 			pkScript, err := txscript.PayToAddrScript(addr)
+
 			if err != nil {
 				return nil, fmt.Errorf("error getting pk "+
 					"script for address %s: %v", addrStr,

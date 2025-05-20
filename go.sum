@@ -481,10 +481,10 @@ github.com/ltcsuite/ltcd/ltcutil v1.1.4 h1:EctDzQ05lYnxiinm2B0aTZJ6j4iUlZ2fJl47d
 github.com/ltcsuite/ltcd/ltcutil v1.1.4/go.mod h1:KXoblljYWsltanUCzZ1bz1IdP972+s7/Rw/jPzvA7GQ=
 github.com/ltcsuite/ltcd/ltcutil/psbt v1.1.8 h1:ereqvVwoGYk2jSCPK2F3y1xCtB0J3vEPaDqJiNrg97M=
 github.com/ltcsuite/ltcd/ltcutil/psbt v1.1.8/go.mod h1:AE6FS/qnp86cHJjCywLtkDaQaUGAS0nUqmU7x2eOkko=
-github.com/ltcsuite/ltcwallet v0.16.10 h1:JDB4ptVxCRC+8/JlMwtvLsPO7XZyQerssGZhhzhjulc=
-github.com/ltcsuite/ltcwallet v0.16.10/go.mod h1:c0YSo9GIzCCmF/g6KQHIDCUPsOlZpRdyF0JCnSAN1Zk=
-github.com/ltcsuite/ltcwallet/wallet/txauthor v1.3.2 h1:gKdoj4mxsFrSr8ezOzerzL04KjNbHcqts2yAKu1Y8nU=
-github.com/ltcsuite/ltcwallet/wallet/txauthor v1.3.2/go.mod h1:oaVBOuMXpWMq4tNWLElK7Z4epvIJZ6XF93An1apEYUE=
+github.com/ltcsuite/ltcwallet v0.16.11 h1:I4mhMRCA0Y12J8SFyPqOxC00B8B5X9xCdzFoiaGeUNc=
+github.com/ltcsuite/ltcwallet v0.16.11/go.mod h1:Y0sjg7h+1LcZ5pvShdYpV/H+Ec+I+IbxazioRYtkR2k=
+github.com/ltcsuite/ltcwallet/wallet/txauthor v1.3.3 h1:/aXO0OJveDJTaQeZxvcqwdnl1YPNlyRxrf4LXXog8/A=
+github.com/ltcsuite/ltcwallet/wallet/txauthor v1.3.3/go.mod h1:qQKbG7I4D3T7kChqQ/OSe+uF32v5OqzuPjrrzklTbaQ=
 github.com/ltcsuite/ltcwallet/wallet/txrules v1.2.0 h1:P6H9zsMpBBuGOsp9lnil7XfPaPujDqrbcmkqvDdiSiI=
 github.com/ltcsuite/ltcwallet/wallet/txrules v1.2.0/go.mod h1:lmA2Ozxvbr2M8Mqb6ugOv5/FQT6x2Qnwg3yT/NiWEks=
 github.com/ltcsuite/ltcwallet/wallet/txsizes v1.2.3 h1:Yk0R/rf+374uFflNGBhT1Q9f6rN2oqJePckkNgkqVnk=

@@ -6,8 +6,12 @@ RUN apt-get update && apt-get install -y \
   clang-format='1:14.0*'
 
 RUN apt-get install -y wget \
-    && wget -c https://golang.org/dl/go1.21.0.linux-arm64.tar.gz -O - \
-    | tar -xz -C /usr/local
+    && ARCH=$(dpkg --print-architecture) \
+    && if [ "$ARCH" = "arm64" ]; then \
+         wget -c https://golang.org/dl/go1.24.2.linux-arm64.tar.gz -O - | tar -xz -C /usr/local; \
+       else \
+         wget -c https://golang.org/dl/go1.24.2.linux-amd64.tar.gz -O - | tar -xz -C /usr/local; \
+       fi
 ENV GOPATH=/go
 ENV PATH=$PATH:/usr/local/go/bin:/go/bin
 

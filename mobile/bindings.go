@@ -1,7 +1,7 @@
 //go:build mobile
 // +build mobile
 
-package lndmobile
+package main
 
 import (
 	"errors"

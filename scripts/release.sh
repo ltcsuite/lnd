@@ -157,7 +157,7 @@ function build_release() {
   tar -xf "${package_source}.tar" -C ${package_source}
   rm "${package_source}.tar"
   reproducible_tar_gzip ${package_source}
-  mv "${package_source}.tar.gz" "${package_source}-$tag.tar.gz" 
+  mv "${package_source}.tar.gz" "${package_source}-$tag.tar.gz"
 
   for i in $sys; do
     os=$(echo $i | cut -f1 -d-)
@@ -177,13 +177,13 @@ function build_release() {
     pushd "${dir}"
 
     green " - Building: ${os} ${arch} ${arm} with build tags '${buildtags}'"
-    env CGO_ENABLED=0 GOOS=$os GOARCH=$arch GOARM=$arm go build -v -trimpath -ldflags="${ldflags}" -tags="${buildtags}" ${PKG}/cmd/lnd
-    env CGO_ENABLED=0 GOOS=$os GOARCH=$arch GOARM=$arm go build -v -trimpath -ldflags="${ldflags}" -tags="${buildtags}" ${PKG}/cmd/lncli
+    env CGO_ENABLED=1 GOOS=$os GOARCH=$arch GOARM=$arm go build -v -trimpath -ldflags="${ldflags}" -tags="${buildtags}" ${PKG}/cmd/lnd
+    env CGO_ENABLED=1 GOOS=$os GOARCH=$arch GOARM=$arm go build -v -trimpath -ldflags="${ldflags}" -tags="${buildtags}" ${PKG}/cmd/lncli
     popd
 
     # Add the hashes for the individual binaries as well for easy verification
     # of a single installed binary.
-    shasum -a 256 "${dir}/"* >> "manifest-$tag.txt" 
+    shasum -a 256 "${dir}/"* >> "manifest-$tag.txt"
 
     if [[ $os == "windows" ]]; then
       reproducible_zip "${dir}"

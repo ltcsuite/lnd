@@ -16,8 +16,15 @@ GOACC_BIN := $(GO_BIN)/go-acc
 MOBILE_BUILD_DIR :=${GOPATH}/src/$(MOBILE_PKG)/build
 IOS_BUILD_DIR := $(MOBILE_BUILD_DIR)/ios
 IOS_BUILD := $(IOS_BUILD_DIR)/Lndmobile.xcframework
+
 ANDROID_BUILD_DIR := $(MOBILE_BUILD_DIR)/android
 ANDROID_BUILD := $(ANDROID_BUILD_DIR)/Lndmobile.aar
+
+CGO_BUILD_DIR := $(MOBILE_BUILD_DIR)/cgo
+CGO_ANDROID_BUILD_DIR := $(CGO_BUILD_DIR)/android
+ANDROID_CLANG_FINDER = $(PWD)/mobile/ndk-clang-finder.sh
+CGO_IOS_BUILD_DIR := $(CGO_BUILD_DIR)/ios
+CGO_MACOS_BUILD_DIR := $(CGO_BUILD_DIR)/macos
 
 COMMIT := $(shell git describe --tags --dirty)
 
@@ -132,7 +139,7 @@ docker-release:
 
 	# Run the actual compilation inside the docker image. We pass in all flags
 	# that we might want to overwrite in manual tests.
-	$(DOCKER_RELEASE_HELPER) make release tag="$(tag)" sys="$(sys)" COMMIT="$(COMMIT)" 
+	$(DOCKER_RELEASE_HELPER) make release tag="$(tag)" sys="$(sys)" COMMIT="$(COMMIT)"
 
 docker-tools:
 	@$(call print, "Building tools docker image.")
@@ -302,6 +309,58 @@ apple: mobile-rpc
 	mkdir -p $(IOS_BUILD_DIR)
 	$(GOMOBILE_BIN) bind -target=ios,iossimulator,macos -tags="mobile $(DEV_TAGS) $(RPC_TAGS)" -ldflags "$(RELEASE_LDFLAGS)" -v -o $(IOS_BUILD) $(MOBILE_PKG)
 
+#? android-cgo: Build CGO .so lib for Android
+android-cgo: mobile-rpc mobile-cgo-mode
+	@$(call print, "Building c-shared .so libs ($(CGO_ANDROID_BUILD_DIR)).")
+	mkdir -p $(CGO_ANDROID_BUILD_DIR)
+	CGO_ENABLED=1 GOOS=android GOARCH=arm64 CC="$$($(PWD)/mobile/ndk-clang-finder.sh)" $(GOBUILD) -buildmode=c-shared -tags="mobile $(DEV_TAGS) $(RPC_TAGS)" -ldflags "$(RELEASE_LDFLAGS)" -v -o "$(CGO_ANDROID_BUILD_DIR)/arm64-v8a/liblnd.so" $(MOBILE_PKG)
+	CGO_ENABLED=1 GOOS=android GOARCH=arm CC="$$($(PWD)/mobile/ndk-clang-finder.sh)" $(GOBUILD) -buildmode=c-shared -tags="mobile $(DEV_TAGS) $(RPC_TAGS)" -ldflags "$(RELEASE_LDFLAGS)" -v -o "$(CGO_ANDROID_BUILD_DIR)/armeabi-v7a/liblnd.so" $(MOBILE_PKG)
+	CGO_ENABLED=1 GOOS=android GOARCH=386 CC="$$($(PWD)/mobile/ndk-clang-finder.sh)" $(GOBUILD) -buildmode=c-shared -tags="mobile $(DEV_TAGS) $(RPC_TAGS)" -ldflags "$(RELEASE_LDFLAGS)" -v -o "$(CGO_ANDROID_BUILD_DIR)/x86/liblnd.so" $(MOBILE_PKG)
+	CGO_ENABLED=1 GOOS=android GOARCH=amd64 CC="$$($(PWD)/mobile/ndk-clang-finder.sh)" $(GOBUILD) -buildmode=c-shared -tags="mobile $(DEV_TAGS) $(RPC_TAGS)" -ldflags "$(RELEASE_LDFLAGS)" -v -o "$(CGO_ANDROID_BUILD_DIR)/x86_64/liblnd.so" $(MOBILE_PKG)
+
+#? ios-cgo: Build CGO .a lib for iOS
+ios-cgo: mobile-rpc mobile-cgo-mode
+	@$(call print, "Building c-archived .a libs ($(CGO_IOS_BUILD_DIR)).")
+	mkdir -p $(CGO_IOS_BUILD_DIR)
+	CGO_ENABLED=1 GOOS=ios GOARCH=arm64 SDK=iphoneos CC=$(PWD)/mobile/clangwrap.sh CGO_CFLAGS="-fembed-bitcode" CGO_LDFLAGS="-lresolv" $(GOBUILD) -buildmode=c-archive -tags="mobile $(DEV_TAGS) $(RPC_TAGS)" -ldflags "$(RELEASE_LDFLAGS)" -v -o "$(CGO_IOS_BUILD_DIR)/liblnd-arm64.a" $(MOBILE_PKG)
+	CGO_ENABLED=1 GOOS=ios GOARCH=amd64 SDK=iphonesimulator CC=$(PWD)/mobile/clangwrap.sh CGO_CFLAGS="-fembed-bitcode" CGO_LDFLAGS="-lresolv" $(GOBUILD) -buildmode=c-archive -tags="mobile $(DEV_TAGS) $(RPC_TAGS)" -ldflags "$(RELEASE_LDFLAGS)" -v -o "$(CGO_IOS_BUILD_DIR)/liblnd-simulator-amd64.a" $(MOBILE_PKG)
+	lipo $(CGO_IOS_BUILD_DIR)/liblnd-arm64.a $(CGO_IOS_BUILD_DIR)/liblnd-simulator-amd64.a -create -output $(CGO_IOS_BUILD_DIR)/liblnd-fat.a
+	cp $(CGO_IOS_BUILD_DIR)/liblnd-arm64.h $(CGO_IOS_BUILD_DIR)/liblnd.h
+
+#? macos-cgo: Build CGO .a lib for macOS
+macos-cgo: mobile-rpc mobile-cgo-mode
+	@$(call print, "Building c-archived .a libs ($(CGO_MACOS_BUILD_DIR)).")
+	mkdir -p $(CGO_MACOS_BUILD_DIR)
+	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 CGO_CFLAGS="-fembed-bitcode" $(GOBUILD) -buildmode=c-archive -tags="mobile $(DEV_TAGS) $(RPC_TAGS)" -ldflags "$(RELEASE_LDFLAGS)" -v -o $(CGO_MACOS_BUILD_DIR)/liblnd-arm64.a $(MOBILE_PKG)
+	CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 CGO_CFLAGS="-fembed-bitcode" $(GOBUILD) -buildmode=c-archive -tags="mobile $(DEV_TAGS) $(RPC_TAGS)" -ldflags "$(RELEASE_LDFLAGS)" -v -o $(CGO_MACOS_BUILD_DIR)/liblnd-amd64.a $(MOBILE_PKG)
+	lipo $(CGO_MACOS_BUILD_DIR)/liblnd-arm64.a $(CGO_MACOS_BUILD_DIR)/liblnd-amd64.a -create -output $(CGO_MACOS_BUILD_DIR)/liblnd-fat.a
+	cp $(CGO_MACOS_BUILD_DIR)/liblnd-arm64.h $(CGO_MACOS_BUILD_DIR)/liblnd.h
+
+#? cgo: Build CGO lib for the host platform
+cgo: mobile-cgo-mode
+	@$(call print, "Building c-archived .a libs ($(CGO_BUILD_DIR)).")
+	CGO_ENABLED=1 $(GOBUILD) -buildmode=c-shared -tags="mobile $(DEV_TAGS) $(RPC_TAGS)" -ldflags "$(RELEASE_LDFLAGS)" -v -o "$(CGO_BUILD_DIR)/" $(MOBILE_PKG)
+
+#? cgo: Build CGO .dll lib for windows
+windows-cgo: mobile-rpc mobile-cgo-mode
+	@$(call print, "Building c-shared .dll lib ($(CGO_BUILD_DIR)).")
+	CGO_ENABLED=1 $(GOBUILD) -buildmode=c-shared -tags="mobile $(DEV_TAGS) $(RPC_TAGS)" -ldflags "$(RELEASE_LDFLAGS)" -v -o "$(CGO_BUILD_DIR)/windows/liblnd.dll" $(MOBILE_PKG)
+
+#? ios-cgo: Switch mobile directory mode to CGO mode
+mobile-cgo-mode:
+	@echo "Changing package name from 'lndmobile' to 'main' in all Go files under ./mobile"
+	@cd ./mobile && \
+	find . -name "*.go" -type f -exec perl -i -pe 's/package lndmobile/package main/' {} +
+	@echo "Package name change completed"
+
+#? mobile-gomobile-mode: Switch mobile directory mode to gomobile mode
+mobile-gomobile-mode:
+	@echo "Changing package name from 'main' to 'lndmobile' in all Go files under ./mobile"
+	@cd ./mobile && \
+	find . -name "*.go" -type f -exec perl -i -pe 's/package main/package lndmobile/' {} +
+	@echo "Package name change completed"
+
+#? ios: Build mobile RPC stubs and project template for iOS
 ios: mobile-rpc
 	@$(call print, "Building iOS cxframework ($(IOS_BUILD)).")
 	mkdir -p $(IOS_BUILD_DIR)

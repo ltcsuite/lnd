@@ -29,11 +29,11 @@ env:
   # /dev.Dockerfile
   # /make/builder.Dockerfile
   # /.github/workflows/release.yml
-  GO_VERSION: 1.21.0
+  GO_VERSION: 1.24.2
 
 jobs:
   ########################
-  # SQLC code gen check 
+  # SQLC code gen check
   ########################
   sqlc-check:
     name: Sqlc check
@@ -45,7 +45,7 @@ jobs:
       - name: setup go ${{ env.GO_VERSION }}
         uses: ./.github/actions/setup-go
         with:
-          go-version: '${{ env.GO_VERSION }}'
+          go-version: "${{ env.GO_VERSION }}"
 
       - name: docker image cache
         uses: satackey/action-docker-layer-caching@v0.0.11
@@ -131,7 +131,7 @@ jobs:
       - name: check code format
         run: make fmt-check
 
-      - name: check go modules tidiness 
+      - name: check go modules tidiness
         run: make tidy-module-check
 
       - name: lint
@@ -222,14 +222,13 @@ jobs:
           path-to-profile: coverage.txt
           parallel: true
 
-
   ########################
   # run ubuntu integration tests
   ########################
   ubuntu-integration-test:
     name: run ubuntu itests
     runs-on: ubuntu-latest
-    if: '!contains(github.event.pull_request.labels.*.name, ''no-itest'')'
+    if: "!contains(github.event.pull_request.labels.*.name, 'no-itest')"
     strategy:
       # Allow other tests in the matrix to continue if one fails.
       fail-fast: false
@@ -279,14 +278,13 @@ jobs:
           path: logs-itest-${{ matrix.name }}.zip
           retention-days: 5
 
-
   ########################
   # run windows integration test
   ########################
   windows-integration-test:
     name: run windows itest
     runs-on: windows-latest
-    if: '!contains(github.event.pull_request.labels.*.name, ''no-itest'')'
+    if: "!contains(github.event.pull_request.labels.*.name, 'no-itest')"
     steps:
       - name: git checkout
         uses: actions/checkout@v3
@@ -311,7 +309,6 @@ jobs:
           name: logs-itest-windows
           path: logs-itest-windows.zip
           retention-days: 5
-
 
   ########################
   # check pinned dependencies
@@ -340,7 +337,7 @@ jobs:
   milestone-check:
     name: check release notes updated
     runs-on: ubuntu-latest
-    if: '!contains(github.event.pull_request.labels.*.name, ''no-changelog'')'
+    if: "!contains(github.event.pull_request.labels.*.name, 'no-changelog')"
     steps:
       - name: git checkout
         uses: actions/checkout@v3

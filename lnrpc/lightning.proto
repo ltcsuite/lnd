@@ -1068,6 +1068,14 @@ message OutPoint {
     uint32 output_index = 3;
 }
 
+// Accepts either a regular UTXO (lnrpc.OutPoint) or an MWEB input blob.
+message TxInput {
+    oneof input {
+        lnrpc.OutPoint utxo = 1;  // legacy on-chain outpoint
+        bytes mweb_id = 2;        // raw MWEB input/commitment
+    }
+}
+
 message PreviousOutPoint {
     // The outpoint in format txid:n.
     string outpoint = 1;

@@ -1123,9 +1123,9 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 						err)
 				}
 
-				psbtOutputs = append(psbtOutputs, POutput{
+				psbtOutputs = append(psbtOutputs, psbt.POutput{
 					Amount:   ltcutil.Amount(amt),
-					PKScript: out.PkScript,
+					PKScript: pkScript,
 				})
 			}
 		}
@@ -1172,7 +1172,7 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 			psbtKernels = append(psbtKernels, psbt.PKernel{})
 		}
 
-		packet, err = psbt.NewV2(psbtInputs, psbtOutputs, psbtKernels, 2, 0)
+		packet, err = psbt.NewV2(psbtInputs, psbtOutputs, psbtKernels, 2, nil)
 		if err != nil {
 			return nil, fmt.Errorf("could not create PSBT: %v", err)
 		}

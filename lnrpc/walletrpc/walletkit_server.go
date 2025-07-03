@@ -1091,8 +1091,9 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 	// PSBT and copy the RPC information over.
 	case req.GetRaw() != nil:
 		tpl := req.GetRaw()
+		hasMweb := false
 
-		txOut := make([]*wire.TxOut, 0, len(tpl.Outputs))
+		var psbtOutputs []psbt.POutput
 		for addrStr, amt := range tpl.Outputs {
 			addr, err := ltcutil.DecodeAddress(
 				addrStr, w.cfg.ChainParams,
@@ -1108,32 +1109,70 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 					w.cfg.ChainParams.Name)
 			}
 
-			pkScript, err := txscript.PayToAddrScript(addr)
+			if mwebAddr, isMWEB := addr.(*ltcutil.AddressMweb); isMWEB {
+				hasMweb = true
+				psbtOutputs = append(psbtOutputs, psbt.POutput{
+					Amount:         ltcutil.Amount(amt),
+					StealthAddress: mwebAddr.StealthAddress(),
+				})
+			} else {
+				pkScript, err := txscript.PayToAddrScript(addr)
+				if err != nil {
+					return nil, fmt.Errorf("error getting pk "+
+						"script for address %s: %v", addrStr,
+						err)
+				}
 
-			if err != nil {
-				return nil, fmt.Errorf("error getting pk "+
-					"script for address %s: %v", addrStr,
-					err)
+				psbtOutputs = append(psbtOutputs, POutput{
+					Amount:   ltcutil.Amount(amt),
+					PKScript: out.PkScript,
+				})
 			}
-
-			txOut = append(txOut, &wire.TxOut{
-				Value:    int64(amt),
-				PkScript: pkScript,
-			})
 		}
 
-		txIn := make([]*wire.OutPoint, len(tpl.Inputs))
+		var psbtInputs []psbt.PInput
 		for idx, in := range tpl.Inputs {
-			op, err := UnmarshallOutPoint(in)
-			if err != nil {
-				return nil, fmt.Errorf("error parsing "+
-					"outpoint: %v", err)
+			sequence := uint32(0)
+
+			outpoint := in.GetUtxo()
+			if outpoint != nil {
+				op, err := UnmarshallOutPoint(outpoint)
+				if err != nil {
+					return nil, fmt.Errorf("error parsing outpoint: %v", err)
+				}
+				psbtInputs = append(psbtInputs, psbt.PInput{
+					PrevoutHash:  &op.Hash,
+					PrevoutIndex: &op.Index,
+					Sequence:     &sequence,
+				})
+				continue
 			}
-			txIn[idx] = op
+
+			mwebId := in.GetMwebId()
+			if mwebId != nil {
+				if len(mwebId) != 32 {
+					return nil, fmt.Errorf("mweb id must be 32 bytes")
+				}
+
+				hasMweb = true
+				var hash chainhash.Hash
+				copy(hash[:], mwebId)
+
+				psbtInputs = append(psbtInputs, psbt.PInput{
+					MwebOutputId: &hash,
+				})
+				continue
+			}
+
+			return nil, fmt.Errorf("input %d is neither outpoint nor mweb id", idx)
 		}
 
-		sequences := make([]uint32, len(txIn))
-		packet, err = psbt.New(txIn, txOut, 2, 0, sequences)
+		var psbtKernels []psbt.PKernel
+		if hasMweb {
+			psbtKernels = append(psbtKernels, psbt.PKernel{})
+		}
+
+		packet, err = psbt.NewV2(psbtInputs, psbtOutputs, psbtKernels, 2, 0)
 		if err != nil {
 			return nil, fmt.Errorf("could not create PSBT: %v", err)
 		}

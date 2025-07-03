@@ -3635,9 +3635,8 @@ type SendCoinsRequest struct {
 	//
 	// Deprecated: Marked as deprecated in lightning.proto.
 	SatPerByte int64 `protobuf:"varint,5,opt,name=sat_per_byte,json=satPerByte,proto3" json:"sat_per_byte,omitempty"`
-	//
-	//If set, the amount field should be unset. It indicates lnd will send all
-	//wallet coins or all selected coins to the specified address.
+	// If set, the amount field should be unset. It indicates lnd will send all
+	// wallet coins or all selected coins to the specified address.
 	SendAll bool `protobuf:"varint,6,opt,name=send_all,json=sendAll,proto3" json:"send_all,omitempty"`
 	// An optional label for the transaction, limited to 500 characters.
 	Label string `protobuf:"bytes,7,opt,name=label,proto3" json:"label,omitempty"`

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/fn"
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/chaincfg"
@@ -145,15 +146,15 @@ func (w *mockWalletController) ImportTaprootScript(waddrmgr.KeyScope,
 }
 
 // SendOutputs currently returns dummy values.
-func (w *mockWalletController) SendOutputs([]*wire.TxOut,
+func (w *mockWalletController) SendOutputs(fn.Set[wire.OutPoint], []*wire.TxOut,
 	chainfee.SatPerKWeight, int32, string) (*wire.MsgTx, error) {
 
 	return nil, nil
 }
 
 // CreateSimpleTx currently returns dummy values.
-func (w *mockWalletController) CreateSimpleTx([]*wire.TxOut,
-	chainfee.SatPerKWeight, int32, bool) (*txauthor.AuthoredTx, error) {
+func (w *mockWalletController) CreateSimpleTx(fn.Set[wire.OutPoint],
+	[]*wire.TxOut, chainfee.SatPerKWeight, int32, bool) (*txauthor.AuthoredTx, error) {
 
 	return nil, nil
 }

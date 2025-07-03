@@ -2016,7 +2016,7 @@
         "parameters": [
           {
             "name": "ref_msg_id",
-            "description": "The request message ID this response refers to. Must always be set when\r\ngiving feedback to an intercept but is ignored for the initial registration\r\nmessage.",
+            "description": "The request message ID this response refers to. Must always be set when\ngiving feedback to an intercept but is ignored for the initial registration\nmessage.",
             "in": "query",
             "required": false,
             "type": "string",
@@ -2024,42 +2024,42 @@
           },
           {
             "name": "register.middleware_name",
-            "description": "The name of the middleware to register. The name should be as informative\r\nas possible and is logged on registration.",
+            "description": "The name of the middleware to register. The name should be as informative\nas possible and is logged on registration.",
             "in": "query",
             "required": false,
             "type": "string"
           },
           {
             "name": "register.custom_macaroon_caveat_name",
-            "description": "The name of the custom macaroon caveat that this middleware is responsible\r\nfor. Only requests/responses that contain a macaroon with the registered\r\ncustom caveat are forwarded for interception to the middleware. The\r\nexception being the read-only mode: All requests/responses are forwarded to\r\na middleware that requests read-only access but such a middleware won't be\r\nallowed to _alter_ responses. As a security measure, _no_ middleware can\r\nchange responses to requests made with _unencumbered_ macaroons!\r\nNOTE: Cannot be used at the same time as read_only_mode.",
+            "description": "The name of the custom macaroon caveat that this middleware is responsible\nfor. Only requests/responses that contain a macaroon with the registered\ncustom caveat are forwarded for interception to the middleware. The\nexception being the read-only mode: All requests/responses are forwarded to\na middleware that requests read-only access but such a middleware won't be\nallowed to _alter_ responses. As a security measure, _no_ middleware can\nchange responses to requests made with _unencumbered_ macaroons!\nNOTE: Cannot be used at the same time as read_only_mode.",
             "in": "query",
             "required": false,
             "type": "string"
           },
           {
             "name": "register.read_only_mode",
-            "description": "Instead of defining a custom macaroon caveat name a middleware can register\r\nitself for read-only access only. In that mode all requests/responses are\r\nforwarded to the middleware but the middleware isn't allowed to alter any of\r\nthe responses.\r\nNOTE: Cannot be used at the same time as custom_macaroon_caveat_name.",
+            "description": "Instead of defining a custom macaroon caveat name a middleware can register\nitself for read-only access only. In that mode all requests/responses are\nforwarded to the middleware but the middleware isn't allowed to alter any of\nthe responses.\nNOTE: Cannot be used at the same time as custom_macaroon_caveat_name.",
             "in": "query",
             "required": false,
             "type": "boolean"
           },
           {
             "name": "feedback.error",
-            "description": "The error to return to the user. If this is non-empty, the incoming gRPC\r\nstream/request is aborted and the error is returned to the gRPC client. If\r\nthis value is empty, it means the middleware accepts the stream/request/\r\nresponse and the processing of it can continue.",
+            "description": "The error to return to the user. If this is non-empty, the incoming gRPC\nstream/request is aborted and the error is returned to the gRPC client. If\nthis value is empty, it means the middleware accepts the stream/request/\nresponse and the processing of it can continue.",
             "in": "query",
             "required": false,
             "type": "string"
           },
           {
             "name": "feedback.replace_response",
-            "description": "A boolean indicating that the gRPC message should be replaced/overwritten.\r\nThis boolean is needed because in protobuf an empty message is serialized as\r\na 0-length or nil byte slice and we wouldn't be able to distinguish between\r\nan empty replacement message and the \"don't replace anything\" case.",
+            "description": "A boolean indicating that the gRPC message should be replaced/overwritten.\nThis boolean is needed because in protobuf an empty message is serialized as\na 0-length or nil byte slice and we wouldn't be able to distinguish between\nan empty replacement message and the \"don't replace anything\" case.",
             "in": "query",
             "required": false,
             "type": "boolean"
           },
           {
             "name": "feedback.replacement_serialized",
-            "description": "If the replace_response field is set to true, this field must contain the\r\nbinary serialized gRPC message in the protobuf format.",
+            "description": "If the replace_response field is set to true, this field must contain the\nbinary serialized gRPC message in the protobuf format.",
             "in": "query",
             "required": false,
             "type": "string",
@@ -6755,7 +6755,7 @@
         },
         "send_all": {
           "type": "boolean",
-          "description": "If set, the amount field should be unset. It indicates lnd will send all\r\nwallet coins or all selected coins to the specified address."
+          "description": "If set, the amount field should be unset. It indicates lnd will send all\nwallet coins or all selected coins to the specified address."
         },
         "label": {
           "type": "string",

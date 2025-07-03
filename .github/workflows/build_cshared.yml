@@ -1,0 +1,78 @@
+name: Build LND Mobile RPC
+
+on:
+  push:
+    branches: [cgo]
+  pull_request:
+    branches: [cgo]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: cgo
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: "1.21"
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            gcc \
+            libc6-dev \
+            pkg-config \
+            cmake \
+            make
+
+      - name: Install Go dependencies
+        run: |
+          go mod download
+          go mod verify
+
+      - name: Generate mobile RPC
+        run: make mobile-rpc
+
+      - name: Patch Makefile and build CGO
+        run: |
+          # Add required headers
+          find mobile -name "*.go" | xargs grep -l "/\*" | while read file; do
+            if ! grep -q "#include <stdint.h>" "$file"; then
+              if grep -q "#include" "$file"; then
+                sed -i '/#include/a #include <stdint.h>' "$file"
+              else
+                sed -i '/\/\*/a #include <stdint.h>' "$file"
+              fi
+            fi
+          done
+
+          # Patch the Makefile to use a relative path
+          sed -i 's|MOBILE_BUILD_DIR :=${GOPATH}/src/$(MOBILE_PKG)/build|MOBILE_BUILD_DIR :=./mobile/build|' Makefile
+
+          # Create the directory
+          mkdir -p ./mobile/build/cgo
+
+          # Build with the modified Makefile
+          CGO_ENABLED=1 make cgo
+
+      - name: Archive mobile build
+        run: |
+          cd mobile/build
+          zip -r ../../mobile-build.zip .
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-build
+          path: mobile-build.zip
+          retention-days: 7

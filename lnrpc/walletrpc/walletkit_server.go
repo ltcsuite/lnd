@@ -1145,6 +1145,10 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 					PrevoutIndex: &op.Index,
 					Sequence:     &sequence,
 				})
+				utxo, err := w.cfg.Wallet.FetchInputInfo(op)
+				if utxo != nil {
+					print(fmt.Printf("PkScript: %x\n", utxo.PkScript))
+				}
 				continue
 			}
 
@@ -1235,7 +1239,7 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 
 		// In case the user did specify inputs, we need to make sure
 		// they are known to us, still unspent and not yet locked.
-		if len(packet.UnsignedTx.TxIn) > 0 {
+		if len(packet.Inputs) > 0 {
 			// Get a list of all unspent witness outputs.
 			utxos, err := w.cfg.Wallet.ListUnspentWitness(
 				minConfs, defaultMaxConf, account,
@@ -1244,9 +1248,20 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 				return err
 			}
 
+			txins := make([]*wire.TxIn, len(packet.Inputs))
+			for idx, in := range packet.Inputs {
+				txins[idx] = &wire.TxIn{
+					PreviousOutPoint: wire.OutPoint{
+						Hash:  *in.PrevoutHash,
+						Index: *in.PrevoutIndex,
+					},
+					Sequence: *in.Sequence,
+				}
+			}
+
 			// Validate all inputs against our known list of UTXOs
 			// now.
-			err = verifyInputsUnspent(packet.UnsignedTx.TxIn, utxos)
+			err = verifyInputsUnspent(txins, utxos)
 			if err != nil {
 				return err
 			}

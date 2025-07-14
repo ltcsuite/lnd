@@ -1091,7 +1091,6 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 	// PSBT and copy the RPC information over.
 	case req.GetRaw() != nil:
 		tpl := req.GetRaw()
-		hasMweb := false
 
 		var psbtOutputs []psbt.POutput
 		for addrStr, amt := range tpl.Outputs {
@@ -1109,25 +1108,23 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 					w.cfg.ChainParams.Name)
 			}
 
-			if mwebAddr, isMWEB := addr.(*ltcutil.AddressMweb); isMWEB {
-				hasMweb = true
-				psbtOutputs = append(psbtOutputs, psbt.POutput{
-					Amount:         ltcutil.Amount(amt),
-					StealthAddress: mwebAddr.StealthAddress(),
-				})
-			} else {
-				pkScript, err := txscript.PayToAddrScript(addr)
-				if err != nil {
-					return nil, fmt.Errorf("error getting pk "+
-						"script for address %s: %v", addrStr,
-						err)
-				}
-
-				psbtOutputs = append(psbtOutputs, psbt.POutput{
-					Amount:   ltcutil.Amount(amt),
-					PKScript: pkScript,
-				})
+			pkScript, err := txscript.PayToAddrScript(addr)
+			if err != nil {
+				return nil, fmt.Errorf("error getting pk "+
+					"script for address %s: %v", addrStr,
+					err)
 			}
+
+			pOutput := psbt.POutput{
+				Amount:   ltcutil.Amount(amt),
+				PKScript: pkScript,
+			}
+
+			if mwebAddr, isMWEB := addr.(*ltcutil.AddressMweb); isMWEB {
+				pOutput.StealthAddress = mwebAddr.StealthAddress()
+			}
+
+			psbtOutputs = append(psbtOutputs, pOutput)
 		}
 
 		var psbtInputs []psbt.PInput
@@ -1158,7 +1155,6 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 					return nil, fmt.Errorf("mweb id must be 32 bytes")
 				}
 
-				hasMweb = true
 				var hash chainhash.Hash
 				copy(hash[:], mwebId)
 
@@ -1171,12 +1167,7 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 			return nil, fmt.Errorf("input %d is neither outpoint nor mweb id", idx)
 		}
 
-		var psbtKernels []psbt.PKernel
-		if hasMweb {
-			psbtKernels = append(psbtKernels, psbt.PKernel{})
-		}
-
-		packet, err = psbt.NewV2(psbtInputs, psbtOutputs, psbtKernels, 2, nil)
+		packet, err = psbt.NewV2(psbtInputs, psbtOutputs, nil, 2, nil)
 		if err != nil {
 			return nil, fmt.Errorf("could not create PSBT: %v", err)
 		}

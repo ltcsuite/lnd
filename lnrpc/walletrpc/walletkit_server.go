@@ -1092,7 +1092,7 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 	case req.GetRaw() != nil:
 		tpl := req.GetRaw()
 
-		txOut := make([]*wire.TxOut, 0, len(tpl.Outputs))
+		var psbtOutputs []psbt.POutput
 		for addrStr, amt := range tpl.Outputs {
 			addr, err := ltcutil.DecodeAddress(
 				addrStr, w.cfg.ChainParams,
@@ -1109,31 +1109,65 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 			}
 
 			pkScript, err := txscript.PayToAddrScript(addr)
-
 			if err != nil {
 				return nil, fmt.Errorf("error getting pk "+
 					"script for address %s: %v", addrStr,
 					err)
 			}
 
-			txOut = append(txOut, &wire.TxOut{
-				Value:    int64(amt),
-				PkScript: pkScript,
-			})
-		}
-
-		txIn := make([]*wire.OutPoint, len(tpl.Inputs))
-		for idx, in := range tpl.Inputs {
-			op, err := UnmarshallOutPoint(in)
-			if err != nil {
-				return nil, fmt.Errorf("error parsing "+
-					"outpoint: %v", err)
+			pOutput := psbt.POutput{
+				Amount:   ltcutil.Amount(amt),
+				PKScript: pkScript,
 			}
-			txIn[idx] = op
+
+			if mwebAddr, isMWEB := addr.(*ltcutil.AddressMweb); isMWEB {
+				pOutput.StealthAddress = mwebAddr.StealthAddress()
+			}
+
+			psbtOutputs = append(psbtOutputs, pOutput)
 		}
 
-		sequences := make([]uint32, len(txIn))
-		packet, err = psbt.New(txIn, txOut, 2, 0, sequences)
+		var psbtInputs []psbt.PInput
+		for idx, in := range tpl.Inputs {
+			sequence := uint32(0)
+
+			outpoint := in.GetUtxo()
+			if outpoint != nil {
+				op, err := UnmarshallOutPoint(outpoint)
+				if err != nil {
+					return nil, fmt.Errorf("error parsing outpoint: %v", err)
+				}
+				psbtInputs = append(psbtInputs, psbt.PInput{
+					PrevoutHash:  &op.Hash,
+					PrevoutIndex: &op.Index,
+					Sequence:     &sequence,
+				})
+				utxo, err := w.cfg.Wallet.FetchInputInfo(op)
+				if utxo != nil {
+					print(fmt.Printf("PkScript: %x\n", utxo.PkScript))
+				}
+				continue
+			}
+
+			mwebId := in.GetMwebId()
+			if mwebId != nil {
+				if len(mwebId) != 32 {
+					return nil, fmt.Errorf("mweb id must be 32 bytes")
+				}
+
+				var hash chainhash.Hash
+				copy(hash[:], mwebId)
+
+				psbtInputs = append(psbtInputs, psbt.PInput{
+					MwebOutputId: &hash,
+				})
+				continue
+			}
+
+			return nil, fmt.Errorf("input %d is neither outpoint nor mweb id", idx)
+		}
+
+		packet, err = psbt.NewV2(psbtInputs, psbtOutputs, nil, 2, nil)
 		if err != nil {
 			return nil, fmt.Errorf("could not create PSBT: %v", err)
 		}
@@ -1196,7 +1230,7 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 
 		// In case the user did specify inputs, we need to make sure
 		// they are known to us, still unspent and not yet locked.
-		if len(packet.UnsignedTx.TxIn) > 0 {
+		if len(packet.Inputs) > 0 {
 			// Get a list of all unspent witness outputs.
 			utxos, err := w.cfg.Wallet.ListUnspentWitness(
 				minConfs, defaultMaxConf, account,
@@ -1205,9 +1239,20 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 				return err
 			}
 
+			txins := make([]*wire.TxIn, len(packet.Inputs))
+			for idx, in := range packet.Inputs {
+				txins[idx] = &wire.TxIn{
+					PreviousOutPoint: wire.OutPoint{
+						Hash:  *in.PrevoutHash,
+						Index: *in.PrevoutIndex,
+					},
+					Sequence: *in.Sequence,
+				}
+			}
+
 			// Validate all inputs against our known list of UTXOs
 			// now.
-			err = verifyInputsUnspent(packet.UnsignedTx.TxIn, utxos)
+			err = verifyInputsUnspent(txins, utxos)
 			if err != nil {
 				return err
 			}

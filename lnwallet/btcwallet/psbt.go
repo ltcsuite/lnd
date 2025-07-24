@@ -11,9 +11,6 @@ import (
 	"github.com/ltcsuite/ltcd/btcec/v2"
 	"github.com/ltcsuite/ltcd/btcec/v2/schnorr"
 	"github.com/ltcsuite/ltcd/ltcutil"
-	"github.com/ltcsuite/ltcd/ltcutil/hdkeychain"
-	"github.com/ltcsuite/ltcd/ltcutil/mweb"
-	"github.com/ltcsuite/ltcd/ltcutil/mweb/mw"
 	"github.com/ltcsuite/ltcd/ltcutil/psbt"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
@@ -484,38 +481,6 @@ func maybeTweakPrivKeyPsbt(unknowns []*psbt.Unknown,
 	return privKey
 }
 
-// deriveMwebKeychain fetches the wallet's master xprv, derives the path
-// m/0'/100', then child 0' (scan) and 1' (spend), and returns the two
-// resulting private keys as an mweb.Keychain.
-func (b *BtcWallet) deriveMwebKeychain() (*mweb.Keychain, error) {
-	masterScanKeyPath := make([]uint32, 3)
-	masterScanKeyPath[0] = uint32(0 + hdkeychain.HardenedKeyStart)
-	masterScanKeyPath[1] = uint32(100 + hdkeychain.HardenedKeyStart)
-	masterScanKeyPath[2] = uint32(0 + hdkeychain.HardenedKeyStart)
-	masterScanKey, err := b.deriveKeyByBIP32Path(masterScanKeyPath)
-	if err != nil {
-		return nil, err
-	}
-
-	masterSpendKeyPath := make([]uint32, 3)
-	masterSpendKeyPath[0] = uint32(0 + hdkeychain.HardenedKeyStart)
-	masterSpendKeyPath[1] = uint32(100 + hdkeychain.HardenedKeyStart)
-	masterSpendKeyPath[2] = uint32(1 + hdkeychain.HardenedKeyStart)
-	masterSpendKey, err := b.deriveKeyByBIP32Path(masterSpendKeyPath)
-	if err != nil {
-		return nil, err
-	}
-
-	var masterScan, masterSpend mw.SecretKey
-	copy(masterScan[:], masterScanKey.Serialize())
-	copy(masterSpend[:], masterSpendKey.Serialize())
-
-	return &mweb.Keychain{
-		Scan:  &masterScan,
-		Spend: &masterSpend,
-	}, nil
-}
-
 // FinalizePsbt expects a partial transaction with all inputs and outputs fully
 // declared and tries to sign all inputs that belong to the specified account.
 // Lnd must be the last signer of the transaction. That means, if there are any
@@ -555,16 +520,7 @@ func (b *BtcWallet) FinalizePsbt(packet *psbt.Packet, accountName string) error 
 		accountNum = account
 	}
 
-	var mwebKeychain *mweb.Keychain
-	if packet.HasMwebComponents() {
-		keychain, err := b.deriveMwebKeychain()
-		if err != nil {
-			log.Warnf("Failed to derive mweb keychain: %v", err)
-		}
-		mwebKeychain = keychain
-	}
-
-	return b.wallet.FinalizePsbt(keyScope, accountNum, mwebKeychain, packet)
+	return b.wallet.FinalizePsbt(keyScope, accountNum, packet)
 }
 
 // lookupFirstCustomAccount returns the first custom account found. In theory,

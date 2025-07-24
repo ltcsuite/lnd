@@ -52,13 +52,17 @@ func lockInputs(w lnwallet.WalletController,
 	packet *psbt.Packet) ([]*base.ListLeasedOutputResult, error) {
 
 	locks := make(
-		[]*base.ListLeasedOutputResult, len(packet.UnsignedTx.TxIn),
+		[]*base.ListLeasedOutputResult, len(packet.Inputs),
 	)
-	for idx, rawInput := range packet.UnsignedTx.TxIn {
+	for idx, pInput := range packet.Inputs {
+		prevOutPoint := wire.OutPoint{
+			Hash:  *pInput.PrevoutHash,
+			Index: *pInput.PrevoutIndex,
+		}
 		lock := &base.ListLeasedOutputResult{
 			LockedOutput: &wtxmgr.LockedOutput{
 				LockID:   LndInternalLockID,
-				Outpoint: rawInput.PreviousOutPoint,
+				Outpoint: prevOutPoint,
 			},
 		}
 

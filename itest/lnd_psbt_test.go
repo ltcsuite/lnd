@@ -1027,6 +1027,7 @@ func runFundAndSignPsbt(ht *lntest.HarnessTest, alice *node.HarnessNode) {
 	changeAddrTypes := []walletrpc.ChangeAddressType{
 		walletrpc.ChangeAddressType_CHANGE_ADDRESS_TYPE_UNSPECIFIED,
 		walletrpc.ChangeAddressType_CHANGE_ADDRESS_TYPE_P2TR,
+		walletrpc.ChangeAddressType_CHANGE_ADDRESS_TYPE_MWEB,
 	}
 
 	for _, addrType := range spendAddrTypes {
@@ -1290,6 +1291,8 @@ func assertChangeScriptType(ht *lntest.HarnessTest, script []byte,
 	switch fundChangeType {
 	case walletrpc.ChangeAddressType_CHANGE_ADDRESS_TYPE_P2TR:
 		require.True(ht, txscript.IsPayToTaproot(script))
+	case walletrpc.ChangeAddressType_CHANGE_ADDRESS_TYPE_MWEB:
+		require.True(ht, txscript.IsMweb(script))
 
 	default:
 		require.True(ht, txscript.IsPayToWitnessPubKeyHash(script))

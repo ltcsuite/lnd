@@ -1083,6 +1083,10 @@ enum ChangeAddressType {
     // CHANGE_ADDRESS_TYPE_P2TR indicates to use P2TR address for change output
     // (BIP0086 key scope).
     CHANGE_ADDRESS_TYPE_P2TR = 1;
+
+    // ChangeAddressType_CHANGE_ADDRESS_TYPE_MWEB indicates to use MWEB address
+    // for change output.
+    CHANGE_ADDRESS_TYPE_MWEB = 2;
 }
 
 message FundPsbtRequest {

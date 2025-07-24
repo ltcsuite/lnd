@@ -418,8 +418,8 @@ var listSweepsCommand = cli.Command{
 	node has published. Note that these sweeps may not be confirmed on chain
 	yet, as we store them on transaction broadcast, not confirmation.
 
-	If the verbose flag is set, the full set of transactions will be 
-	returned, otherwise only the sweep transaction ids will be returned. 
+	If the verbose flag is set, the full set of transactions will be
+	returned, otherwise only the sweep transaction ids will be returned.
 	`,
 	Action: actionDecorator(listSweeps),
 }
@@ -448,8 +448,8 @@ var labelTxCommand = cli.Command{
 	Usage:     "Adds a label to a transaction.",
 	ArgsUsage: "txid label",
 	Description: `
-	Add a label to a transaction. If the transaction already has a label, 
-	this call will fail unless the overwrite option is set. The label is 
+	Add a label to a transaction. If the transaction already has a label,
+	this call will fail unless the overwrite option is set. The label is
 	limited to 500 characters. Note that multi word labels must be contained
 	in quotation marks ("").
 	`,
@@ -504,9 +504,9 @@ var publishTxCommand = cli.Command{
 	Usage:     "Attempts to publish the passed transaction to the network.",
 	ArgsUsage: "tx_hex",
 	Description: `
-	Publish a hex-encoded raw transaction to the on-chain network. The 
-	wallet will continually attempt to re-broadcast the transaction on start up, until it 
-	enters the chain. The label parameter is optional and limited to 500 characters. Note 
+	Publish a hex-encoded raw transaction to the on-chain network. The
+	wallet will continually attempt to re-broadcast the transaction on start up, until it
+	enters the chain. The label parameter is optional and limited to 500 characters. Note
 	that multi word labels must be contained in quotation marks ("").
 	`,
 	Flags: []cli.Flag{
@@ -610,10 +610,10 @@ var fundPsbtCommand = cli.Command{
 
 	The optional '--change-type' flag permits to choose the address type
 	for the change for default accounts and single imported public keys.
-	The custom address type can only be p2tr at the moment (p2wkh will be
-	used by default). No custom address type should be provided for custom
-	accounts as we will always generate the change address using the coin
-	selection key scope.
+	The custom address type can only be p2tr and mweb at the moment (p2wkh
+	will be used by default). No custom address type should be provided
+	for custom accounts as we will always generate the change address using
+	the coin selection key scope.
 	`,
 	Flags: []cli.Flag{
 		cli.StringFlag{
@@ -786,12 +786,14 @@ func fundPsbt(ctx *cli.Context) error {
 		case "p2tr":
 			//nolint:lll
 			req.ChangeType = walletrpc.ChangeAddressType_CHANGE_ADDRESS_TYPE_P2TR
+		case "mweb":
+			req.ChangeType = walletrpc.ChangeAddressType_CHANGE_ADDRESS_TYPE_MWEB
 
 		default:
 			return fmt.Errorf("invalid type for the "+
 				"change type: %s. At the moment, the "+
 				"only address type supported is p2tr "+
-				"(default to p2wkh)",
+				"and mweb (default to p2wkh)",
 				addressType)
 		}
 	}

@@ -1335,6 +1335,8 @@ func keyScopeFromChangeAddressType(
 	switch changeAddressType {
 	case ChangeAddressType_CHANGE_ADDRESS_TYPE_P2TR:
 		return &waddrmgr.KeyScopeBIP0086
+	case ChangeAddressType_CHANGE_ADDRESS_TYPE_MWEB:
+		return &waddrmgr.KeyScopeMweb
 
 	default:
 		return nil

@@ -306,6 +306,12 @@ func TestSignPsbt(t *testing.T) {
 		// metadata to it.
 		packet, err := psbt.NewFromUnsignedTx(spendTx)
 		require.NoError(t, err)
+		
+		// Set required prevout information
+		prevHash := refTx.TxHash()
+		prevIndex := uint32(0)
+		packet.Inputs[0].PrevoutHash = &prevHash
+		packet.Inputs[0].PrevoutIndex = &prevIndex
 		packet.Inputs[0].WitnessScript = witnessScript
 		packet.Inputs[0].SighashType = txscript.SigHashAll
 		packet.Inputs[0].WitnessUtxo = refTx.TxOut[0]

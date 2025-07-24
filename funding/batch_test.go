@@ -172,10 +172,34 @@ func (h *testHarness) abandonChannel(op *wire.OutPoint) error {
 func (h *testHarness) FundPsbt(context.Context,
 	*walletrpc.FundPsbtRequest) (*walletrpc.FundPsbtResponse, error) {
 
-	packet, err := psbt.NewFromUnsignedTx(h.pendingTx)
+	// Create PSBTv2 inputs from the transaction inputs
+	var psbtInputs []psbt.PInput
+	for _, txIn := range h.pendingTx.TxIn {
+		psbtInputs = append(psbtInputs, psbt.PInput{
+			PrevoutHash:  &txIn.PreviousOutPoint.Hash,
+			PrevoutIndex: &txIn.PreviousOutPoint.Index,
+			WitnessUtxo: &wire.TxOut{
+				Value:    1000000, // 0.01 LTC
+				PkScript: []byte{0x00, 0x14, 0x12, 0x34}, // dummy witness script
+			},
+		})
+	}
+
+	// Create PSBTv2 outputs from the transaction outputs
+	var psbtOutputs []psbt.POutput
+	for _, txOut := range h.pendingTx.TxOut {
+		psbtOutputs = append(psbtOutputs, psbt.POutput{
+			Amount:   ltcutil.Amount(txOut.Value),
+			PKScript: txOut.PkScript,
+		})
+	}
+
+	// Create PSBTv2 packet
+	packet, err := psbt.NewV2(psbtInputs, psbtOutputs, nil, h.pendingTx.Version, nil)
 	if err != nil {
 		return nil, err
 	}
+	
 	h.pendingPacket = packet
 
 	var buf bytes.Buffer

@@ -638,6 +638,51 @@ message SendCustomMessageRequest {
 message SendCustomMessageResponse {
 }
 
+// MwebOutput represents an MWEB output with all its associated data
+message MwebOutput {
+    // The 33-byte commitment for the MWEB output
+    bytes commitment = 1;
+
+    // The 33-byte sender public key
+    bytes sender_pub_key = 2;
+
+    // The 33-byte receiver public key
+    bytes receiver_pub_key = 3;
+
+    // The MWEB output message containing encrypted data
+    MwebOutputMessage message = 4;
+
+    // The 32-byte range proof hash
+    bytes range_proof_hash = 5;
+
+    // The 64-byte signature
+    bytes signature = 6;
+
+    // The full range proof (optional, may be large)
+    bytes range_proof = 7;
+}
+
+// MwebOutputMessage contains the encrypted message data in an MWEB output
+message MwebOutputMessage {
+    // Feature bits indicating which fields are present
+    uint32 features = 1;
+
+    // The 33-byte key exchange public key
+    bytes key_exchange_pub_key = 2;
+
+    // The view tag (1 byte)
+    uint32 view_tag = 3;
+
+    // The masked value (8 bytes)
+    uint64 masked_value = 4;
+
+    // The masked nonce (16 bytes)
+    bytes masked_nonce = 5;
+
+    // Extra data (variable length)
+    bytes extra_data = 6;
+}
+
 message Utxo {
     // The type of address
     AddressType address_type = 1;
@@ -656,6 +701,9 @@ message Utxo {
 
     // The number of confirmations for the Utxo
     int64 confirmations = 6;
+
+    // The MWEB output data (only present for MWEB address types)
+    MwebOutput mweb_output = 7;
 }
 
 enum OutputScriptType {

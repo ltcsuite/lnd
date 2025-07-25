@@ -1201,6 +1201,21 @@ func (b *BtcWallet) ListUnspentWitness(minConfs, maxConfs int32,
 				},
 				Confirmations: output.Confirmations,
 			}
+			
+			// For MWEB outputs, retrieve the full MWEB output information
+			if addressType == lnwallet.Mweb {
+				var mwebOutput *wire.MwebOutput
+				err := walletdb.View(b.db, func(tx walletdb.ReadTx) error {
+					ns := tx.ReadBucket(wtxmgrNamespaceKey)
+					var err error
+					mwebOutput, err = b.wallet.TxStore.GetMwebOutput(ns, &utxo.OutPoint, nil)
+					return err
+				})
+				if err == nil && mwebOutput != nil {
+					utxo.MwebOutput = mwebOutput
+				}
+			}
+			
 			witnessOutputs = append(witnessOutputs, utxo)
 		}
 

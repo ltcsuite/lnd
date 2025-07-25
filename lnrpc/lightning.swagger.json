@@ -5663,6 +5663,82 @@
         }
       }
     },
+    "lnrpcMwebOutput": {
+      "type": "object",
+      "properties": {
+        "commitment": {
+          "type": "string",
+          "format": "byte",
+          "title": "The 33-byte commitment for the MWEB output"
+        },
+        "sender_pub_key": {
+          "type": "string",
+          "format": "byte",
+          "title": "The 33-byte sender public key"
+        },
+        "receiver_pub_key": {
+          "type": "string",
+          "format": "byte",
+          "title": "The 33-byte receiver public key"
+        },
+        "message": {
+          "$ref": "#/definitions/lnrpcMwebOutputMessage",
+          "title": "The MWEB output message containing encrypted data"
+        },
+        "range_proof_hash": {
+          "type": "string",
+          "format": "byte",
+          "title": "The 32-byte range proof hash"
+        },
+        "signature": {
+          "type": "string",
+          "format": "byte",
+          "title": "The 64-byte signature"
+        },
+        "range_proof": {
+          "type": "string",
+          "format": "byte",
+          "title": "The full range proof (optional, may be large)"
+        }
+      },
+      "title": "MwebOutput represents an MWEB output with all its associated data"
+    },
+    "lnrpcMwebOutputMessage": {
+      "type": "object",
+      "properties": {
+        "features": {
+          "type": "integer",
+          "format": "int64",
+          "title": "Feature bits indicating which fields are present"
+        },
+        "key_exchange_pub_key": {
+          "type": "string",
+          "format": "byte",
+          "title": "The 33-byte key exchange public key"
+        },
+        "view_tag": {
+          "type": "integer",
+          "format": "int64",
+          "title": "The view tag (1 byte)"
+        },
+        "masked_value": {
+          "type": "string",
+          "format": "uint64",
+          "title": "The masked value (8 bytes)"
+        },
+        "masked_nonce": {
+          "type": "string",
+          "format": "byte",
+          "title": "The masked nonce (16 bytes)"
+        },
+        "extra_data": {
+          "type": "string",
+          "format": "byte",
+          "title": "Extra data (variable length)"
+        }
+      },
+      "title": "MwebOutputMessage contains the encrypted message data in an MWEB output"
+    },
     "lnrpcNetworkInfo": {
       "type": "object",
       "properties": {
@@ -7153,6 +7229,10 @@
           "type": "string",
           "format": "int64",
           "title": "The number of confirmations for the Utxo"
+        },
+        "mweb_output": {
+          "$ref": "#/definitions/lnrpcMwebOutput",
+          "title": "The MWEB output data (only present for MWEB address types)"
         }
       }
     },

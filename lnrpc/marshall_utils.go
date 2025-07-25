@@ -118,6 +118,7 @@ func MarshalUtxos(utxos []*lnwallet.Utxo, activeNetParams *chaincfg.Params) (
 			PkScript:      hex.EncodeToString(utxo.PkScript),
 			Outpoint:      outpoint,
 			Confirmations: utxo.Confirmations,
+			MwebOutput:    marshalMwebOutput(utxo.MwebOutput),
 		}
 
 		// Finally, we'll attempt to extract the raw address from the
@@ -143,6 +144,50 @@ func MarshalUtxos(utxos []*lnwallet.Utxo, activeNetParams *chaincfg.Params) (
 	}
 
 	return res, nil
+}
+
+// marshalMwebOutputMessage converts a wire.MwebOutputMessage to the RPC format
+func marshalMwebOutputMessage(msg *wire.MwebOutputMessage) *MwebOutputMessage {
+	if msg == nil {
+		return nil
+	}
+	
+	rpcMsg := &MwebOutputMessage{
+		Features:          uint32(msg.Features),
+		KeyExchangePubKey: msg.KeyExchangePubKey[:],
+		ViewTag:           uint32(msg.ViewTag),
+		MaskedValue:       msg.MaskedValue,
+		MaskedNonce:       msg.MaskedNonce.Bytes(),
+	}
+	
+	if len(msg.ExtraData) > 0 {
+		rpcMsg.ExtraData = msg.ExtraData
+	}
+	
+	return rpcMsg
+}
+
+// marshalMwebOutput converts a wire.MwebOutput to the RPC format
+func marshalMwebOutput(mwebOutput *wire.MwebOutput) *MwebOutput {
+	if mwebOutput == nil {
+		return nil
+	}
+	
+	rpcOutput := &MwebOutput{
+		Commitment:      mwebOutput.Commitment[:],
+		SenderPubKey:    mwebOutput.SenderPubKey[:],
+		ReceiverPubKey:  mwebOutput.ReceiverPubKey[:],
+		Message:         marshalMwebOutputMessage(&mwebOutput.Message),
+		RangeProofHash:  mwebOutput.RangeProofHash[:],
+		Signature:       mwebOutput.Signature[:],
+	}
+	
+	// Include full range proof if available
+	if mwebOutput.RangeProof != nil {
+		rpcOutput.RangeProof = mwebOutput.RangeProof[:]
+	}
+	
+	return rpcOutput
 }
 
 // MarshallOutputType translates a txscript.ScriptClass into a

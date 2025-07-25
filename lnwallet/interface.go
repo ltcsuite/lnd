@@ -129,6 +129,7 @@ type Utxo struct {
 	wire.OutPoint
 	Derivation *psbt.Bip32Derivation
 	PrevTx     *wire.MsgTx
+	MwebOutput *wire.MwebOutput
 }
 
 // OutputDetail contains additional information on a destination address.

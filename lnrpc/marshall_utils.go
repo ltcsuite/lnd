@@ -180,6 +180,7 @@ func marshalMwebOutput(mwebOutput *wire.MwebOutput) *MwebOutput {
 		Message:         marshalMwebOutputMessage(&mwebOutput.Message),
 		RangeProofHash:  mwebOutput.RangeProofHash[:],
 		Signature:       mwebOutput.Signature[:],
+		Hash:            mwebOutput.Hash()[:],
 	}
 	
 	// Include full range proof if available

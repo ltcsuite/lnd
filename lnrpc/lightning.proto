@@ -660,6 +660,8 @@ message MwebOutput {
 
     // The full range proof (optional, may be large)
     bytes range_proof = 7;
+    // The 32-byte output hash identifying this MWEB output
+    bytes hash = 8;
 }
 
 // MwebOutputMessage contains the encrypted message data in an MWEB output

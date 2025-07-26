@@ -916,6 +916,11 @@
           "type": "string",
           "format": "byte",
           "title": "The full range proof (optional, may be large)"
+        },
+        "hash": {
+          "type": "string",
+          "format": "byte",
+          "title": "The 32-byte output hash identifying this MWEB output"
         }
       },
       "title": "MwebOutput represents an MWEB output with all its associated data"

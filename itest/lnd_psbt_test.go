@@ -58,6 +58,12 @@ func testPsbtChanFunding(ht *lntest.HarnessTest) {
 		success := ht.T.Run(tc.name, func(tt *testing.T) {
 			st := ht.Subtest(tt)
 
+			// Skip taproot tests when using ltcd backend that doesn't support it
+			if tc.commitmentType == lnrpc.CommitmentType_SIMPLE_TAPROOT && 
+				st.ChainBackendName() == "ltcd" {
+				st.Skipf("skipping taproot test for ltcd backend that doesn't support taproot")
+			}
+
 			args := lntest.NodeArgsForCommitType(tc.commitmentType)
 
 			// First, we'll create two new nodes that we'll use to
@@ -1095,21 +1101,30 @@ func assertPsbtSpend(ht *lntest.HarnessTest, alice *node.HarnessNode,
 	require.Greater(ht, prevOut, -1)
 
 	// Okay, we have everything we need to create a PSBT now.
-	pendingTx := &wire.MsgTx{
-		Version: 2,
-		TxIn: []*wire.TxIn{{
-			PreviousOutPoint: wire.OutPoint{
-				Hash:  prevTx.TxHash(),
-				Index: uint32(prevOut),
-			},
-		}},
-		// We send to the same address again, but deduct some fees.
-		TxOut: []*wire.TxOut{{
-			Value:    utxo.Value - 600,
-			PkScript: utxo.PkScript,
-		}},
-	}
-	packet, err := psbt.NewFromUnsignedTx(pendingTx)
+	// Use the standard transaction-based approach for PSBTv0
+	// Helper function for uint32 pointer
+	uint32Ptr := func(v uint32) *uint32 { return &v }
+
+	// Create PSBTv2 input with all required fields
+	prevHash := prevTx.TxHash()
+	inputs := []psbt.PInput{{
+		// Required fields for PSBTv2
+		PrevoutHash:  &prevHash,
+		PrevoutIndex: uint32Ptr(uint32(prevOut)),
+		Sequence:     uint32Ptr(wire.MaxTxInSequenceNum),
+	}}
+
+	// Create PSBTv2 output with all required fields
+	outputs := []psbt.POutput{{
+		Amount:   ltcutil.Amount(utxo.Value - 600),
+		PKScript: utxo.PkScript,
+	}}
+
+	// Create empty kernels slice for PSBTv2 (required for MWEB support)
+	kernels := []psbt.PKernel{}
+
+	// Create PSBTv2 packet with explicit version 2 and fallback locktime
+	packet, err := psbt.NewV2(inputs, outputs, kernels, 2, uint32Ptr(0))
 	require.NoError(ht, err)
 
 	// We first try to sign the psbt without the necessary input data
@@ -1117,6 +1132,14 @@ func assertPsbtSpend(ht *lntest.HarnessTest, alice *node.HarnessNode,
 	var buf bytes.Buffer
 	err = packet.Serialize(&buf)
 	require.NoError(ht, err)
+
+	// Debug: Test parsing locally before sending to server
+	localPacket, localErr := psbt.NewFromRawBytes(bytes.NewReader(buf.Bytes()), false)
+	if localErr != nil {
+		ht.Fatalf("Local PSBTv2 parsing failed: %v", localErr)
+	}
+	ht.Logf("Local parsing succeeded: version=%d, inputs=%d, outputs=%d", 
+		localPacket.PsbtVersion, len(localPacket.Inputs), len(localPacket.Outputs))
 
 	signReq := &walletrpc.SignPsbtRequest{FundedPsbt: buf.Bytes()}
 	err = alice.RPC.SignPsbtErr(signReq)

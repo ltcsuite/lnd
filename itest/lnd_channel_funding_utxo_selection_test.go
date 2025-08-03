@@ -320,7 +320,7 @@ func runUtxoSelectionTestCase(ht *lntest.HarnessTest, t *testing.T, alice,
 	// If we don't expect the channel opening to be
 	// successful, simply check for an error.
 	if tc.chanOpenShouldFail {
-		expectedErr := fmt.Errorf(tc.expectedErrStr)
+		expectedErr := fmt.Errorf("%s", tc.expectedErrStr)
 		ht.OpenChannelAssertErr(
 			alice, bob, chanParams, expectedErr,
 		)
@@ -338,7 +338,7 @@ func runUtxoSelectionTestCase(ht *lntest.HarnessTest, t *testing.T, alice,
 		expectedErrStr := fmt.Sprintf("outpoint already spent: %s:%d",
 			selectedOutpoints[0].TxidStr,
 			selectedOutpoints[0].OutputIndex)
-		expectedErr := fmt.Errorf(expectedErrStr)
+		expectedErr := fmt.Errorf("%s", expectedErrStr)
 		ht.OpenChannelAssertErr(
 			alice, bob, chanParams, expectedErr,
 		)

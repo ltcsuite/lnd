@@ -624,20 +624,21 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 			return nil, nil, err
 		}
 
+		// LITECOIN: Skip taproot check for ltcd backend as it doesn't support taproot
 		// Before we continue any further, we'll ensure that the
 		// backend understands Taproot. If not, then all the default
 		// features can't be used.
-		restConfCopy := *rpcConfig
-		restConfCopy.Endpoint = ""
-		restConfCopy.HTTPPostMode = true
-		chainConn, err := rpcclient.New(&restConfCopy, nil)
-		if err != nil {
-			return nil, nil, err
-		}
-		if !backendSupportsTaproot(chainConn) {
-			return nil, nil, fmt.Errorf("node backend does not " +
-				"support taproot")
-		}
+		// restConfCopy := *rpcConfig
+		// restConfCopy.Endpoint = ""
+		// restConfCopy.HTTPPostMode = true
+		// chainConn, err := rpcclient.New(&restConfCopy, nil)
+		// if err != nil {
+		// 	return nil, nil, err
+		// }
+		// if !backendSupportsTaproot(chainConn) {
+		// 	return nil, nil, fmt.Errorf("node backend does not " +
+		// 		"support taproot")
+		// }
 
 		cc.ChainSource = chainRPC
 

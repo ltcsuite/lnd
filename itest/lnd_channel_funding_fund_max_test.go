@@ -220,7 +220,7 @@ func runFundMaxTestCase(ht *lntest.HarnessTest, alice, bob *node.HarnessNode,
 	// If we don't expect the channel opening to be
 	// successful, simply check for an error.
 	if testCase.chanOpenShouldFail {
-		expectedErr := fmt.Errorf(testCase.expectedErrStr)
+		expectedErr := fmt.Errorf("%s", testCase.expectedErrStr)
 		ht.OpenChannelAssertErr(
 			alice, bob, chanParams, expectedErr,
 		)

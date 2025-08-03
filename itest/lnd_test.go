@@ -128,8 +128,8 @@ func TestLightningNetworkDaemon(t *testing.T) {
 				testCase.Name,
 			)
 
-			ht.Alice.AddToLogf(logLine)
-			ht.Bob.AddToLogf(logLine)
+			ht.Alice.AddToLogf("%s", logLine)
+			ht.Bob.AddToLogf("%s", logLine)
 
 			ht.EnsureConnected(ht.Alice, ht.Bob)
 

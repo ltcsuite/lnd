@@ -744,13 +744,7 @@ func fundPsbt(ctx *cli.Context) error {
 						"UTXO outpoint %d: %v", idx,
 						err)
 				}
-				txInputUTXO := &lnrpc.TxInput_Utxo{
-					Utxo: op,
-				}
-				txInput := &lnrpc.TxInput{
-					Input: txInputUTXO,
-				}
-				tpl.Inputs = append(tpl.Inputs, txInput)
+				tpl.Inputs = append(tpl.Inputs, op)
 			}
 		}
 

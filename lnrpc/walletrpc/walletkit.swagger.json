@@ -1122,19 +1122,6 @@
         }
       }
     },
-    "lnrpcTxInput": {
-      "type": "object",
-      "properties": {
-        "utxo": {
-          "$ref": "#/definitions/lnrpcOutPoint"
-        },
-        "mweb_id": {
-          "type": "string",
-          "format": "byte"
-        }
-      },
-      "description": "Accepts either a regular UTXO (lnrpc.OutPoint) or an MWEB input blob."
-    },
     "lnrpcUtxo": {
       "type": "object",
       "properties": {
@@ -2008,7 +1995,7 @@
         "inputs": {
           "type": "array",
           "items": {
-            "$ref": "#/definitions/lnrpcTxInput"
+            "$ref": "#/definitions/lnrpcOutPoint"
           },
           "description": "An optional list of inputs to use. Every input must be an UTXO known to the\nwallet that has not been locked before. The sum of all inputs must be\nsufficiently greater than the sum of all outputs to pay a miner fee with the\nfee rate specified in the parent message.\n\nIf no inputs are specified, coin selection will be performed instead and\ninputs of sufficient value will be added to the resulting PSBT."
         },

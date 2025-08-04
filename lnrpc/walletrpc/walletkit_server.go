@@ -1128,43 +1128,18 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 		}
 
 		var psbtInputs []psbt.PInput
-		for idx, in := range tpl.Inputs {
+		for _, in := range tpl.Inputs {
+			op, err := UnmarshallOutPoint(in)
+			if err != nil {
+				return nil, fmt.Errorf("error parsing "+
+					"outpoint: %v", err)
+			}
 			sequence := uint32(0)
-
-			outpoint := in.GetUtxo()
-			if outpoint != nil {
-				op, err := UnmarshallOutPoint(outpoint)
-				if err != nil {
-					return nil, fmt.Errorf("error parsing outpoint: %v", err)
-				}
-				psbtInputs = append(psbtInputs, psbt.PInput{
-					PrevoutHash:  &op.Hash,
-					PrevoutIndex: &op.Index,
-					Sequence:     &sequence,
-				})
-				utxo, err := w.cfg.Wallet.FetchInputInfo(op)
-				if utxo != nil {
-					print(fmt.Printf("PkScript: %x\n", utxo.PkScript))
-				}
-				continue
-			}
-
-			mwebId := in.GetMwebId()
-			if mwebId != nil {
-				if len(mwebId) != 32 {
-					return nil, fmt.Errorf("mweb id must be 32 bytes")
-				}
-
-				var hash chainhash.Hash
-				copy(hash[:], mwebId)
-
-				psbtInputs = append(psbtInputs, psbt.PInput{
-					MwebOutputId: &hash,
-				})
-				continue
-			}
-
-			return nil, fmt.Errorf("input %d is neither outpoint nor mweb id", idx)
+			psbtInputs = append(psbtInputs, psbt.PInput{
+				PrevoutHash:  &op.Hash,
+				PrevoutIndex: &op.Index,
+				Sequence:     &sequence,
+			})
 		}
 
 		packet, err = psbt.NewV2(psbtInputs, psbtOutputs, nil, 2, nil)

@@ -1169,7 +1169,7 @@ message TxTemplate {
     If no inputs are specified, coin selection will be performed instead and
     inputs of sufficient value will be added to the resulting PSBT.
     */
-    repeated lnrpc.TxInput inputs = 1;
+    repeated lnrpc.OutPoint inputs = 1;
 
     /*
     A map of all addresses and the amounts to send to in the funded PSBT.

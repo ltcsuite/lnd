@@ -61,6 +61,9 @@ type Config struct {
 	// LtcdMode defines settings for connecting to an ltcd node.
 	LtcdMode *lncfg.Btcd
 
+	// ElectrumMode defines settings for connecting to an Electrum server.
+	ElectrumMode *lncfg.Electrum
+
 	// HeightHintDB is a pointer to the database that stores the height
 	// hints.
 	HeightHintDB kvdb.Backend
@@ -665,6 +668,19 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 				return nil, nil, err
 			}
 		}
+
+	case "electrum":
+		// TODO(electrum): Implement Electrum backend support.
+		//
+		// The Electrum backend will require:
+		// - ElectrumNotifier implementing chainntnfs.ChainNotifier
+		// - ElectrumFilteredChainView implementing chainview.FilteredChainView
+		// - Electrum chain client implementing chain.Interface
+		// - Electrum fee estimator implementing chainfee.Estimator
+		//
+		// For now, return an error indicating this is not yet implemented.
+		return nil, nil, fmt.Errorf("electrum backend is not yet " +
+			"fully implemented")
 
 	case "nochainbackend":
 		backend := &NoChainBackend{}

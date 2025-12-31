@@ -223,6 +223,30 @@ const (
 	// defaultGrpcClientPingMinWait is the default minimum amount of time a
 	// client should wait before sending a keepalive ping.
 	defaultGrpcClientPingMinWait = 5 * time.Second
+
+	// defaultHTTPHeaderTimeout is the default timeout for HTTP requests.
+	DefaultHTTPHeaderTimeout = 5 * time.Second
+
+	// DefaultNumRestrictedSlots is the default max number of incoming
+	// connections allowed in the server. Outbound connections are not
+	// restricted.
+	DefaultNumRestrictedSlots = 100
+
+	// LitecoinChainName is a string that represents the Litecoin blockchain.
+	LitecoinChainName = "litecoin"
+
+	litecoindBackendName = "litecoind"
+	ltcdBackendName     = "ltcd"
+	neutrinoBackendName = "neutrino"
+	electrumBackendName = "electrum"
+
+	defaultPrunedNodeMaxPeers = 4
+	defaultNeutrinoMaxPeers   = 8
+
+	// defaultNoDisconnectOnPongFailure is the default value for whether we
+	// should *not* disconnect from a peer if we don't receive a pong
+	// response in time after we send a ping.
+	defaultNoDisconnectOnPongFailure = false
 )
 
 var (
@@ -342,9 +366,10 @@ type Config struct {
 	FeeURL string `long:"feeurl" description:"Optional URL for external fee estimation. If no URL is specified, the method for fee estimation will depend on the chosen backend and network. Must be set for neutrino on mainnet."`
 
 	Litecoin      *lncfg.Chain    `group:"Litecoin" namespace:"litecoin"`
-	LtcdMode      *lncfg.Btcd     `group:"ltcd" namespace:"ltcd"`
+	LtcdMode     *lncfg.Btcd     `group:"ltcd" namespace:"ltcd"`
 	LitecoindMode *lncfg.Bitcoind `group:"litecoind" namespace:"litecoind"`
-	NeutrinoMode  *lncfg.Neutrino `group:"neutrino" namespace:"neutrino"`
+	NeutrinoMode *lncfg.Neutrino `group:"neutrino" namespace:"neutrino"`
+	ElectrumMode *lncfg.Electrum `group:"electrum" namespace:"electrum"`
 
 	BlockCacheSize uint64 `long:"blockcachesize" description:"The maximum capacity of the block cache"`
 
@@ -562,6 +587,7 @@ func DefaultConfig() Config {
 			UserAgentName:    neutrino.UserAgentName,
 			UserAgentVersion: neutrino.UserAgentVersion,
 		},
+		ElectrumMode:       lncfg.DefaultElectrumConfig(),
 		BlockCacheSize:     defaultBlockCacheSize,
 		UnsafeDisconnect:   true,
 		MaxPendingChannels: lncfg.DefaultMaxPendingChannels,
@@ -1188,7 +1214,7 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 		cfg.ActiveNetParams = ltcParams
 
 		switch cfg.Litecoin.Node {
-		case "ltcd":
+		case ltcdBackendName:
 			err := parseRPCParams(
 				cfg.Litecoin, cfg.LtcdMode,
 				chainreg.LitecoinChain, cfg.ActiveNetParams,
@@ -1197,7 +1223,7 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 				return nil, mkErr("unable to load RPC "+
 					"credentials for ltcd: %v", err)
 			}
-		case "litecoind":
+		case litecoindBackendName:
 			if cfg.Litecoin.SimNet {
 				return nil, mkErr("litecoind does not " +
 					"support simnet")
@@ -1210,22 +1236,29 @@ func ValidateConfig(cfg Config, interceptor signal.Interceptor, fileParser,
 				return nil, mkErr("unable to load RPC "+
 					"credentials for litecoind: %v", err)
 			}
-		case "neutrino":
+		case neutrinoBackendName:
 			// No need to get RPC parameters.
+
+		case electrumBackendName:
+			// Validate that an Electrum server address was provided.
+			if cfg.ElectrumMode.Server == "" {
+				return nil, mkErr("electrum.server must be set when " +
+					"using electrum mode")
+			}
 
 		case "nochainbackend":
 			// Nothing to configure, we're running without any chain
 			// backend whatsoever (pure signing mode).
 
 		default:
-			str := "only ltcd, litecoind, and neutrino mode " +
+			str := "only ltcd, litecoind, neutrino and electrum mode " +
 				"supported for litecoin at this time"
 			return nil, mkErr(str)
 		}
 
 		cfg.Litecoin.ChainDir = filepath.Join(
 			cfg.DataDir, defaultChainSubDirname,
-			chainreg.LitecoinChain.String(),
+			LitecoinChainName,
 		)
 
 		// Finally, we'll register the litecoin chain as our current

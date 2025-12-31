@@ -13,7 +13,7 @@ type Chain struct {
 	Active   bool   `long:"active" description:"If the chain should be active or not."`
 	ChainDir string `long:"chaindir" description:"The directory to store the chain's data within."`
 
-	Node string `long:"node" description:"The blockchain interface to use." choice:"ltcd" choice:"litecoind" choice:"neutrino" choice:"nochainbackend"`
+	Node string `long:"node" description:"The blockchain interface to use." choice:"ltc" choice:"litecoind" choice:"neutrino" choice:"electrum" choice:"nochainbackend"`
 
 	MainNet         bool     `long:"mainnet" description:"Use the main network"`
 	TestNet4        bool     `long:"testnet" description:"Use the test network"`

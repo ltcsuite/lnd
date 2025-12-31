@@ -11,6 +11,7 @@ import (
 	"github.com/ltcsuite/lnd/build"
 	"github.com/ltcsuite/lnd/chainio"
 	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/chainntnfs/electrumnotify"
 	"github.com/ltcsuite/lnd/chainreg"
 	"github.com/ltcsuite/lnd/chanacceptor"
 	"github.com/ltcsuite/lnd/chanbackup"
@@ -195,6 +196,7 @@ func SetupLoggers(root *build.RotatingLogWriter, interceptor signal.Interceptor)
 	AddSubLogger(root, rpcwallet.Subsystem, interceptor, rpcwallet.UseLogger)
 	AddSubLogger(root, peersrpc.Subsystem, interceptor, peersrpc.UseLogger)
 	AddSubLogger(root, "ELEC", interceptor, electrum.UseLogger)
+	AddSubLogger(root, "ELNF", interceptor, electrumnotify.UseLogger)
 }
 
 // AddSubLogger is a helper method to conveniently create and register the

@@ -69,6 +69,8 @@ require (
 	modernc.org/sqlite v1.20.3
 )
 
+require github.com/checksum0/go-electrum v0.0.0-20220912200153-b862ac442cf9 // indirect
+
 require (
 	github.com/Azure/go-ansiterm v0.0.0-20230124172434-306776ec8161 // indirect
 	github.com/Microsoft/go-winio v0.6.1 // indirect

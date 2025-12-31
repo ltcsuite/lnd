@@ -14,13 +14,20 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/rpcclient"
+	"github.com/ltcsuite/ltcwallet/chain"
+	"github.com/ltcsuite/neutrino"
 	"github.com/ltcsuite/lnd/blockcache"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/chainntnfs/bitcoindnotify"
 	"github.com/ltcsuite/lnd/chainntnfs/btcdnotify"
+	"github.com/ltcsuite/lnd/chainntnfs/electrumnotify"
 	"github.com/ltcsuite/lnd/chainntnfs/neutrinonotify"
 	"github.com/ltcsuite/lnd/channeldb"
-	"github.com/ltcsuite/lnd/channeldb/models"
+	"github.com/ltcsuite/lnd/electrum"
+	"github.com/ltcsuite/lnd/fn/v2"
+	"github.com/ltcsuite/lnd/graph/db/models"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/kvdb"
@@ -30,11 +37,6 @@ import (
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/routing/chainview"
 	"github.com/ltcsuite/lnd/walletunlocker"
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/ltcutil"
-	"github.com/ltcsuite/ltcd/rpcclient"
-	"github.com/ltcsuite/ltcwallet/chain"
-	"github.com/ltcsuite/neutrino"
 )
 
 // Config houses necessary fields that a chainControl instance needs to
@@ -670,17 +672,58 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 		}
 
 	case "electrum":
-		// TODO(electrum): Implement Electrum backend support.
-		//
-		// The Electrum backend will require:
-		// - ElectrumNotifier implementing chainntnfs.ChainNotifier
-		// - ElectrumFilteredChainView implementing chainview.FilteredChainView
-		// - Electrum chain client implementing chain.Interface
-		// - Electrum fee estimator implementing chainfee.Estimator
-		//
-		// For now, return an error indicating this is not yet implemented.
-		return nil, nil, fmt.Errorf("electrum backend is not yet " +
-			"fully implemented")
+		electrumMode := cfg.ElectrumMode
+
+		// Create the Electrum client configuration.
+		electrumClientCfg := electrum.NewClientConfigFromLncfg(
+			electrumMode,
+		)
+
+		// Create and start the Electrum client.
+		electrumClient := electrum.NewClient(electrumClientCfg)
+		if err := electrumClient.Start(); err != nil {
+			return nil, nil, fmt.Errorf("unable to start electrum "+
+				"client: %v", err)
+		}
+
+		// Create the chain notifier.
+		chainNotifier := electrumnotify.New(
+			electrumClient, cfg.ActiveNetParams.Params,
+			hintCache, hintCache, cfg.BlockCache,
+		)
+		cc.ChainNotifier = chainNotifier
+
+		// Create the filtered chain view using the adapter.
+		chainViewAdapter := electrum.NewChainViewAdapter(electrumClient)
+		cc.ChainView, err = chainview.NewElectrumFilteredChainView(
+			chainViewAdapter,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("unable to create "+
+				"electrum chain view: %v", err)
+		}
+
+		// Create the fee estimator.
+		feeEstimatorCfg := electrum.DefaultFeeEstimatorConfig()
+		cc.FeeEstimator = electrum.NewFeeEstimator(
+			electrumClient, feeEstimatorCfg,
+		)
+
+		// Health check verifies we can connect to the Electrum server.
+		cc.HealthCheck = func() error {
+			if !electrumClient.IsConnected() {
+				return fmt.Errorf("electrum client not connected")
+			}
+			return nil
+		}
+
+		// Note: Electrum backend does not provide a ChainSource
+		// (chain.Interface) implementation. This means wallet
+		// functionality that depends on ChainSource won't work with
+		// the Electrum backend. Users should be aware of this
+		// limitation.
+		log.Warn("Electrum backend does not provide full wallet " +
+			"chain source functionality")
 
 	case "nochainbackend":
 		backend := &NoChainBackend{}

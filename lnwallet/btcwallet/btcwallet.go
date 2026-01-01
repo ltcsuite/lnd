@@ -1201,7 +1201,7 @@ func (b *BtcWallet) ListUnspentWitness(minConfs, maxConfs int32,
 				},
 				Confirmations: output.Confirmations,
 			}
-			
+
 			// For MWEB outputs, retrieve the full MWEB output information
 			if addressType == lnwallet.Mweb {
 				var mwebOutput *wire.MwebOutput
@@ -1215,7 +1215,7 @@ func (b *BtcWallet) ListUnspentWitness(minConfs, maxConfs int32,
 					utxo.MwebOutput = mwebOutput
 				}
 			}
-			
+
 			witnessOutputs = append(witnessOutputs, utxo)
 		}
 

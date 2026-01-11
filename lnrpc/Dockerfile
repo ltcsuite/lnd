@@ -42,6 +42,7 @@ WORKDIR /build
 RUN git clone https://github.com/apple/swift-protobuf.git \
 && cd swift-protobuf \
 && git checkout $(git describe --tags --abbrev=0) \
+&& git submodule update --init --recursive \
 && swift build -c release \
 && mv .build/release/protoc-gen-swift /bin
 

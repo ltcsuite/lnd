@@ -16,6 +16,7 @@ import (
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/btcsuite/btcwallet/wtxmgr"
+	"github.com/checksum0/go-electrum/electrum"
 )
 
 const (
@@ -24,6 +25,17 @@ const (
 
 	// defaultRequestTimeout is the default timeout for Electrum requests.
 	defaultRequestTimeout = 30 * time.Second
+
+	// batchSize is the number of block headers to fetch in a single batch.
+	// Set to 2016 (one Bitcoin difficulty adjustment period) for optimal
+	// performance while respecting natural epoch boundaries.
+	batchSize = 2016
+
+	// addressScanConcurrency is the number of concurrent workers for
+	// address history scanning. Set to 10 to match ElectrumX's default
+	// INITIAL_CONCURRENT limit, providing 8-10x speedup while respecting
+	// server rate limits.
+	addressScanConcurrency = 10
 )
 
 var (
@@ -89,6 +101,13 @@ type ChainClient struct {
 	watchedOutpointsMtx sync.RWMutex
 	watchedOutpoints    map[wire.OutPoint]btcutil.Address
 
+	// historyCache caches address history results during sync to avoid
+	// redundant queries. This is critical for performance - without it,
+	// syncing 400k blocks with 5000 addresses would require 1 million
+	// GetHistory calls instead of just 5000.
+	historyCacheMtx sync.RWMutex
+	historyCache    map[string][]*electrum.GetMempoolResult
+
 	quit chan struct{}
 	wg   sync.WaitGroup
 }
@@ -114,10 +133,27 @@ func NewChainClient(client *Client, chainParams *chaincfg.Params,
 		chainParams:      chainParams,
 		headerCache:      make(map[chainhash.Hash]*wire.BlockHeader),
 		heightToHash:     make(map[int32]*chainhash.Hash),
-		notificationChan: make(chan interface{}, 100),
+		notificationChan: make(chan interface{}, 2100),
 		watchedAddrs:     make(map[string]btcutil.Address),
 		watchedOutpoints: make(map[wire.OutPoint]btcutil.Address),
+		historyCache:     make(map[string][]*electrum.GetMempoolResult),
 		quit:             make(chan struct{}),
+	}
+}
+
+// sendNotification sends a notification to the notification channel in a
+// non-blocking manner. It only blocks on the quit signal to ensure graceful
+// shutdown. This prevents deadlocks when the notification channel buffer is
+// full while still allowing operations to complete.
+//
+// Returns true if the notification was sent, false if the client is shutting
+// down.
+func (c *ChainClient) sendNotification(notification interface{}) bool {
+	select {
+	case c.notificationChan <- notification:
+		return true
+	case <-c.quit:
+		return false
 	}
 }
 
@@ -182,17 +218,21 @@ func (c *ChainClient) Start() error {
 	// Send ClientConnected notification first. This triggers the wallet to
 	// start the sync process by calling syncWithChain.
 	log.Infof("Sending ClientConnected notification to trigger wallet sync")
-	c.notificationChan <- chain.ClientConnected{}
+	if !c.sendNotification(chain.ClientConnected{}) {
+		return errors.New("client shutting down")
+	}
 
 	// Send initial rescan finished notification.
 	c.bestBlockMtx.RLock()
 	bestBlock := c.bestBlock
 	c.bestBlockMtx.RUnlock()
 
-	c.notificationChan <- &chain.RescanFinished{
+	if !c.sendNotification(&chain.RescanFinished{
 		Hash:   &bestBlock.Hash,
 		Height: bestBlock.Height,
 		Time:   bestBlock.Timestamp,
+	}) {
+		return errors.New("client shutting down")
 	}
 
 	return nil
@@ -294,10 +334,58 @@ func (c *ChainClient) GetBlockHash(height int64) (*chainhash.Hash, error) {
 
 	log.Debugf("GetBlockHash: fetching height %d from server", height)
 
-	// Fetch from server.
+	// Optimization: Try to batch-fetch a range of headers around this height.
+	// This significantly improves performance for sequential access patterns
+	// (e.g., graph builder validation, wallet rescans).
 	ctx, cancel := context.WithTimeout(context.Background(), defaultRequestTimeout)
 	defer cancel()
 
+	// Determine how many headers to fetch ahead.
+	const readAheadCount = 2000
+	c.bestBlockMtx.RLock()
+	bestHeight := c.bestBlock.Height
+	c.bestBlockMtx.RUnlock()
+
+	// Calculate batch size, don't exceed best known height.
+	batchCount := readAheadCount
+	if int32(height)+int32(batchCount) > bestHeight {
+		batchCount = int(bestHeight - int32(height) + 1)
+	}
+
+	// Only batch if we're fetching 2+ headers and not at the tip.
+	if batchCount >= 2 {
+		log.Debugf("GetBlockHash: batch-fetching %d headers starting at %d "+
+			"(read-ahead optimization)", batchCount, height)
+
+		headers, err := c.client.GetBlockHeaders(
+			ctx, uint32(height), uint32(batchCount),
+		)
+		if err == nil {
+			// Successfully fetched batch - cache all headers.
+			log.Debugf("GetBlockHash: cached %d headers [%d-%d]",
+				len(headers), height, int64(height)+int64(len(headers))-1)
+
+			for i, header := range headers {
+				h := int32(height) + int32(i)
+				hash := header.BlockHash()
+				c.cacheHeader(h, &hash, header)
+			}
+
+			// Return the originally requested hash.
+			c.heightToHashMtx.RLock()
+			hash, ok := c.heightToHash[int32(height)]
+			c.heightToHashMtx.RUnlock()
+
+			if ok {
+				return hash, nil
+			}
+		} else {
+			log.Debugf("GetBlockHash: batch fetch failed, falling back "+
+				"to single header: %v", err)
+		}
+	}
+
+	// Fallback: fetch single header.
 	header, err := c.client.GetBlockHeader(ctx, uint32(height))
 	if err != nil {
 		log.Errorf("GetBlockHash: failed to get header at height %d: %v", height, err)
@@ -401,61 +489,152 @@ func (c *ChainClient) FilterBlocks(
 	// For Electrum, we can't scan full blocks. Instead, we query the
 	// history for each watched address and check if any transactions
 	// appeared in the requested block range.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+
+	totalAddrs := len(req.ExternalAddrs) + len(req.InternalAddrs)
+	log.Infof("FilterBlocks: scanning %d blocks for %d addresses "+
+		"(using %d concurrent workers)",
+		len(req.Blocks), totalAddrs, addressScanConcurrency)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
+	// Combine all addresses into a single slice for parallel processing.
+	allAddrs := make([]btcutil.Address, 0, totalAddrs)
+	for _, addr := range req.ExternalAddrs {
+		allAddrs = append(allAddrs, addr)
+	}
+	for _, addr := range req.InternalAddrs {
+		allAddrs = append(allAddrs, addr)
+	}
+
+	// Process addresses in parallel using worker pool.
+	type addressResult struct {
+		txns []*wire.MsgTx
+		idx  uint32
+		err  error
+	}
+
+	results := make(chan addressResult, totalAddrs)
+	semaphore := make(chan struct{}, addressScanConcurrency)
+	var wg sync.WaitGroup
+
+	// Launch workers for all addresses.
+	for i, addr := range allAddrs {
+		wg.Add(1)
+		go func(address btcutil.Address, addrNum int) {
+			defer wg.Done()
+
+			// Acquire semaphore slot.
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			// Log progress periodically.
+			if addrNum%100 == 0 {
+				log.Debugf("FilterBlocks: processing address %d/%d",
+					addrNum, totalAddrs)
+			}
+
+			txns, idx, err := c.filterAddressInBlocks(
+				ctx, address, req.Blocks,
+			)
+			if err != nil {
+				log.Warnf("Failed to filter address %s: %v",
+					address, err)
+			}
+
+			results <- addressResult{
+				txns: txns,
+				idx:  idx,
+				err:  err,
+			}
+		}(addr, i)
+	}
+
+	// Close results channel when all workers complete.
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results from all workers.
 	var (
 		relevantTxns  []*wire.MsgTx
 		batchIndex    uint32
 		foundRelevant bool
 	)
 
-	// Check each watched address for activity in the requested blocks.
-	for _, addr := range req.ExternalAddrs {
-		txns, idx, err := c.filterAddressInBlocks(
-			ctx, addr, req.Blocks,
-		)
-		if err != nil {
-			log.Warnf("Failed to filter address %s: %v", addr, err)
+	for result := range results {
+		if result.err != nil {
 			continue
 		}
 
-		if len(txns) > 0 {
-			relevantTxns = append(relevantTxns, txns...)
-			if !foundRelevant || idx < batchIndex {
-				batchIndex = idx
-			}
-			foundRelevant = true
-		}
-	}
-
-	for _, addr := range req.InternalAddrs {
-		txns, idx, err := c.filterAddressInBlocks(
-			ctx, addr, req.Blocks,
-		)
-		if err != nil {
-			log.Warnf("Failed to filter address %s: %v", addr, err)
-			continue
-		}
-
-		if len(txns) > 0 {
-			relevantTxns = append(relevantTxns, txns...)
-			if !foundRelevant || idx < batchIndex {
-				batchIndex = idx
+		if len(result.txns) > 0 {
+			relevantTxns = append(relevantTxns, result.txns...)
+			if !foundRelevant || result.idx < batchIndex {
+				batchIndex = result.idx
 			}
 			foundRelevant = true
 		}
 	}
 
 	if !foundRelevant {
+		log.Infof("FilterBlocks: complete, no relevant transactions found")
 		return nil, nil
 	}
+
+	log.Infof("FilterBlocks: complete, found %d relevant transactions",
+		len(relevantTxns))
 
 	return &chain.FilterBlocksResponse{
 		BatchIndex:   batchIndex,
 		BlockMeta:    req.Blocks[batchIndex],
 		RelevantTxns: relevantTxns,
 	}, nil
+}
+
+// clearHistoryCache clears the address history cache. Should be called:
+// - At the start of a new rescan to ensure fresh data
+// - After syncing completes to free memory
+// - When a reorg is detected to invalidate cached data
+func (c *ChainClient) clearHistoryCache() {
+	c.historyCacheMtx.Lock()
+	defer c.historyCacheMtx.Unlock()
+
+	numEntries := len(c.historyCache)
+	if numEntries > 0 {
+		log.Debugf("Clearing history cache with %d entries", numEntries)
+		c.historyCache = make(map[string][]*electrum.GetMempoolResult)
+	}
+}
+
+// getHistoryWithCache retrieves address history, using cache to avoid
+// redundant queries during wallet sync. This reduces queries from 1 million
+// to 5000 for a 400k block sync.
+func (c *ChainClient) getHistoryWithCache(ctx context.Context,
+	scripthash string) ([]*electrum.GetMempoolResult, error) {
+
+	// Check cache first.
+	c.historyCacheMtx.RLock()
+	if cached, ok := c.historyCache[scripthash]; ok {
+		c.historyCacheMtx.RUnlock()
+		log.Tracef("getHistoryWithCache: cache hit for %s", scripthash)
+		return cached, nil
+	}
+	c.historyCacheMtx.RUnlock()
+
+	// Cache miss - fetch from server.
+	log.Tracef("getHistoryWithCache: cache miss, fetching %s", scripthash)
+	history, err := c.client.GetHistory(ctx, scripthash)
+	if err != nil {
+		return nil, err
+	}
+
+	// Store in cache.
+	c.historyCacheMtx.Lock()
+	c.historyCache[scripthash] = history
+	c.historyCacheMtx.Unlock()
+
+	return history, nil
 }
 
 // filterAddressInBlocks checks if an address has any activity in the given
@@ -471,49 +650,70 @@ func (c *ChainClient) filterAddressInBlocks(ctx context.Context,
 
 	scripthash := ScripthashFromScript(pkScript)
 
-	history, err := c.client.GetHistory(ctx, scripthash)
+	log.Tracef("filterAddressInBlocks: fetching history for %s", addr.EncodeAddress())
+	history, err := c.getHistoryWithCache(ctx, scripthash)
 	if err != nil {
 		return nil, 0, err
 	}
+
+	log.Tracef("filterAddressInBlocks: got %d history items for %s",
+		len(history), addr.EncodeAddress())
 
 	var (
 		relevantTxns []*wire.MsgTx
 		batchIdx     uint32 = ^uint32(0)
 	)
 
+	// Build map of block heights for faster lookup
+	blockHeights := make(map[int32]int)
+	for i, block := range blocks {
+		blockHeights[block.Height] = i
+	}
+
+	// Collect heights we'll need for header caching
+	var neededHeights []int32
+
 	for _, histItem := range history {
 		if histItem.Height <= 0 {
 			continue
 		}
 
-		// Check if this height falls within any of our blocks.
-		for i, block := range blocks {
-			if int32(histItem.Height) == block.Height {
-				txHash, err := chainhash.NewHashFromStr(
-					histItem.Hash,
-				)
-				if err != nil {
-					continue
-				}
+		// Check if this height is in our target blocks
+		if idx, ok := blockHeights[int32(histItem.Height)]; ok {
+			neededHeights = append(neededHeights, int32(histItem.Height))
 
-				// Fetch the transaction.
-				tx, err := c.client.GetTransactionMsgTx(
-					ctx, txHash,
-				)
-				if err != nil {
-					log.Warnf("Failed to get tx %s: %v",
-						histItem.Hash, err)
-					continue
-				}
+			txHash, err := chainhash.NewHashFromStr(
+				histItem.Hash,
+			)
+			if err != nil {
+				continue
+			}
 
-				relevantTxns = append(relevantTxns, tx)
+			// Fetch the transaction.
+			tx, err := c.client.GetTransactionMsgTx(
+				ctx, txHash,
+			)
+			if err != nil {
+				log.Warnf("Failed to get tx %s: %v",
+					histItem.Hash, err)
+				continue
+			}
 
-				if uint32(i) < batchIdx {
-					batchIdx = uint32(i)
-				}
+			relevantTxns = append(relevantTxns, tx)
+
+			if uint32(idx) < batchIdx {
+				batchIdx = uint32(idx)
 			}
 		}
 	}
+
+	// Pre-cache headers for all needed heights
+	if len(neededHeights) > 0 {
+		c.ensureHeadersCached(ctx, neededHeights)
+	}
+
+	log.Tracef("filterAddressInBlocks: found %d relevant txns for %s",
+		len(relevantTxns), addr.EncodeAddress())
 
 	return relevantTxns, batchIdx, nil
 }
@@ -656,28 +856,78 @@ func (c *ChainClient) Rescan(startHash *chainhash.Hash,
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
+	// CRITICAL: Run rescan asynchronously to prevent deadlock.
+	// The wallet expects Rescan() to return immediately and will read
+	// notifications asynchronously. If we block here, we create a deadlock:
+	// - This function tries to send notifications
+	// - Channel fills up
+	// - Wallet is waiting for this function to return before reading notifications
+	// - Classic producer-consumer deadlock
+	c.wg.Add(1)
+	go func() {
+		defer c.wg.Done()
 
-	// Scan each address for history.
-	for _, addr := range addrs {
-		err := c.scanAddressHistory(ctx, addr, startHeight)
-		if err != nil {
-			log.Warnf("Failed to scan address %s: %v", addr, err)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+
+		log.Infof("Rescan goroutine started for %d addresses from "+
+			"height %d (using %d concurrent workers)",
+			len(addrs), startHeight, addressScanConcurrency)
+
+		// Scan addresses in parallel using worker pool.
+		semaphore := make(chan struct{}, addressScanConcurrency)
+		var wg sync.WaitGroup
+
+		for i, addr := range addrs {
+			select {
+			case <-c.quit:
+				log.Info("Rescan aborted due to client shutdown")
+				return
+			default:
+			}
+
+			wg.Add(1)
+			go func(address btcutil.Address, addrNum int) {
+				defer wg.Done()
+
+				// Acquire semaphore slot.
+				semaphore <- struct{}{}
+				defer func() { <-semaphore }()
+
+				// Log progress periodically.
+				if addrNum%100 == 0 {
+					log.Debugf("Rescan: processing address %d/%d",
+						addrNum, len(addrs))
+				}
+
+				err := c.scanAddressHistory(ctx, address, startHeight)
+				if err != nil {
+					log.Warnf("Failed to scan address %s: %v",
+						address, err)
+				}
+			}(addr, i)
 		}
-	}
 
-	// Send rescan finished notification.
-	c.bestBlockMtx.RLock()
-	bestBlock := c.bestBlock
-	c.bestBlockMtx.RUnlock()
+		// Wait for all address scans to complete.
+		wg.Wait()
 
-	c.notificationChan <- &chain.RescanFinished{
-		Hash:   &bestBlock.Hash,
-		Height: bestBlock.Height,
-		Time:   bestBlock.Timestamp,
-	}
+		// Send rescan finished notification.
+		c.bestBlockMtx.RLock()
+		bestBlock := c.bestBlock
+		c.bestBlockMtx.RUnlock()
 
+		log.Infof("Rescan complete, sending RescanFinished notification")
+
+		c.sendNotification(&chain.RescanFinished{
+			Hash:   &bestBlock.Hash,
+			Height: bestBlock.Height,
+			Time:   bestBlock.Timestamp,
+		})
+
+		log.Infof("Rescan goroutine finished")
+	}()
+
+	// Return immediately so wallet can start reading notifications.
 	return nil
 }
 
@@ -704,6 +954,20 @@ func (c *ChainClient) scanAddressHistory(ctx context.Context,
 	log.Tracef("Found %d history items for address %s",
 		len(history), addr.EncodeAddress())
 
+	// First pass: collect all heights we'll need.
+	var neededHeights []int32
+	for _, histItem := range history {
+		// Skip unconfirmed and historical transactions.
+		if histItem.Height <= 0 || int32(histItem.Height) < startHeight {
+			continue
+		}
+		neededHeights = append(neededHeights, int32(histItem.Height))
+	}
+
+	// Pre-fetch all needed headers in batch.
+	c.ensureHeadersCached(ctx, neededHeights)
+
+	// Second pass: process transactions with cached headers.
 	for _, histItem := range history {
 		log.Tracef("History item: txid=%s height=%d",
 			histItem.Hash, histItem.Height)
@@ -727,7 +991,7 @@ func (c *ChainClient) scanAddressHistory(ctx context.Context,
 			continue
 		}
 
-		// Get block hash for this height.
+		// Get block hash for this height (should be cached now).
 		blockHash, err := c.GetBlockHash(int64(histItem.Height))
 		if err != nil {
 			log.Warnf("Failed to get block hash for height %d: %v",
@@ -739,7 +1003,7 @@ func (c *ChainClient) scanAddressHistory(ctx context.Context,
 		log.Debugf("scanAddressHistory: sending RelevantTx for tx %s at height %d",
 			txHash, histItem.Height)
 
-		c.notificationChan <- chain.RelevantTx{
+		if !c.sendNotification(chain.RelevantTx{
 			TxRecord: &wtxmgr.TxRecord{
 				MsgTx:    *tx,
 				Hash:     *txHash,
@@ -751,6 +1015,8 @@ func (c *ChainClient) scanAddressHistory(ctx context.Context,
 					Height: int32(histItem.Height),
 				},
 			},
+		}) {
+			return nil
 		}
 
 	}
@@ -776,29 +1042,51 @@ func (c *ChainClient) NotifyReceived(addrs []btcutil.Address) error {
 	// Scan for existing activity on these addresses in a goroutine to avoid
 	// blocking. This ensures that if funds were already sent to an address,
 	// the wallet will be notified.
+	c.wg.Add(1)
 	go func() {
-		log.Debugf("Starting background scan for %d addresses", len(addrs))
+		defer c.wg.Done()
+
+		log.Debugf("Starting background scan for %d addresses "+
+			"(using %d concurrent workers)",
+			len(addrs), addressScanConcurrency)
 
 		ctx, cancel := context.WithTimeout(
-			context.Background(), 5*time.Minute,
+			context.Background(), 30*time.Minute,
 		)
 		defer cancel()
 
-		for _, addr := range addrs {
+		// Scan addresses in parallel using worker pool.
+		semaphore := make(chan struct{}, addressScanConcurrency)
+		var wg sync.WaitGroup
+
+		for i, addr := range addrs {
 			select {
 			case <-c.quit:
+				log.Info("NotifyReceived scan aborted due to client shutdown")
 				return
 			default:
 			}
 
-			log.Tracef("Scanning address %s for existing transactions",
-				addr.EncodeAddress())
+			wg.Add(1)
+			go func(address btcutil.Address, addrNum int) {
+				defer wg.Done()
 
-			if err := c.scanAddressForExistingTxs(ctx, addr); err != nil {
-				log.Tracef("Failed to scan address %s: %v",
-					addr.EncodeAddress(), err)
-			}
+				// Acquire semaphore slot.
+				semaphore <- struct{}{}
+				defer func() { <-semaphore }()
+
+				log.Tracef("Scanning address %s for existing transactions",
+					address.EncodeAddress())
+
+				if err := c.scanAddressForExistingTxs(ctx, address); err != nil {
+					log.Tracef("Failed to scan address %s: %v",
+						address.EncodeAddress(), err)
+				}
+			}(addr, i)
 		}
+
+		// Wait for all scans to complete.
+		wg.Wait()
 
 		log.Debugf("Finished background scan for %d addresses", len(addrs))
 	}()
@@ -831,6 +1119,18 @@ func (c *ChainClient) scanAddressForExistingTxs(ctx context.Context,
 	log.Tracef("Found %d transactions for address %s",
 		len(history), addr.EncodeAddress())
 
+	// First pass: collect all heights we'll need.
+	var neededHeights []int32
+	for _, histItem := range history {
+		if histItem.Height > 0 {
+			neededHeights = append(neededHeights, int32(histItem.Height))
+		}
+	}
+
+	// Pre-fetch all needed headers in batch.
+	c.ensureHeadersCached(ctx, neededHeights)
+
+	// Second pass: process transactions with cached headers.
 	for _, histItem := range history {
 		txHash, err := chainhash.NewHashFromStr(histItem.Hash)
 		if err != nil {
@@ -846,7 +1146,7 @@ func (c *ChainClient) scanAddressForExistingTxs(ctx context.Context,
 
 		var block *wtxmgr.BlockMeta
 		if histItem.Height > 0 {
-			// Confirmed transaction.
+			// Confirmed transaction - get block hash (should be cached now).
 			blockHash, err := c.GetBlockHash(int64(histItem.Height))
 			if err != nil {
 				log.Warnf("Failed to get block hash for height %d: %v",
@@ -866,19 +1166,15 @@ func (c *ChainClient) scanAddressForExistingTxs(ctx context.Context,
 		log.Debugf("Sending RelevantTx for tx %s (height=%d)",
 			txHash, histItem.Height)
 
-		select {
-		case c.notificationChan <- chain.RelevantTx{
+		if !c.sendNotification(chain.RelevantTx{
 			TxRecord: &wtxmgr.TxRecord{
 				MsgTx:    *tx,
 				Hash:     *txHash,
 				Received: time.Now(),
 			},
 			Block: block,
-		}:
-		case <-c.quit:
+		}) {
 			return nil
-		case <-ctx.Done():
-			return ctx.Err()
 		}
 	}
 
@@ -952,6 +1248,168 @@ func (c *ChainClient) notificationHandler(
 	}
 }
 
+// ensureHeadersCached ensures that headers for the given heights are cached.
+// It batch-fetches missing headers efficiently, grouping contiguous ranges.
+func (c *ChainClient) ensureHeadersCached(ctx context.Context, heights []int32) {
+	if len(heights) == 0 {
+		return
+	}
+
+	// Filter out heights that are already cached.
+	var missingHeights []int32
+	c.heightToHashMtx.RLock()
+	for _, height := range heights {
+		if _, ok := c.heightToHash[height]; !ok {
+			missingHeights = append(missingHeights, height)
+		}
+	}
+	c.heightToHashMtx.RUnlock()
+
+	if len(missingHeights) == 0 {
+		return
+	}
+
+	// Sort heights to identify contiguous ranges.
+	sort := func(heights []int32) {
+		for i := 0; i < len(heights); i++ {
+			for j := i + 1; j < len(heights); j++ {
+				if heights[j] < heights[i] {
+					heights[i], heights[j] = heights[j], heights[i]
+				}
+			}
+		}
+	}
+	sort(missingHeights)
+
+	// Remove duplicates.
+	unique := missingHeights[:0]
+	for i, h := range missingHeights {
+		if i == 0 || h != missingHeights[i-1] {
+			unique = append(unique, h)
+		}
+	}
+	missingHeights = unique
+
+	log.Debugf("Pre-caching %d missing headers", len(missingHeights))
+
+	// Batch-fetch contiguous ranges.
+	i := 0
+	for i < len(missingHeights) {
+		startHeight := missingHeights[i]
+		endIdx := i
+
+		// Find the end of contiguous sequence.
+		for endIdx+1 < len(missingHeights) &&
+			missingHeights[endIdx+1] == missingHeights[endIdx]+1 {
+			endIdx++
+		}
+
+		count := endIdx - i + 1
+
+		// Try batch fetch for ranges of 2+ headers.
+		if count > 1 {
+			log.Tracef("Batch-fetching %d headers from height %d",
+				count, startHeight)
+
+			headers, err := c.client.GetBlockHeaders(
+				ctx, uint32(startHeight), uint32(count),
+			)
+			if err == nil {
+				// Cache all fetched headers.
+				for j, header := range headers {
+					hash := header.BlockHash()
+					c.cacheHeader(startHeight+int32(j), &hash, header)
+				}
+				i = endIdx + 1
+				continue
+			}
+
+			log.Warnf("Batch fetch failed, falling back to "+
+				"single-header fetch: %v", err)
+		}
+
+		// Fetch single header (fallback or non-contiguous).
+		header, err := c.client.GetBlockHeader(ctx, uint32(startHeight))
+		if err == nil {
+			hash := header.BlockHash()
+			c.cacheHeader(startHeight, &hash, header)
+		} else {
+			log.Warnf("Failed to fetch header at height %d: %v",
+				startHeight, err)
+		}
+
+		i++
+	}
+}
+
+// processHeaderBatch validates and caches a batch of block headers.
+// It performs strict chain validation and sends block notifications.
+func (c *ChainClient) processHeaderBatch(ctx context.Context,
+	headers []*wire.BlockHeader, startHeight int32) error {
+
+	if len(headers) == 0 {
+		return nil
+	}
+
+	// Get the hash of the previous block (the one before this batch).
+	// This is used to validate that the first header in the batch links
+	// to our current chain.
+	c.bestBlockMtx.RLock()
+	expectedPrevHash := c.bestBlock.Hash
+	c.bestBlockMtx.RUnlock()
+
+	for i, header := range headers {
+		currentHeight := startHeight + int32(i)
+		currentHash := header.BlockHash()
+
+		// Validate chain linkage.
+		if i == 0 {
+			// First header in batch must link to our current best block.
+			if !header.PrevBlock.IsEqual(&expectedPrevHash) {
+				return fmt.Errorf("batch does not link to local tip: "+
+					"expected prevBlock %s, got %s at height %d",
+					expectedPrevHash, header.PrevBlock, currentHeight)
+			}
+		} else {
+			// Subsequent headers must link to previous header in batch.
+			prevHash := headers[i-1].BlockHash()
+			if !header.PrevBlock.IsEqual(&prevHash) {
+				return fmt.Errorf("chain split detected: "+
+					"expected prevBlock %s, got %s at height %d",
+					prevHash, header.PrevBlock, currentHeight)
+			}
+		}
+
+		// Cache the header.
+		c.cacheHeader(currentHeight, &currentHash, header)
+
+		// Update best block.
+		c.bestBlockMtx.Lock()
+		c.bestBlock = waddrmgr.BlockStamp{
+			Height:    currentHeight,
+			Hash:      currentHash,
+			Timestamp: header.Timestamp,
+		}
+		c.bestBlockMtx.Unlock()
+
+		// Send block connected notification if requested.
+		if c.notifyBlocks.Load() {
+			c.sendNotification(chain.BlockConnected{
+				Block: wtxmgr.Block{
+					Hash:   currentHash,
+					Height: currentHeight,
+				},
+				Time: header.Timestamp,
+			})
+		}
+
+		// Update expectedPrevHash for next iteration.
+		expectedPrevHash = currentHash
+	}
+
+	return nil
+}
+
 // handleNewHeader processes a new block header notification.
 func (c *ChainClient) handleNewHeader(header *SubscribeHeadersResult) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -977,65 +1435,220 @@ func (c *ChainClient) handleNewHeader(header *SubscribeHeadersResult) {
 		hash := blockHeader.BlockHash()
 
 		if !hash.IsEqual(&prevHash) {
-			// Potential reorg - notify disconnected blocks.
+			// Potential reorg detected - clear history cache to
+			// ensure fresh data on next query.
+			log.Warnf("Reorg detected at height %d, clearing history cache",
+				newHeight)
+			c.clearHistoryCache()
+
+			// Notify disconnected blocks.
 			for h := prevHeight; h >= newHeight; h-- {
 				c.heightToHashMtx.RLock()
 				oldHash := c.heightToHash[h]
 				c.heightToHashMtx.RUnlock()
 
 				if oldHash != nil && c.notifyBlocks.Load() {
-					c.notificationChan <- chain.BlockDisconnected{
+					c.sendNotification(chain.BlockDisconnected{
 						Block: wtxmgr.Block{
 							Hash:   *oldHash,
 							Height: h,
 						},
-					}
+					})
 				}
 			}
 		}
 	}
 
-	// Process each block from prevHeight+1 to newHeight sequentially.
+	// Process blocks from prevHeight+1 to newHeight using batch fetching.
 	// This ensures the wallet receives BlockConnected for every block.
 	startHeight := prevHeight + 1
 	if startHeight < 1 {
 		startHeight = 1
 	}
 
-	for h := startHeight; h <= newHeight; h++ {
-		blockHeader, err := c.client.GetBlockHeader(ctx, uint32(h))
+	// Sync in batches of batchSize blocks for optimal performance.
+	for height := startHeight; height <= newHeight; height += batchSize {
+		// Calculate how many headers to fetch in this batch.
+		count := batchSize
+		remaining := newHeight - height + 1
+		if remaining < int32(batchSize) {
+			count = int(remaining)
+		}
+
+		log.Debugf("Fetching batch of %d headers starting at height %d",
+			count, height)
+
+		// Fetch the entire batch in ONE network request.
+		headers, err := c.client.GetBlockHeaders(
+			ctx, uint32(height), uint32(count),
+		)
 		if err != nil {
-			log.Errorf("Failed to get block header at height %d: %v", h, err)
+			log.Errorf("Failed to fetch header batch at height %d: %v",
+				height, err)
+
+			// Fall back to single-header fetching for this range.
+			log.Warnf("Falling back to single-header sync for range "+
+				"%d-%d", height, height+int32(count)-1)
+
+			fallbackStartHeight := height
+			fallbackEndHeight := height + int32(count) - 1
+
+			for h := height; h < height+int32(count); h++ {
+				singleHeader, err := c.client.GetBlockHeader(
+					ctx, uint32(h),
+				)
+				if err != nil {
+					log.Errorf("Failed to get header at height %d: %v",
+						h, err)
+					continue
+				}
+
+				// Process single header.
+				if err := c.processHeaderBatch(
+					ctx, []*wire.BlockHeader{singleHeader}, h,
+				); err != nil {
+					log.Errorf("Failed to process header at "+
+						"height %d: %v", h, err)
+					break
+				}
+			}
+
+			// Check watched addresses for the fallback range.
+			c.checkAddressesInRange(ctx, fallbackStartHeight, fallbackEndHeight)
 			continue
 		}
 
-		hash := blockHeader.BlockHash()
-
-		// Cache the header first, before any notifications.
-		c.cacheHeader(h, &hash, blockHeader)
-
-		// Update best block.
-		c.bestBlockMtx.Lock()
-		c.bestBlock = waddrmgr.BlockStamp{
-			Height:    h,
-			Hash:      hash,
-			Timestamp: blockHeader.Timestamp,
+		// Validate and cache the entire batch.
+		if err := c.processHeaderBatch(ctx, headers, height); err != nil {
+			log.Errorf("Invalid header batch at height %d: %v",
+				height, err)
+			// Stop syncing on validation failure to prevent accepting
+			// invalid chain data.
+			break
 		}
-		c.bestBlockMtx.Unlock()
 
-		// Send block connected notification if requested.
-		if c.notifyBlocks.Load() {
-			c.notificationChan <- chain.BlockConnected{
-				Block: wtxmgr.Block{
-					Hash:   hash,
-					Height: h,
+		// Check watched addresses for the entire batch range.
+		// This is more efficient than checking per-block.
+		batchEndHeight := height + int32(len(headers)) - 1
+		c.checkAddressesInRange(ctx, height, batchEndHeight)
+	}
+}
+
+// checkAddressesInRange checks watched addresses for transactions within a
+// block height range. This is optimized for batch processing - it fetches the
+// history for each address ONCE and filters locally, rather than querying the
+// server repeatedly for each block.
+func (c *ChainClient) checkAddressesInRange(ctx context.Context,
+	startHeight, endHeight int32) {
+
+	// Get snapshot of watched addresses.
+	c.watchedAddrsMtx.RLock()
+	addrs := make([]btcutil.Address, 0, len(c.watchedAddrs))
+	for _, addr := range c.watchedAddrs {
+		addrs = append(addrs, addr)
+	}
+	c.watchedAddrsMtx.RUnlock()
+
+	if len(addrs) == 0 {
+		return
+	}
+
+	log.Tracef("Checking %d watched addresses for block range %d-%d",
+		len(addrs), startHeight, endHeight)
+
+	// For each watched address, fetch history once and filter locally.
+	for _, addr := range addrs {
+		pkScript, err := scriptFromAddress(addr, c.chainParams)
+		if err != nil {
+			log.Warnf("Failed to get pkScript for address %s: %v",
+				addr.EncodeAddress(), err)
+			continue
+		}
+
+		scripthash := ScripthashFromScript(pkScript)
+
+		// Fetch the ENTIRE history for this address in ONE request.
+		history, err := c.client.GetHistory(ctx, scripthash)
+		if err != nil {
+			log.Warnf("Failed to get history for address %s: %v",
+				addr.EncodeAddress(), err)
+			continue
+		}
+
+		// Collect heights we'll need, then pre-fetch headers.
+		var neededHeights []int32
+		for _, histItem := range history {
+			itemHeight := int32(histItem.Height)
+
+			// Skip unconfirmed and out-of-range transactions.
+			if itemHeight <= 0 || itemHeight < startHeight ||
+				itemHeight > endHeight {
+				continue
+			}
+
+			neededHeights = append(neededHeights, itemHeight)
+		}
+
+		// Pre-fetch all needed headers in batch before processing.
+		c.ensureHeadersCached(ctx, neededHeights)
+
+		// Now process transactions - all headers are cached.
+		for _, histItem := range history {
+			itemHeight := int32(histItem.Height)
+
+			// Skip unconfirmed and out-of-range transactions.
+			if itemHeight <= 0 || itemHeight < startHeight ||
+				itemHeight > endHeight {
+				continue
+			}
+
+			// Found a relevant transaction in this batch range!
+			log.Debugf("Found relevant tx %s at height %d for address %s",
+				histItem.Hash, itemHeight, addr.EncodeAddress())
+
+			txHash, err := chainhash.NewHashFromStr(histItem.Hash)
+			if err != nil {
+				log.Warnf("Failed to parse tx hash %s: %v",
+					histItem.Hash, err)
+				continue
+			}
+
+			// Fetch the full transaction.
+			tx, err := c.client.GetTransactionMsgTx(ctx, txHash)
+			if err != nil {
+				log.Warnf("Failed to get transaction %s: %v",
+					histItem.Hash, err)
+				continue
+			}
+
+			// Get block hash for this height (should be cached now).
+			blockHash, err := c.GetBlockHash(int64(itemHeight))
+			if err != nil {
+				log.Warnf("Failed to get block hash for height %d: %v",
+					itemHeight, err)
+				continue
+			}
+
+			// Send relevant transaction notification.
+			log.Debugf("Sending RelevantTx for tx %s in block %d",
+				txHash, itemHeight)
+
+			if !c.sendNotification(chain.RelevantTx{
+				TxRecord: &wtxmgr.TxRecord{
+					MsgTx:    *tx,
+					Hash:     *txHash,
+					Received: time.Now(),
 				},
-				Time: blockHeader.Timestamp,
+				Block: &wtxmgr.BlockMeta{
+					Block: wtxmgr.Block{
+						Hash:   *blockHash,
+						Height: itemHeight,
+					},
+				},
+			}) {
+				return
 			}
 		}
-
-		// Check watched addresses for new transactions in this block.
-		c.checkWatchedAddresses(ctx, h, &hash)
 	}
 }
 
@@ -1102,7 +1715,7 @@ func (c *ChainClient) checkWatchedAddresses(ctx context.Context,
 			log.Debugf("Sending RelevantTx for tx %s in block %d",
 				txHash, height)
 
-			c.notificationChan <- chain.RelevantTx{
+			if !c.sendNotification(chain.RelevantTx{
 				TxRecord: &wtxmgr.TxRecord{
 					MsgTx:    *tx,
 					Hash:     *txHash,
@@ -1114,6 +1727,8 @@ func (c *ChainClient) checkWatchedAddresses(ctx context.Context,
 						Height: height,
 					},
 				},
+			}) {
+				return
 			}
 		}
 	}

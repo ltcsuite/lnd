@@ -240,7 +240,6 @@ const (
 	neutrinoBackendName = "neutrino"
 	electrumBackendName = "electrum"
 
-	defaultPrunedNodeMaxPeers = 4
 	defaultNeutrinoMaxPeers   = 8
 
 	// defaultNoDisconnectOnPongFailure is the default value for whether we

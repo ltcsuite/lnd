@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/lightningnetwork/lnd/blockcache"
-	"github.com/lightningnetwork/lnd/chainntnfs"
-	"github.com/lightningnetwork/lnd/electrum"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/lnd/blockcache"
+	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/electrum"
 )
 
 // createNewNotifier creates a new instance of the ChainNotifier interface

@@ -9,9 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	graphdb "github.com/lightningnetwork/lnd/graph/db"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	graphdb "github.com/ltcsuite/lnd/channeldb"
 )
 
 // ElectrumClient is the interface that wraps the methods needed from an

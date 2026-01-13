@@ -10,14 +10,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/lightningnetwork/lnd/blockcache"
-	"github.com/lightningnetwork/lnd/chainntnfs"
-	"github.com/lightningnetwork/lnd/electrum"
-	"github.com/lightningnetwork/lnd/queue"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/lnd/blockcache"
+	"github.com/ltcsuite/lnd/chainntnfs"
+	"github.com/ltcsuite/lnd/electrum"
+	"github.com/ltcsuite/lnd/queue"
 )
 
 const (
@@ -997,7 +997,7 @@ func (e *ElectrumNotifier) RegisterBlockEpochNtfn(
 // GetBlock attempts to retrieve a block from the cache or the Electrum server.
 // NOTE: Electrum servers do not serve full blocks, so this will return an
 // error. This method is provided for interface compatibility.
-func (e *ElectrumNotifier) GetBlock(hash chainhash.Hash) (*btcutil.Block,
+func (e *ElectrumNotifier) GetBlock(hash chainhash.Hash) (*ltcutil.Block,
 	error) {
 
 	return nil, errors.New("electrum backend does not support full block " +
@@ -1009,7 +1009,7 @@ type filteredBlock struct {
 	header  *wire.BlockHeader
 	hash    chainhash.Hash
 	height  uint32
-	txns    []*btcutil.Tx
+	txns    []*ltcutil.Tx
 	connect bool
 }
 

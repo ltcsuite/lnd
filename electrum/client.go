@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/checksum0/go-electrum/electrum"
-	"github.com/lightningnetwork/lnd/lncfg"
+	"github.com/ltcsuite/lnd/lncfg"
 )
 
 var (

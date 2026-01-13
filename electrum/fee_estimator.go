@@ -7,8 +7,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/lnd/lnwallet/chainfee"
 )
 
 const (
@@ -281,7 +281,7 @@ func (e *FeeEstimator) feeUpdateLoop() {
 // For segwit, 1 vbyte = 4 weight units, so 1 kB = 4 kw.
 // Therefore: sat/kw = (BTC/kB * 100,000,000) / 4
 func btcPerKBToSatPerKW(btcPerKB float64) chainfee.SatPerKWeight {
-	satPerKB := btcutil.Amount(btcPerKB * btcutil.SatoshiPerBitcoin)
+	satPerKB := ltcutil.Amount(btcPerKB * ltcutil.SatoshiPerBitcoin)
 	satPerKW := satPerKB / 4
 
 	return chainfee.SatPerKWeight(satPerKW)

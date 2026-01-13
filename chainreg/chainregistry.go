@@ -14,10 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
-	"github.com/ltcsuite/ltcd/rpcclient"
-	"github.com/ltcsuite/ltcwallet/chain"
-	"github.com/ltcsuite/neutrino"
 	"github.com/ltcsuite/lnd/blockcache"
 	"github.com/ltcsuite/lnd/chainntnfs"
 	"github.com/ltcsuite/lnd/chainntnfs/bitcoindnotify"
@@ -25,9 +21,8 @@ import (
 	"github.com/ltcsuite/lnd/chainntnfs/electrumnotify"
 	"github.com/ltcsuite/lnd/chainntnfs/neutrinonotify"
 	"github.com/ltcsuite/lnd/channeldb"
+	"github.com/ltcsuite/lnd/channeldb/models"
 	"github.com/ltcsuite/lnd/electrum"
-	"github.com/ltcsuite/lnd/fn/v2"
-	"github.com/ltcsuite/lnd/graph/db/models"
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/keychain"
 	"github.com/ltcsuite/lnd/kvdb"
@@ -37,6 +32,11 @@ import (
 	"github.com/ltcsuite/lnd/lnwire"
 	"github.com/ltcsuite/lnd/routing/chainview"
 	"github.com/ltcsuite/lnd/walletunlocker"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/rpcclient"
+	"github.com/ltcsuite/ltcwallet/chain"
+	"github.com/ltcsuite/neutrino"
 )
 
 // Config houses necessary fields that a chainControl instance needs to

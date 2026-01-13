@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcwallet/chain"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcwallet/chain"
 	"github.com/stretchr/testify/require"
 )
 
@@ -277,10 +277,10 @@ func TestChainClientNotifyReceived(t *testing.T) {
 
 	// Create a test address.
 	pubKeyHash := make([]byte, 20)
-	addr, err := btcutil.NewAddressPubKeyHash(pubKeyHash, &chaincfg.MainNetParams)
+	addr, err := ltcutil.NewAddressPubKeyHash(pubKeyHash, &chaincfg.MainNetParams)
 	require.NoError(t, err)
 
-	err = chainClient.NotifyReceived([]btcutil.Address{addr})
+	err = chainClient.NotifyReceived([]ltcutil.Address{addr})
 	require.NoError(t, err)
 
 	chainClient.watchedAddrsMtx.RLock()
@@ -296,15 +296,15 @@ func TestPayToAddrScript(t *testing.T) {
 
 	testCases := []struct {
 		name      string
-		makeAddr  func() (btcutil.Address, error)
+		makeAddr  func() (ltcutil.Address, error)
 		expectLen int
 		expectErr bool
 	}{
 		{
 			name: "P2PKH",
-			makeAddr: func() (btcutil.Address, error) {
+			makeAddr: func() (ltcutil.Address, error) {
 				pubKeyHash := make([]byte, 20)
-				return btcutil.NewAddressPubKeyHash(
+				return ltcutil.NewAddressPubKeyHash(
 					pubKeyHash, &chaincfg.MainNetParams,
 				)
 			},
@@ -313,9 +313,9 @@ func TestPayToAddrScript(t *testing.T) {
 		},
 		{
 			name: "P2SH",
-			makeAddr: func() (btcutil.Address, error) {
+			makeAddr: func() (ltcutil.Address, error) {
 				scriptHash := make([]byte, 20)
-				return btcutil.NewAddressScriptHash(
+				return ltcutil.NewAddressScriptHash(
 					scriptHash, &chaincfg.MainNetParams,
 				)
 			},
@@ -324,9 +324,9 @@ func TestPayToAddrScript(t *testing.T) {
 		},
 		{
 			name: "P2WPKH",
-			makeAddr: func() (btcutil.Address, error) {
+			makeAddr: func() (ltcutil.Address, error) {
 				pubKeyHash := make([]byte, 20)
-				return btcutil.NewAddressWitnessPubKeyHash(
+				return ltcutil.NewAddressWitnessPubKeyHash(
 					pubKeyHash, &chaincfg.MainNetParams,
 				)
 			},
@@ -335,9 +335,9 @@ func TestPayToAddrScript(t *testing.T) {
 		},
 		{
 			name: "P2WSH",
-			makeAddr: func() (btcutil.Address, error) {
+			makeAddr: func() (ltcutil.Address, error) {
 				scriptHash := make([]byte, 32)
-				return btcutil.NewAddressWitnessScriptHash(
+				return ltcutil.NewAddressWitnessScriptHash(
 					scriptHash, &chaincfg.MainNetParams,
 				)
 			},
@@ -346,9 +346,9 @@ func TestPayToAddrScript(t *testing.T) {
 		},
 		{
 			name: "P2TR",
-			makeAddr: func() (btcutil.Address, error) {
+			makeAddr: func() (ltcutil.Address, error) {
 				pubKey := make([]byte, 32)
-				return btcutil.NewAddressTaproot(
+				return ltcutil.NewAddressTaproot(
 					pubKey, &chaincfg.MainNetParams,
 				)
 			},

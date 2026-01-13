@@ -4,7 +4,7 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/stretchr/testify/require"
 )
 

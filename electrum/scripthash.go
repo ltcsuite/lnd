@@ -5,9 +5,9 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/txscript"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/txscript"
 )
 
 // ScripthashFromScript converts a pkScript (output script) to an Electrum
@@ -31,7 +31,7 @@ func ScripthashFromScript(pkScript []byte) string {
 func ScripthashFromAddress(address string,
 	params *chaincfg.Params) (string, error) {
 
-	addr, err := btcutil.DecodeAddress(address, params)
+	addr, err := ltcutil.DecodeAddress(address, params)
 	if err != nil {
 		return "", fmt.Errorf("failed to decode address: %w", err)
 	}
@@ -51,7 +51,7 @@ func ScripthashFromAddressUnchecked(address string) (string, error) {
 	// Try mainnet first, then testnet, then regtest.
 	networks := []*chaincfg.Params{
 		&chaincfg.MainNetParams,
-		&chaincfg.TestNet3Params,
+		&chaincfg.TestNet4Params,
 		&chaincfg.RegressionNetParams,
 		&chaincfg.SigNetParams,
 	}

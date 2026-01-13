@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
 )
 
 // RESTClient provides methods to fetch data from the mempool/electrs REST API.
@@ -174,7 +174,7 @@ func (r *RESTClient) getTransaction(ctx context.Context, txid string) (*wire.Msg
 
 // GetBlock fetches a full block with all transactions from the REST API.
 // This is done by first fetching the block's txids, then fetching each tx.
-func (r *RESTClient) GetBlock(ctx context.Context, blockHash *chainhash.Hash) (*btcutil.Block, error) {
+func (r *RESTClient) GetBlock(ctx context.Context, blockHash *chainhash.Hash) (*ltcutil.Block, error) {
 	hashStr := blockHash.String()
 
 	// Get block info first
@@ -225,7 +225,7 @@ func (r *RESTClient) GetBlock(ctx context.Context, blockHash *chainhash.Hash) (*
 		Transactions: transactions,
 	}
 
-	return btcutil.NewBlock(&msgBlock), nil
+	return ltcutil.NewBlock(&msgBlock), nil
 }
 
 // GetTxIndex finds the index of a transaction within a block.
@@ -281,7 +281,7 @@ func (r *RESTClient) GetTxIndexByHeight(ctx context.Context, height int64, txid 
 }
 
 // GetBlockByHeight fetches a block by its height.
-func (r *RESTClient) GetBlockByHeight(ctx context.Context, height int64) (*btcutil.Block, error) {
+func (r *RESTClient) GetBlockByHeight(ctx context.Context, height int64) (*ltcutil.Block, error) {
 	// First get the block hash at this height
 	url := fmt.Sprintf("%s/block-height/%d", r.baseURL, height)
 

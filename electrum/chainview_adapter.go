@@ -3,9 +3,9 @@ package electrum
 import (
 	"context"
 
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/lightningnetwork/lnd/routing/chainview"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/lnd/routing/chainview"
 )
 
 // ChainViewAdapter wraps the Electrum Client to implement the

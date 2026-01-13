@@ -8,14 +8,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/btcsuite/btcd/btcjson"
-	"github.com/btcsuite/btcd/btcutil"
-	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcwallet/chain"
-	"github.com/btcsuite/btcwallet/waddrmgr"
-	"github.com/btcsuite/btcwallet/wtxmgr"
+	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcwallet/chain"
+	"github.com/ltcsuite/ltcwallet/waddrmgr"
+	"github.com/ltcsuite/ltcwallet/wtxmgr"
 	"github.com/checksum0/go-electrum/electrum"
 )
 
@@ -95,11 +94,11 @@ type ChainClient struct {
 
 	// watchedAddresses contains addresses we're watching for activity.
 	watchedAddrsMtx sync.RWMutex
-	watchedAddrs    map[string]btcutil.Address
+	watchedAddrs    map[string]ltcutil.Address
 
 	// watchedOutpoints contains outpoints we're watching for spends.
 	watchedOutpointsMtx sync.RWMutex
-	watchedOutpoints    map[wire.OutPoint]btcutil.Address
+	watchedOutpoints    map[wire.OutPoint]ltcutil.Address
 
 	// historyCache caches address history results during sync to avoid
 	// redundant queries. This is critical for performance - without it,
@@ -134,8 +133,8 @@ func NewChainClient(client *Client, chainParams *chaincfg.Params,
 		headerCache:      make(map[chainhash.Hash]*wire.BlockHeader),
 		heightToHash:     make(map[int32]*chainhash.Hash),
 		notificationChan: make(chan interface{}, 2100),
-		watchedAddrs:     make(map[string]btcutil.Address),
-		watchedOutpoints: make(map[wire.OutPoint]btcutil.Address),
+		watchedAddrs:     make(map[string]ltcutil.Address),
+		watchedOutpoints: make(map[wire.OutPoint]ltcutil.Address),
 		historyCache:     make(map[string][]*electrum.GetMempoolResult),
 		quit:             make(chan struct{}),
 	}
@@ -499,7 +498,7 @@ func (c *ChainClient) FilterBlocks(
 	defer cancel()
 
 	// Combine all addresses into a single slice for parallel processing.
-	allAddrs := make([]btcutil.Address, 0, totalAddrs)
+	allAddrs := make([]ltcutil.Address, 0, totalAddrs)
 	for _, addr := range req.ExternalAddrs {
 		allAddrs = append(allAddrs, addr)
 	}
@@ -521,7 +520,7 @@ func (c *ChainClient) FilterBlocks(
 	// Launch workers for all addresses.
 	for i, addr := range allAddrs {
 		wg.Add(1)
-		go func(address btcutil.Address, addrNum int) {
+		go func(address ltcutil.Address, addrNum int) {
 			defer wg.Done()
 
 			// Acquire semaphore slot.
@@ -640,7 +639,7 @@ func (c *ChainClient) getHistoryWithCache(ctx context.Context,
 // filterAddressInBlocks checks if an address has any activity in the given
 // blocks.
 func (c *ChainClient) filterAddressInBlocks(ctx context.Context,
-	addr btcutil.Address,
+	addr ltcutil.Address,
 	blocks []wtxmgr.BlockMeta) ([]*wire.MsgTx, uint32, error) {
 
 	pkScript, err := scriptFromAddress(addr, c.chainParams)
@@ -799,8 +798,8 @@ func (c *ChainClient) GetUtxo(op *wire.OutPoint, pkScript []byte,
 //
 // NOTE: This is part of the chain.Interface interface.
 func (c *ChainClient) Rescan(startHash *chainhash.Hash,
-	addrs []btcutil.Address,
-	outpoints map[wire.OutPoint]btcutil.Address) error {
+	addrs []ltcutil.Address,
+	outpoints map[wire.OutPoint]ltcutil.Address) error {
 
 	log.Infof("Starting rescan from block %s with %d addresses and "+
 		"%d outpoints", startHash, len(addrs), len(outpoints))
@@ -887,7 +886,7 @@ func (c *ChainClient) Rescan(startHash *chainhash.Hash,
 			}
 
 			wg.Add(1)
-			go func(address btcutil.Address, addrNum int) {
+			go func(address ltcutil.Address, addrNum int) {
 				defer wg.Done()
 
 				// Acquire semaphore slot.
@@ -934,7 +933,7 @@ func (c *ChainClient) Rescan(startHash *chainhash.Hash,
 // scanAddressHistory scans the history of an address from the given start
 // height and sends relevant transaction notifications.
 func (c *ChainClient) scanAddressHistory(ctx context.Context,
-	addr btcutil.Address, startHeight int32) error {
+	addr ltcutil.Address, startHeight int32) error {
 
 	pkScript, err := scriptFromAddress(addr, c.chainParams)
 	if err != nil {
@@ -1029,7 +1028,7 @@ func (c *ChainClient) scanAddressHistory(ctx context.Context,
 // notifications for them.
 //
 // NOTE: This is part of the chain.Interface interface.
-func (c *ChainClient) NotifyReceived(addrs []btcutil.Address) error {
+func (c *ChainClient) NotifyReceived(addrs []ltcutil.Address) error {
 	log.Debugf("NotifyReceived called with %d addresses", len(addrs))
 
 	c.watchedAddrsMtx.Lock()
@@ -1068,7 +1067,7 @@ func (c *ChainClient) NotifyReceived(addrs []btcutil.Address) error {
 			}
 
 			wg.Add(1)
-			go func(address btcutil.Address, addrNum int) {
+			go func(address ltcutil.Address, addrNum int) {
 				defer wg.Done()
 
 				// Acquire semaphore slot.
@@ -1097,7 +1096,7 @@ func (c *ChainClient) NotifyReceived(addrs []btcutil.Address) error {
 // scanAddressForExistingTxs scans the blockchain for existing transactions
 // involving the given address and sends notifications for any found.
 func (c *ChainClient) scanAddressForExistingTxs(ctx context.Context,
-	addr btcutil.Address) error {
+	addr ltcutil.Address) error {
 
 	pkScript, err := scriptFromAddress(addr, c.chainParams)
 	if err != nil {
@@ -1210,13 +1209,13 @@ func (c *ChainClient) BackEnd() string {
 // NOTE: Electrum does not support this operation.
 //
 // NOTE: This is part of the chain.Interface interface.
-func (c *ChainClient) TestMempoolAccept(txns []*wire.MsgTx,
-	maxFeeRate float64) ([]*btcjson.TestMempoolAcceptResult, error) {
+// func (c *ChainClient) TestMempoolAccept(txns []*wire.MsgTx,
+// 	maxFeeRate float64) ([]*btcjson.TestMempoolAcceptResult, error) {
 
-	// Electrum doesn't support testmempoolaccept. Return nil results
-	// which should be interpreted as "unknown" by callers.
-	return nil, nil
-}
+// 	// Electrum doesn't support testmempoolaccept. Return nil results
+// 	// which should be interpreted as "unknown" by callers.
+// 	return nil, nil
+// }
 
 // MapRPCErr maps an error from the underlying RPC client to a chain error.
 //
@@ -1543,7 +1542,7 @@ func (c *ChainClient) checkAddressesInRange(ctx context.Context,
 
 	// Get snapshot of watched addresses.
 	c.watchedAddrsMtx.RLock()
-	addrs := make([]btcutil.Address, 0, len(c.watchedAddrs))
+	addrs := make([]ltcutil.Address, 0, len(c.watchedAddrs))
 	for _, addr := range c.watchedAddrs {
 		addrs = append(addrs, addr)
 	}
@@ -1658,7 +1657,7 @@ func (c *ChainClient) checkWatchedAddresses(ctx context.Context,
 	height int32, blockHash *chainhash.Hash) {
 
 	c.watchedAddrsMtx.RLock()
-	addrs := make([]btcutil.Address, 0, len(c.watchedAddrs))
+	addrs := make([]ltcutil.Address, 0, len(c.watchedAddrs))
 	for _, addr := range c.watchedAddrs {
 		addrs = append(addrs, addr)
 	}
@@ -1749,28 +1748,28 @@ func (c *ChainClient) cacheHeader(height int32, hash *chainhash.Hash,
 }
 
 // scriptFromAddress creates a pkScript from an address.
-func scriptFromAddress(addr btcutil.Address,
+func scriptFromAddress(addr ltcutil.Address,
 	params *chaincfg.Params) ([]byte, error) {
 
 	return PayToAddrScript(addr)
 }
 
 // PayToAddrScript creates a new script to pay to the given address.
-func PayToAddrScript(addr btcutil.Address) ([]byte, error) {
+func PayToAddrScript(addr ltcutil.Address) ([]byte, error) {
 	switch addr := addr.(type) {
-	case *btcutil.AddressPubKeyHash:
+	case *ltcutil.AddressPubKeyHash:
 		return payToPubKeyHashScript(addr.ScriptAddress())
 
-	case *btcutil.AddressScriptHash:
+	case *ltcutil.AddressScriptHash:
 		return payToScriptHashScript(addr.ScriptAddress())
 
-	case *btcutil.AddressWitnessPubKeyHash:
+	case *ltcutil.AddressWitnessPubKeyHash:
 		return payToWitnessPubKeyHashScript(addr.ScriptAddress())
 
-	case *btcutil.AddressWitnessScriptHash:
+	case *ltcutil.AddressWitnessScriptHash:
 		return payToWitnessScriptHashScript(addr.ScriptAddress())
 
-	case *btcutil.AddressTaproot:
+	case *ltcutil.AddressTaproot:
 		return payToTaprootScript(addr.ScriptAddress())
 
 	default:

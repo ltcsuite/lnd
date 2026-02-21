@@ -4,7 +4,6 @@ require (
 	github.com/NebulousLabs/go-upnp v0.0.0-20180202185039-29b680b06c82
 	github.com/Yawning/aez v0.0.0-20211027044916-e49e68abd344
 	github.com/btcsuite/btclog v0.0.0-20241003133417-09c4e92e319c
-	github.com/btcsuite/btclog/v2 v2.0.0
 	github.com/coreos/go-systemd v0.0.0-20190719114852-fd7a80b32e1f
 	github.com/davecgh/go-spew v1.1.1
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1

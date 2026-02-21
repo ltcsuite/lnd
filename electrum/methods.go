@@ -354,12 +354,12 @@ func (c *Client) SubscribeHeaders(
 	return client.SubscribeHeaders(ctx)
 }
 
-// SubscribeScripthash subscribes to notifications for a scripthash. Returns
-// both the subscription object and the notification channel.
-func (c *Client) SubscribeScripthash(
-	ctx context.Context,
-	scripthash string) (*electrum.ScripthashSubscription,
-	<-chan *electrum.SubscribeNotif, error) {
+// InitScripthashSubscription creates a scripthash subscription object and
+// notification channel without subscribing to any specific scripthash yet.
+// Use subscription.Add() to subscribe to individual scripthashes later.
+func (c *Client) InitScripthashSubscription() (
+	*electrum.ScripthashSubscription, <-chan *electrum.SubscribeNotif,
+	error) {
 
 	client, err := c.getClient()
 	if err != nil {
@@ -367,10 +367,6 @@ func (c *Client) SubscribeScripthash(
 	}
 
 	sub, notifChan := client.SubscribeScripthash()
-	if err := sub.Add(ctx, scripthash); err != nil {
-		return nil, nil, err
-	}
-
 	return sub, notifChan, nil
 }
 

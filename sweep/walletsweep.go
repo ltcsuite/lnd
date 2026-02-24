@@ -9,9 +9,14 @@ import (
 	"github.com/ltcsuite/lnd/input"
 	"github.com/ltcsuite/lnd/lnwallet"
 	"github.com/ltcsuite/lnd/lnwallet/chainfee"
+	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb"
 	"github.com/ltcsuite/ltcd/txscript"
 	"github.com/ltcsuite/ltcd/wire"
+	"github.com/ltcsuite/ltcwallet/wallet/txauthor"
+	"github.com/ltcsuite/ltcwallet/wallet/txrules"
+	"github.com/ltcsuite/ltcwallet/wallet/txsizes"
 	"golang.org/x/exp/maps"
 )
 
@@ -156,6 +161,16 @@ type OutpointLocker interface {
 	UnlockOutpoint(o wire.OutPoint)
 }
 
+// MwebSweeper handles MWEB signing for sweep transactions. It bridges the
+// sweep package to the wallet's MWEB signing infrastructure.
+type MwebSweeper interface {
+	// SignMwebSweepTx signs an AuthoredTx that may contain both MWEB and
+	// canonical inputs. It processes MWEB inputs/outputs via AddMweb
+	// (building the extension block), then signs canonical inputs.
+	SignMwebSweepTx(tx *txauthor.AuthoredTx,
+		feeRate chainfee.SatPerKWeight) error
+}
+
 // WalletSweepPackage is a package that gives the caller the ability to sweep
 // relevant funds from a wallet in a single transaction. We also package a
 // function closure that allows one to abort the operation.
@@ -194,7 +209,8 @@ func CraftSweepAllTx(feeRate chainfee.SatPerKWeight, blockHeight uint32,
 	coinSelectLocker CoinSelectionLocker, utxoSource UtxoSource,
 	outpointLocker OutpointLocker, feeEstimator chainfee.Estimator,
 	signer input.Signer, minConfs int32,
-	selectUtxos fn.Set[wire.OutPoint]) (*WalletSweepPackage, error) {
+	selectUtxos fn.Set[wire.OutPoint],
+	mwebSweeper MwebSweeper) (*WalletSweepPackage, error) {
 
 	// TODO(roasbeef): turn off ATPL as well when available?
 
@@ -259,15 +275,80 @@ func CraftSweepAllTx(feeRate chainfee.SatPerKWeight, blockHeight uint32,
 			err)
 	}
 
-	// Now that we've locked all the potential outputs to sweep, we'll
-	// assemble an input for each of them, so we can hand it off to the
-	// sweeper to generate and sign a transaction for us.
-	var inputsToSweep []input.Input
+	// Create a list of TxOuts from the given delivery addresses.
+	var txOuts []*wire.TxOut
+	for _, d := range deliveryAddrs {
+		pkScript, err := txscript.PayToAddrScript(d.Addr)
+		if err != nil {
+			unlockOutputs()
+			return nil, err
+		}
+
+		txOuts = append(txOuts, &wire.TxOut{
+			PkScript: pkScript,
+			Value:    int64(d.Amt),
+		})
+	}
+
+	// Convert the change addr to a pkScript.
+	changePkScript, err := txscript.PayToAddrScript(changeAddr)
+	if err != nil {
+		unlockOutputs()
+		return nil, err
+	}
+
+	// Classify outputs into MWEB and canonical, and check if any
+	// output or the change address is MWEB.
+	var (
+		canonicalOutputs []*lnwallet.Utxo
+		mwebOutputs      []*lnwallet.Utxo
+	)
 	for _, output := range outputsForSweep {
-		// As we'll be signing for outputs under control of the wallet,
-		// we only need to populate the output value and output script.
-		// The rest of the items will be populated internally within
-		// the sweeper via the witness generation function.
+		if output.AddressType == lnwallet.Mweb {
+			mwebOutputs = append(mwebOutputs, output)
+		} else {
+			canonicalOutputs = append(canonicalOutputs, output)
+		}
+	}
+
+	hasMweb := len(mwebOutputs) > 0 || txscript.IsMweb(changePkScript)
+	for _, txOut := range txOuts {
+		if txscript.IsMweb(txOut.PkScript) {
+			hasMweb = true
+			break
+		}
+	}
+
+	// If MWEB is involved, use the MWEB-aware sweep path.
+	if hasMweb {
+		if mwebSweeper == nil {
+			// If no MwebSweeper is provided, skip MWEB UTXOs
+			// with a warning instead of erroring.
+			log.Warnf("MWEB UTXOs present but no MwebSweeper "+
+				"provided, skipping %d MWEB UTXOs",
+				len(mwebOutputs))
+
+			// Fall through to canonical-only path below.
+		} else {
+			sweepTx, err := craftMwebSweepTx(
+				canonicalOutputs, mwebOutputs, txOuts,
+				changePkScript, feeRate, mwebSweeper,
+			)
+			if err != nil {
+				unlockOutputs()
+				return nil, err
+			}
+
+			return &WalletSweepPackage{
+				SweepTx:            sweepTx,
+				CancelSweepAttempt: unlockOutputs,
+			}, nil
+		}
+	}
+
+	// Canonical-only path: assemble inputs for the sweeper.
+	var inputsToSweep []input.Input
+	for _, output := range canonicalOutputs {
 		signDesc := &input.SignDescriptor{
 			Output: &wire.TxOut{
 				PkScript: output.PkScript,
@@ -278,19 +359,11 @@ func CraftSweepAllTx(feeRate chainfee.SatPerKWeight, blockHeight uint32,
 
 		pkScript := output.PkScript
 
-		// Based on the output type, we'll map it to the proper witness
-		// type so we can generate the set of input scripts needed to
-		// sweep the output.
 		var witnessType input.WitnessType
 		switch output.AddressType {
-
-		// If this is a p2wkh output, then we'll assume it's a witness
-		// key hash witness type.
 		case lnwallet.WitnessPubKey:
 			witnessType = input.WitnessKeyHash
 
-		// If this is a p2sh output, then as since it's under control
-		// of the wallet, we'll assume it's a nested p2sh output.
 		case lnwallet.NestedWitnessPubKey:
 			witnessType = input.NestedWitnessKeyHash
 
@@ -298,58 +371,24 @@ func CraftSweepAllTx(feeRate chainfee.SatPerKWeight, blockHeight uint32,
 			witnessType = input.TaprootPubKeySpend
 			signDesc.HashType = txscript.SigHashDefault
 
-		// All other output types we count as unknown and will fail to
-		// sweep.
 		default:
 			unlockOutputs()
-
 			return nil, fmt.Errorf("unable to sweep coins, "+
 				"unknown script: %x", pkScript[:])
 		}
 
-		// Now that we've constructed the items required, we'll make an
-		// input which can be passed to the sweeper for ultimate
-		// sweeping.
 		input := input.MakeBaseInput(
 			&output.OutPoint, witnessType, signDesc, 0, nil,
 		)
 		inputsToSweep = append(inputsToSweep, &input)
 	}
 
-	// Create a list of TxOuts from the given delivery addresses.
-	var txOuts []*wire.TxOut
-	for _, d := range deliveryAddrs {
-		pkScript, err := txscript.PayToAddrScript(d.Addr)
-		if err != nil {
-			unlockOutputs()
-
-			return nil, err
-		}
-
-		txOuts = append(txOuts, &wire.TxOut{
-			PkScript: pkScript,
-			Value:    int64(d.Amt),
-		})
-	}
-
-	// Next, we'll convert the change addr to a pkScript that we can use
-	// to create the sweep transaction.
-	changePkScript, err := txscript.PayToAddrScript(changeAddr)
-	if err != nil {
-		unlockOutputs()
-
-		return nil, err
-	}
-
-	// Finally, we'll ask the sweeper to craft a sweep transaction which
-	// respects our fee preference and targets all the UTXOs of the wallet.
 	sweepTx, err := createSweepTx(
 		inputsToSweep, txOuts, changePkScript, blockHeight, feeRate,
 		signer,
 	)
 	if err != nil {
 		unlockOutputs()
-
 		return nil, err
 	}
 
@@ -357,6 +396,207 @@ func CraftSweepAllTx(feeRate chainfee.SatPerKWeight, blockHeight uint32,
 		SweepTx:            sweepTx,
 		CancelSweepAttempt: unlockOutputs,
 	}, nil
+}
+
+// craftMwebSweepTx builds a sweep transaction that handles MWEB inputs and/or
+// MWEB outputs. It constructs an AuthoredTx with all inputs (canonical + MWEB),
+// calculates fees for both canonical and MWEB portions, and delegates signing
+// to the MwebSweeper.
+func craftMwebSweepTx(canonicalUtxos, mwebUtxos []*lnwallet.Utxo,
+	deliveryTxOuts []*wire.TxOut, changePkScript []byte,
+	feeRate chainfee.SatPerKWeight,
+	mwebSweeper MwebSweeper) (*wire.MsgTx, error) {
+
+	feeRatePerKb := ltcutil.Amount(feeRate.FeePerKVByte())
+
+	// Build the list of all TxIn entries, PrevScripts, PrevInputValues,
+	// and PrevMwebOutputs. Canonical inputs come first, then MWEB.
+	var (
+		txIns           []*wire.TxIn
+		prevScripts     [][]byte
+		prevInputValues []ltcutil.Amount
+		prevMwebOutputs []*wire.MwebOutput
+		totalInput      ltcutil.Amount
+	)
+
+	// Count canonical input types for fee estimation.
+	var numP2WPKH, numP2TR, numNested, numP2PKH int
+
+	for _, utxo := range canonicalUtxos {
+		txIns = append(txIns, wire.NewTxIn(
+			&utxo.OutPoint, nil, nil,
+		))
+		prevScripts = append(prevScripts, utxo.PkScript)
+		prevInputValues = append(prevInputValues, utxo.Value)
+		prevMwebOutputs = append(prevMwebOutputs, nil)
+		totalInput += utxo.Value
+
+		switch utxo.AddressType {
+		case lnwallet.WitnessPubKey:
+			numP2WPKH++
+		case lnwallet.TaprootPubkey:
+			numP2TR++
+		case lnwallet.NestedWitnessPubKey:
+			numNested++
+		default:
+			numP2PKH++
+		}
+	}
+
+	for _, utxo := range mwebUtxos {
+		txIns = append(txIns, wire.NewTxIn(
+			&utxo.OutPoint, nil, nil,
+		))
+		prevScripts = append(prevScripts, utxo.PkScript)
+		prevInputValues = append(prevInputValues, utxo.Value)
+		prevMwebOutputs = append(prevMwebOutputs, utxo.MwebOutput)
+		totalInput += utxo.Value
+	}
+
+	// Calculate the delivery total.
+	var deliveryTotal ltcutil.Amount
+	for _, txOut := range deliveryTxOuts {
+		deliveryTotal += ltcutil.Amount(txOut.Value)
+	}
+
+	// Build the output list for fee estimation. We include a placeholder
+	// change output so MWEB fee estimation accounts for it.
+	allOutputs := make([]*wire.TxOut, 0, len(deliveryTxOuts)+1)
+	allOutputs = append(allOutputs, deliveryTxOuts...)
+	changePlaceholder := &wire.TxOut{
+		PkScript: changePkScript,
+		Value:    0, // placeholder, will be set after fee calc
+	}
+	allOutputs = append(allOutputs, changePlaceholder)
+
+	// Calculate MWEB fee.
+	mwebFee := ltcutil.Amount(
+		mweb.EstimateFee(allOutputs, feeRatePerKb, false),
+	)
+
+	// Calculate canonical fee (for the on-chain portion).
+	var canonicalFee ltcutil.Amount
+	if len(canonicalUtxos) > 0 {
+		// If we have canonical inputs, the on-chain tx will have those
+		// inputs plus a peg-in output (if there are MWEB outputs).
+		var peginOutputs []*wire.TxOut
+		hasMwebOutput := txscript.IsMweb(changePkScript)
+		for _, txOut := range deliveryTxOuts {
+			if txscript.IsMweb(txOut.PkScript) {
+				hasMwebOutput = true
+				break
+			}
+		}
+
+		if hasMwebOutput || len(mwebUtxos) > 0 {
+			// Add a dummy peg-in output for size estimation.
+			peginOutputs = []*wire.TxOut{
+				mweb.NewPegin(0, &chainhash.Hash{}),
+			}
+		} else {
+			// Pure canonical outputs — include them for size est.
+			peginOutputs = allOutputs
+		}
+
+		vsize := txsizes.EstimateVirtualSize(
+			numP2PKH, numP2TR, numP2WPKH, numNested,
+			peginOutputs, 0,
+		)
+
+		// Account for the peg-in TxIn weight, matching the
+		// adjustment in txauthor.NewUnsignedTransaction.
+		if hasMwebOutput || len(mwebUtxos) > 0 {
+			vsize += new(wire.TxIn).SerializeSize()
+		}
+
+		canonicalFee = txrules.FeeForSerializeSize(
+			feeRatePerKb, vsize,
+		)
+	}
+
+	totalFee := canonicalFee + mwebFee
+	changeAmt := totalInput - deliveryTotal - totalFee
+
+	if changeAmt < 0 {
+		return nil, fmt.Errorf("insufficient input to create sweep "+
+			"tx: input_sum=%v, output_sum=%v, fee=%v",
+			totalInput, deliveryTotal, totalFee)
+	}
+
+	// Set the actual change amount.
+	changePlaceholder.Value = int64(changeAmt)
+
+	// Build the unsigned transaction.
+	sweepTx := &wire.MsgTx{
+		Version:  wire.TxVersion,
+		TxIn:     txIns,
+		TxOut:    allOutputs,
+		LockTime: 0,
+	}
+
+	authoredTx := &txauthor.AuthoredTx{
+		Tx:              sweepTx,
+		PrevScripts:     prevScripts,
+		PrevInputValues: prevInputValues,
+		PrevMwebOutputs: prevMwebOutputs,
+		TotalInput:      totalInput,
+		ChangeIndex:     -1,
+	}
+
+	// Sign the transaction: AddMweb handles the MWEB extension block,
+	// then AddAllInputScripts signs the canonical inputs.
+	if err := mwebSweeper.SignMwebSweepTx(authoredTx, feeRate); err != nil {
+		return nil, fmt.Errorf("unable to sign mweb sweep tx: %w", err)
+	}
+
+	// After signing, verify that the total fee meets the minimum relay
+	// fee based on the full serialized transaction size (including the
+	// MWEB extension with range proofs, signatures, etc.).
+	txSize := authoredTx.Tx.SerializeSize()
+	minRelayFee := txrules.FeeForSerializeSize(
+		txrules.DefaultRelayFeePerKb, txSize,
+	)
+	if totalFee < minRelayFee {
+		// The MWEB extension bytes push the relay fee above our
+		// estimate. Reduce the change output to cover the difference.
+		deficit := minRelayFee - totalFee
+
+		// Find and adjust the change output (the one we added).
+		for _, txOut := range authoredTx.Tx.TxOut {
+			if txOut.Value == int64(changeAmt) {
+				txOut.Value -= int64(deficit)
+				break
+			}
+		}
+
+		// For MWEB transactions, the change is in the extension
+		// block, so we need to rebuild. Re-sign with the corrected
+		// change amount.
+		changePlaceholder.Value = int64(changeAmt - deficit)
+
+		// Rebuild the transaction with corrected outputs.
+		sweepTx = &wire.MsgTx{
+			Version:  wire.TxVersion,
+			TxIn:     txIns,
+			TxOut:    allOutputs,
+			LockTime: 0,
+		}
+		authoredTx = &txauthor.AuthoredTx{
+			Tx:              sweepTx,
+			PrevScripts:     prevScripts,
+			PrevInputValues: prevInputValues,
+			PrevMwebOutputs: prevMwebOutputs,
+			TotalInput:      totalInput,
+			ChangeIndex:     -1,
+		}
+
+		if err := mwebSweeper.SignMwebSweepTx(authoredTx, feeRate); err != nil {
+			return nil, fmt.Errorf("unable to sign mweb sweep "+
+				"tx (relay fee adjustment): %w", err)
+		}
+	}
+
+	return authoredTx.Tx, nil
 }
 
 // fetchUtxosFromOutpoints returns UTXOs for given outpoints. Errors if any

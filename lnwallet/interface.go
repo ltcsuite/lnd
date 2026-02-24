@@ -367,6 +367,12 @@ type WalletController interface {
 		feeRate chainfee.SatPerKWeight, minConfs int32, dryRun bool) (
 		*txauthor.AuthoredTx, error)
 
+	// SignMwebSweepTx signs an AuthoredTx that may contain both MWEB and
+	// canonical inputs. It processes MWEB inputs/outputs via AddMweb
+	// (building the extension block), then signs canonical inputs.
+	SignMwebSweepTx(tx *txauthor.AuthoredTx,
+		feeRatePerKb chainfee.SatPerKWeight) error
+
 	// ListUnspentWitness returns all unspent outputs which are version 0
 	// witness programs. The 'minConfs' and 'maxConfs' parameters
 	// indicate the minimum and maximum number of confirmations an output

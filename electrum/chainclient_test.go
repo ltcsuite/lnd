@@ -207,7 +207,7 @@ func TestChainClientTestMempoolAccept(t *testing.T) {
 	}
 	client := NewClient(cfg)
 
-	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "")
+	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "", "", nil)
 
 	tx := wire.NewMsgTx(wire.TxVersion)
 	results, err := chainClient.TestMempoolAccept([]*wire.MsgTx{tx}, 0.0)

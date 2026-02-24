@@ -9,15 +9,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/checksum0/go-electrum/electrum"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcwallet/chain"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
 	"github.com/ltcsuite/neutrino/query"
-	"github.com/checksum0/go-electrum/electrum"
 
 	"github.com/ltcsuite/lnd/electrum/mwebp2p"
 )
@@ -62,6 +62,12 @@ var (
 	// found.
 	ErrOutputNotFound = errors.New("output not found")
 )
+
+// TestMempoolAcceptResult models the data from the testmempoolaccept command.
+type TestMempoolAcceptResult struct {
+	TxID    string `json:"txid"`
+	Allowed bool   `json:"allowed"`
+}
 
 // collectedTx holds a transaction discovered during address scanning along
 // with its block metadata. Used to collect transactions before sorting and
@@ -1348,13 +1354,13 @@ func (c *ChainClient) BackEnd() string {
 // NOTE: Electrum does not support this operation.
 //
 // NOTE: This is part of the chain.Interface interface.
-// func (c *ChainClient) TestMempoolAccept(txns []*wire.MsgTx,
-// 	maxFeeRate float64) ([]*btcjson.TestMempoolAcceptResult, error) {
+func (c *ChainClient) TestMempoolAccept(txns []*wire.MsgTx,
+	maxFeeRate float64) ([]*TestMempoolAcceptResult, error) {
 
-// 	// Electrum doesn't support testmempoolaccept. Return nil results
-// 	// which should be interpreted as "unknown" by callers.
-// 	return nil, nil
-// }
+	// Electrum doesn't support testmempoolaccept. Return nil results
+	// which should be interpreted as "unknown" by callers.
+	return nil, nil
+}
 
 // MapRPCErr maps an error from the underlying RPC client to a chain error.
 //

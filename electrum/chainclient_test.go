@@ -6,11 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcwallet/chain"
+	"github.com/ltcsuite/ltcwallet/wtxmgr"
 	"github.com/stretchr/testify/require"
 )
 
@@ -119,7 +120,7 @@ func TestNewChainClient(t *testing.T) {
 	}
 	client := NewClient(cfg)
 
-	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "")
+	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "", "", nil)
 
 	require.NotNil(t, chainClient)
 	require.NotNil(t, chainClient.client)
@@ -143,7 +144,7 @@ func TestChainClientBackEnd(t *testing.T) {
 	}
 	client := NewClient(cfg)
 
-	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "")
+	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "", "", nil)
 
 	require.Equal(t, "electrum", chainClient.BackEnd())
 }
@@ -162,7 +163,7 @@ func TestChainClientGetBlockNotSupported(t *testing.T) {
 	}
 	client := NewClient(cfg)
 
-	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "")
+	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "", "", nil)
 
 	hash := &chainhash.Hash{}
 	block, err := chainClient.GetBlock(hash)
@@ -186,7 +187,7 @@ func TestChainClientNotifications(t *testing.T) {
 	}
 	client := NewClient(cfg)
 
-	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "")
+	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "", "", nil)
 
 	notifChan := chainClient.Notifications()
 	require.NotNil(t, notifChan)
@@ -230,7 +231,7 @@ func TestChainClientMapRPCErr(t *testing.T) {
 	}
 	client := NewClient(cfg)
 
-	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "")
+	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "", "", nil)
 
 	testErr := ErrNotConnected
 	mappedErr := chainClient.MapRPCErr(testErr)
@@ -252,7 +253,7 @@ func TestChainClientNotifyBlocks(t *testing.T) {
 	}
 	client := NewClient(cfg)
 
-	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "")
+	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "", "", nil)
 
 	err := chainClient.NotifyBlocks()
 	require.NoError(t, err)
@@ -273,7 +274,7 @@ func TestChainClientNotifyReceived(t *testing.T) {
 	}
 	client := NewClient(cfg)
 
-	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "")
+	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "", "", nil)
 
 	// Create a test address.
 	pubKeyHash := make([]byte, 20)
@@ -395,7 +396,7 @@ func TestChainClientIsCurrent(t *testing.T) {
 	}
 	client := NewClient(cfg)
 
-	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "")
+	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "", "", nil)
 
 	// Without a live connection, IsCurrent() should return false since it
 	// cannot fetch the best block from the network. This matches the
@@ -418,7 +419,7 @@ func TestChainClientCacheHeader(t *testing.T) {
 	}
 	client := NewClient(cfg)
 
-	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "")
+	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "", "", nil)
 
 	// Create a test header.
 	header := &wire.BlockHeader{
@@ -463,7 +464,7 @@ func TestChainClientGetUtxo(t *testing.T) {
 	}
 	client := NewClient(cfg)
 
-	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "")
+	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "", "", nil)
 
 	// Create a test outpoint and pkScript.
 	testHash := chainhash.Hash{0x01, 0x02, 0x03}
@@ -496,7 +497,7 @@ func TestElectrumUtxoSourceInterface(t *testing.T) {
 	}
 	client := NewClient(cfg)
 
-	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "")
+	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "", "", nil)
 
 	// Define the interface locally to test without importing btcwallet.
 	type UtxoSource interface {
@@ -506,4 +507,183 @@ func TestElectrumUtxoSourceInterface(t *testing.T) {
 
 	// Verify ChainClient implements UtxoSource.
 	var _ UtxoSource = chainClient
+}
+
+// TestSortAndGroupTxs tests that transactions are sorted by block height
+// and topologically within each block.
+func TestSortAndGroupTxs(t *testing.T) {
+	t.Parallel()
+
+	// Create transactions at different heights, deliberately out of order.
+	tx1 := wire.NewMsgTx(wire.TxVersion)
+	tx1.AddTxOut(&wire.TxOut{Value: 1})
+	tx2 := wire.NewMsgTx(wire.TxVersion)
+	tx2.AddTxOut(&wire.TxOut{Value: 2})
+	tx3 := wire.NewMsgTx(wire.TxVersion)
+	tx3.AddTxOut(&wire.TxOut{Value: 3})
+
+	txs := []*collectedTx{
+		{
+			txRecord: &wtxmgr.TxRecord{
+				MsgTx: *tx3,
+				Hash:  tx3.TxHash(),
+			},
+			height: 300,
+		},
+		{
+			txRecord: &wtxmgr.TxRecord{
+				MsgTx: *tx1,
+				Hash:  tx1.TxHash(),
+			},
+			height: 100,
+		},
+		{
+			txRecord: &wtxmgr.TxRecord{
+				MsgTx: *tx2,
+				Hash:  tx2.TxHash(),
+			},
+			height: 200,
+		},
+	}
+
+	sorted := sortAndGroupTxs(txs)
+
+	require.Len(t, sorted, 3)
+	require.Equal(t, int32(100), sorted[0].height)
+	require.Equal(t, int32(200), sorted[1].height)
+	require.Equal(t, int32(300), sorted[2].height)
+}
+
+// TestSortAndGroupTxsSingleTx tests that a single transaction is returned
+// unchanged.
+func TestSortAndGroupTxsSingleTx(t *testing.T) {
+	t.Parallel()
+
+	tx := wire.NewMsgTx(wire.TxVersion)
+	txs := []*collectedTx{
+		{
+			txRecord: &wtxmgr.TxRecord{
+				MsgTx: *tx,
+				Hash:  tx.TxHash(),
+			},
+			height: 100,
+		},
+	}
+
+	sorted := sortAndGroupTxs(txs)
+	require.Len(t, sorted, 1)
+	require.Equal(t, int32(100), sorted[0].height)
+}
+
+// TestSortAndGroupTxsEmpty tests that an empty slice is handled correctly.
+func TestSortAndGroupTxsEmpty(t *testing.T) {
+	t.Parallel()
+
+	sorted := sortAndGroupTxs(nil)
+	require.Nil(t, sorted)
+
+	sorted = sortAndGroupTxs([]*collectedTx{})
+	require.Len(t, sorted, 0)
+}
+
+// TestSendFilteredBlocks tests that sendFilteredBlocks groups transactions
+// by block height and sends FilteredBlockConnected notifications.
+func TestSendFilteredBlocks(t *testing.T) {
+	t.Parallel()
+
+	cfg := &ClientConfig{
+		Server:            "localhost:50001",
+		UseSSL:            false,
+		ReconnectInterval: 10 * time.Second,
+		RequestTimeout:    30 * time.Second,
+		PingInterval:      60 * time.Second,
+		MaxRetries:        3,
+	}
+	client := NewClient(cfg)
+
+	chainClient := NewChainClient(
+		client, &chaincfg.MainNetParams, "", "", nil,
+	)
+
+	// Create transactions in two different blocks.
+	tx1 := wire.NewMsgTx(wire.TxVersion)
+	tx1.AddTxOut(&wire.TxOut{Value: 1})
+	tx2 := wire.NewMsgTx(wire.TxVersion)
+	tx2.AddTxOut(&wire.TxOut{Value: 2})
+	tx3 := wire.NewMsgTx(wire.TxVersion)
+	tx3.AddTxOut(&wire.TxOut{Value: 3})
+
+	hash100 := chainhash.Hash{0x01}
+	hash200 := chainhash.Hash{0x02}
+	blockTime := time.Now()
+
+	// Transactions are already sorted by height (as sortAndGroupTxs would
+	// produce).
+	txs := []*collectedTx{
+		{
+			txRecord: &wtxmgr.TxRecord{
+				MsgTx: *tx1, Hash: tx1.TxHash(),
+			},
+			height: 100, blockHash: hash100, blockTime: blockTime,
+		},
+		{
+			txRecord: &wtxmgr.TxRecord{
+				MsgTx: *tx2, Hash: tx2.TxHash(),
+			},
+			height: 100, blockHash: hash100, blockTime: blockTime,
+		},
+		{
+			txRecord: &wtxmgr.TxRecord{
+				MsgTx: *tx3, Hash: tx3.TxHash(),
+			},
+			height: 200, blockHash: hash200, blockTime: blockTime,
+		},
+	}
+
+	chainClient.sendFilteredBlocks(txs)
+
+	// Should receive 2 FilteredBlockConnected notifications (one per block).
+	notifChan := chainClient.Notifications()
+
+	notif1 := <-notifChan
+	fbc1, ok := notif1.(chain.FilteredBlockConnected)
+	require.True(t, ok)
+	require.Equal(t, int32(100), fbc1.Block.Height)
+	require.Len(t, fbc1.RelevantTxs, 2)
+
+	notif2 := <-notifChan
+	fbc2, ok := notif2.(chain.FilteredBlockConnected)
+	require.True(t, ok)
+	require.Equal(t, int32(200), fbc2.Block.Height)
+	require.Len(t, fbc2.RelevantTxs, 1)
+}
+
+// TestSendFilteredBlocksEmpty tests that sendFilteredBlocks does nothing
+// with an empty slice.
+func TestSendFilteredBlocksEmpty(t *testing.T) {
+	t.Parallel()
+
+	cfg := &ClientConfig{
+		Server:            "localhost:50001",
+		UseSSL:            false,
+		ReconnectInterval: 10 * time.Second,
+		RequestTimeout:    30 * time.Second,
+		PingInterval:      60 * time.Second,
+		MaxRetries:        3,
+	}
+	client := NewClient(cfg)
+
+	chainClient := NewChainClient(
+		client, &chaincfg.MainNetParams, "", "", nil,
+	)
+
+	chainClient.sendFilteredBlocks(nil)
+	chainClient.sendFilteredBlocks([]*collectedTx{})
+
+	// No notifications should have been sent.
+	select {
+	case <-chainClient.Notifications():
+		t.Fatal("unexpected notification")
+	default:
+	}
 }

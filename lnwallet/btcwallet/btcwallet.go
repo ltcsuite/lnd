@@ -993,6 +993,18 @@ func (b *BtcWallet) SendOutputs(inputs fn.Set[wire.OutPoint],
 	)
 }
 
+// SignMwebSweepTx signs an AuthoredTx that may contain both MWEB and canonical
+// inputs. It processes MWEB inputs/outputs via AddMweb (building the extension
+// block), then signs the remaining canonical inputs.
+//
+// This is a part of the WalletController interface.
+func (b *BtcWallet) SignMwebSweepTx(tx *txauthor.AuthoredTx,
+	feeRate chainfee.SatPerKWeight) error {
+
+	feeSatPerKB := ltcutil.Amount(feeRate.FeePerKVByte())
+	return b.wallet.SignMwebSweepTx(tx, feeSatPerKB)
+}
+
 // CreateSimpleTx creates a Bitcoin transaction paying to the specified
 // outputs. The transaction is not broadcasted to the network, but a new change
 // address might be created in the wallet database. In the case the wallet has

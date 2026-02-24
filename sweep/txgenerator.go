@@ -358,6 +358,10 @@ func getWeightEstimate(inputs []input.Input, outputs []*wire.TxOut,
 	case txscript.IsPayToScriptHash(outputPkScript):
 		weightEstimate.estimator.AddP2SHOutput()
 
+	case txscript.IsMweb(outputPkScript):
+		// MWEB outputs don't contribute to canonical tx weight.
+		// Their weight is accounted for in MWEB fee estimation.
+
 	default:
 		// Unknown script type.
 		return nil, nil, errors.New("unknown script type")

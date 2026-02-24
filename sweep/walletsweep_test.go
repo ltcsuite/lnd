@@ -299,7 +299,7 @@ func TestCraftSweepAllTxCoinSelectFail(t *testing.T) {
 
 	_, err := CraftSweepAllTx(
 		0, 10, nil, nil, coinSelectLocker, utxoSource, utxoLocker,
-		nil, nil, 0, nil,
+		nil, nil, 0, nil, nil,
 	)
 
 	// Since we instructed the coin select locker to fail above, we should
@@ -325,7 +325,7 @@ func TestCraftSweepAllTxUnknownWitnessType(t *testing.T) {
 
 	_, err := CraftSweepAllTx(
 		0, 10, nil, nil, coinSelectLocker, utxoSource, utxoLocker, nil,
-		nil, 0, nil,
+		nil, 0, nil, nil,
 	)
 
 	// Since passed in a p2wsh output, which is unknown, we should fail to
@@ -360,7 +360,7 @@ func TestCraftSweepAllTx(t *testing.T) {
 
 	sweepPkg, err := CraftSweepAllTx(
 		0, 10, nil, deliveryAddr, coinSelectLocker, utxoSource,
-		utxoLocker, feeEstimator, signer, 0, nil,
+		utxoLocker, feeEstimator, signer, 0, nil, nil,
 	)
 	require.NoError(t, err, "unable to make sweep tx")
 
@@ -426,6 +426,7 @@ func TestCraftSweepAllTxWithSelectedUTXO(t *testing.T) {
 	sweepPkg, err := CraftSweepAllTx(
 		0, 10, nil, deliveryAddr, coinSelectLocker, utxoSource,
 		utxoLeaser, feeEstimator, signer, 0, fn.NewSet(outpointUknown),
+		nil,
 	)
 	require.ErrorIs(t, err, ErrUnknownUTXO)
 	require.Nil(t, sweepPkg)
@@ -434,6 +435,7 @@ func TestCraftSweepAllTxWithSelectedUTXO(t *testing.T) {
 	sweepPkg, err = CraftSweepAllTx(
 		0, 10, nil, deliveryAddr, coinSelectLocker, utxoSource,
 		utxoLeaser, feeEstimator, signer, 0, fn.NewSet(utxo1.OutPoint),
+		nil,
 	)
 	require.NoError(t, err)
 

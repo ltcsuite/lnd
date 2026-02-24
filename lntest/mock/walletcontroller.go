@@ -145,6 +145,13 @@ func (w *WalletController) ImportTaprootScript(waddrmgr.KeyScope,
 }
 
 // SendOutputs currently returns dummy values.
+// SignMwebSweepTx currently returns nil.
+func (w *WalletController) SignMwebSweepTx(*txauthor.AuthoredTx,
+	chainfee.SatPerKWeight) error {
+
+	return nil
+}
+
 func (w *WalletController) SendOutputs(fn.Set[wire.OutPoint], []*wire.TxOut,
 	chainfee.SatPerKWeight, int32, string) (
 	*wire.MsgTx, error) {

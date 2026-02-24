@@ -895,6 +895,17 @@ func (c *ChainClient) Rescan(startHash *chainhash.Hash,
 	addrs []ltcutil.Address,
 	outpoints map[wire.OutPoint]ltcutil.Address) error {
 
+	// Only monitor P2WPKH addresses via Electrum; other types (legacy,
+	// P2SH, taproot, MWEB) are either unsupported by the Electrum
+	// protocol or handled by a separate sync mechanism (mwebsync).
+	filtered := make([]ltcutil.Address, 0, len(addrs))
+	for _, addr := range addrs {
+		if _, ok := addr.(*ltcutil.AddressWitnessPubKeyHash); ok {
+			filtered = append(filtered, addr)
+		}
+	}
+	addrs = filtered
+
 	log.Infof("Starting rescan from block %s with %d addresses and "+
 		"%d outpoints", startHash, len(addrs), len(outpoints))
 
@@ -987,12 +998,6 @@ func (c *ChainClient) Rescan(startHash *chainhash.Hash,
 		var wg sync.WaitGroup
 
 		for i, addr := range addrs {
-			// Only scan native bech32 (P2WPKH) addresses; skip legacy, P2SH,
-			// taproot, MWEB, and any other types unsupported by Electrum.
-			if _, ok := addr.(*ltcutil.AddressWitnessPubKeyHash); !ok {
-				continue
-			}
-
 			select {
 			case <-c.quit:
 				log.Info("Rescan aborted due to client shutdown")
@@ -1222,6 +1227,17 @@ func (c *ChainClient) sendFilteredBlocks(txs []*collectedTx) {
 //
 // NOTE: This is part of the chain.Interface interface.
 func (c *ChainClient) NotifyReceived(addrs []ltcutil.Address) error {
+	// Only monitor P2WPKH addresses via Electrum; other types (legacy,
+	// P2SH, taproot, MWEB) are either unsupported by the Electrum
+	// protocol or handled by a separate sync mechanism (mwebsync).
+	filtered := make([]ltcutil.Address, 0, len(addrs))
+	for _, addr := range addrs {
+		if _, ok := addr.(*ltcutil.AddressWitnessPubKeyHash); ok {
+			filtered = append(filtered, addr)
+		}
+	}
+	addrs = filtered
+
 	log.Debugf("NotifyReceived called with %d addresses", len(addrs))
 
 	c.watchedAddrsMtx.Lock()

@@ -13,6 +13,7 @@ import (
 	_ "github.com/ltcsuite/ltcwallet/walletdb/bdb"
 	"github.com/ltcsuite/mwebsync"
 	"github.com/ltcsuite/mwebsync/electrumadapter"
+	"github.com/ltcsuite/neutrino/banman"
 	"github.com/ltcsuite/neutrino/mwebdb"
 	"github.com/ltcsuite/neutrino/query"
 
@@ -65,6 +66,13 @@ func (c *ChainClient) startMwebSync() {
 		ConnectedPeers: p2pService.ConnectedPeers,
 		NewWorker:      query.NewWorker,
 		Ranking:        query.NewPeerRanking(),
+		OnPeerMaxRetries: func(peerAddr string) {
+			log.Warnf("MWEB peer %s exhausted retries, "+
+				"banning", peerAddr)
+			p2pService.BanPeer(
+				peerAddr, banman.ExceededBanThreshold,
+			)
+		},
 	})
 	if err := workManager.Start(); err != nil {
 		log.Errorf("Failed to start MWEB query work manager: %v", err)

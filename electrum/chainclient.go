@@ -632,146 +632,132 @@ func (c *ChainClient) IsCurrent() bool {
 }
 
 // FilterBlocks scans the blocks contained in the FilterBlocksRequest for any
-// addresses of interest. For each requested block, the corresponding compact
-// filter will first be checked for matches, skipping those that do not report
-// anything. If the filter returns a positive match, the full block will be
-// fetched and filtered for addresses using a block filterer.
+// addresses of interest. It iterates blocks one at a time and returns on the
+// first match, matching the contract expected by the wallet recovery loop
+// (same as neutrino's FilterBlocks).
 //
-// NOTE: For Electrum, we use scripthash queries instead of compact filters.
+// The implementation queries all address histories up front (cached), builds
+// an index by block height, then iterates req.Blocks sequentially. On the
+// first block that contains relevant transactions, it fetches the txs, runs
+// BlockFilterer, and returns immediately.
 //
 // NOTE: This is part of the chain.Interface interface.
 func (c *ChainClient) FilterBlocks(
 	req *chain.FilterBlocksRequest) (*chain.FilterBlocksResponse, error) {
 
-	// For Electrum, we can't scan full blocks. Instead, we query the
-	// history for each watched address and check if any transactions
-	// appeared in the requested block range.
-
 	totalAddrs := len(req.ExternalAddrs) + len(req.InternalAddrs)
-	log.Infof("FilterBlocks: scanning %d blocks for %d addresses "+
-		"(using %d concurrent workers)",
-		len(req.Blocks), totalAddrs, addressScanConcurrency)
+	log.Infof("FilterBlocks: scanning %d blocks for %d addresses",
+		len(req.Blocks), totalAddrs)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	// Combine all addresses into a single slice for parallel processing.
-	allAddrs := make([]ltcutil.Address, 0, totalAddrs)
+	// Phase 1: Collect all address histories (cached, no extra RPCs on
+	// repeat calls) and build an index of tx hashes by block height.
+	heightIndex := make(map[int32][]string)
+
 	for _, addr := range req.ExternalAddrs {
-		allAddrs = append(allAddrs, addr)
-	}
-	for _, addr := range req.InternalAddrs {
-		allAddrs = append(allAddrs, addr)
-	}
-
-	// Process addresses in parallel using worker pool.
-	type addressResult struct {
-		txns []*wire.MsgTx
-		idx  uint32
-		err  error
-	}
-
-	results := make(chan addressResult, totalAddrs)
-	semaphore := make(chan struct{}, addressScanConcurrency)
-	var wg sync.WaitGroup
-
-	// Launch workers for all addresses.
-	for i, addr := range allAddrs {
-		// Only scan native bech32 (P2WPKH) addresses; skip legacy, P2SH,
-		// taproot, MWEB, and any other types unsupported by Electrum.
 		if _, ok := addr.(*ltcutil.AddressWitnessPubKeyHash); !ok {
 			continue
 		}
-		wg.Add(1)
-		go func(address ltcutil.Address, addrNum int) {
-			defer wg.Done()
-
-			// Acquire semaphore slot.
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
-
-			// Log progress periodically.
-			if addrNum%100 == 0 {
-				log.Debugf("FilterBlocks: processing address %d/%d",
-					addrNum, totalAddrs)
-			}
-
-			txns, idx, err := c.filterAddressInBlocks(
-				ctx, address, req.Blocks,
-			)
-			if err != nil {
-				log.Warnf("Failed to filter address %s: %v",
-					address, err)
-			}
-
-			results <- addressResult{
-				txns: txns,
-				idx:  idx,
-				err:  err,
-			}
-		}(addr, i)
+		c.indexAddressHistory(ctx, addr, heightIndex)
+	}
+	for _, addr := range req.InternalAddrs {
+		if _, ok := addr.(*ltcutil.AddressWitnessPubKeyHash); !ok {
+			continue
+		}
+		c.indexAddressHistory(ctx, addr, heightIndex)
 	}
 
-	// Close results channel when all workers complete.
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
+	// Phase 2: Iterate blocks in order, return on first match.
+	blockFilterer := chain.NewBlockFilterer(c.chainParams, req)
 
-	// Collect results from all workers.
-	var (
-		relevantTxns  []*wire.MsgTx
-		batchIndex    uint32
-		foundRelevant bool
-	)
-
-	for result := range results {
-		if result.err != nil {
+	for i, blk := range req.Blocks {
+		entries, ok := heightIndex[blk.Height]
+		if !ok {
 			continue
 		}
 
-		if len(result.txns) > 0 {
-			relevantTxns = append(relevantTxns, result.txns...)
-			if !foundRelevant || result.idx < batchIndex {
-				batchIndex = result.idx
+		// Deduplicate tx hashes for this block height.
+		seen := make(map[string]struct{})
+		var uniqueTxs []*wire.MsgTx
+		for _, txHashStr := range entries {
+			if _, dup := seen[txHashStr]; dup {
+				continue
 			}
-			foundRelevant = true
+			seen[txHashStr] = struct{}{}
+
+			txHash, err := chainhash.NewHashFromStr(txHashStr)
+			if err != nil {
+				continue
+			}
+
+			tx, err := c.client.GetTransactionMsgTx(ctx, txHash)
+			if err != nil {
+				log.Warnf("FilterBlocks: failed to get tx %s: %v",
+					txHashStr, err)
+				continue
+			}
+			uniqueTxs = append(uniqueTxs, tx)
 		}
+
+		if len(uniqueTxs) == 0 {
+			continue
+		}
+
+		// Build a synthetic block and run it through the filterer.
+		syntheticBlock := &wire.MsgBlock{
+			Transactions: uniqueTxs,
+		}
+
+		if !blockFilterer.FilterBlock(syntheticBlock) {
+			continue
+		}
+
+		log.Infof("FilterBlocks: match at block %d (index %d) "+
+			"with %d relevant txns", blk.Height, i,
+			len(blockFilterer.RelevantTxns))
+
+		return &chain.FilterBlocksResponse{
+			BatchIndex:         uint32(i),
+			BlockMeta:          blk,
+			FoundExternalAddrs: blockFilterer.FoundExternal,
+			FoundInternalAddrs: blockFilterer.FoundInternal,
+			FoundOutPoints:     blockFilterer.FoundOutPoints,
+			RelevantTxns:       blockFilterer.RelevantTxns,
+		}, nil
 	}
 
-	if !foundRelevant {
-		log.Infof("FilterBlocks: complete, no relevant transactions found")
-		return nil, nil
+	log.Infof("FilterBlocks: complete, no relevant transactions found")
+	return nil, nil
+}
+
+// indexAddressHistory fetches the history for an address (using the cache) and
+// adds entries to the height index. This is a helper for FilterBlocks.
+func (c *ChainClient) indexAddressHistory(ctx context.Context,
+	addr ltcutil.Address, heightIndex map[int32][]string) {
+
+	pkScript, err := scriptFromAddress(addr, c.chainParams)
+	if err != nil {
+		return
 	}
 
-	log.Infof("FilterBlocks: complete, found %d relevant transactions",
-		len(relevantTxns))
-
-	// Use a BlockFilterer to properly identify which external/internal
-	// addresses are involved in the discovered transactions. This is
-	// critical for the wallet recovery process - without FoundExternalAddrs
-	// and FoundInternalAddrs, the wallet's address manager won't register
-	// these addresses, causing addRelevantTx to fail to match outputs.
-	blockFilterer := chain.NewBlockFilterer(c.chainParams, req)
-
-	// Build a synthetic block containing our relevant transactions and
-	// run it through the filterer to populate FoundExternal/FoundInternal.
-	syntheticBlock := &wire.MsgBlock{
-		Transactions: make([]*wire.MsgTx, len(relevantTxns)),
+	scripthash := ScripthashFromScript(pkScript)
+	history, err := c.getHistoryWithCache(ctx, scripthash)
+	if err != nil {
+		log.Warnf("FilterBlocks: failed to get history for %s: %v",
+			addr.EncodeAddress(), err)
+		return
 	}
-	for i, tx := range relevantTxns {
-		syntheticBlock.Transactions[i] = tx
-	}
-	blockFilterer.FilterBlock(syntheticBlock)
 
-	return &chain.FilterBlocksResponse{
-		BatchIndex:         batchIndex,
-		BlockMeta:          req.Blocks[batchIndex],
-		FoundExternalAddrs: blockFilterer.FoundExternal,
-		FoundInternalAddrs: blockFilterer.FoundInternal,
-		FoundOutPoints:     blockFilterer.FoundOutPoints,
-		RelevantTxns:       blockFilterer.RelevantTxns,
-	}, nil
+	for _, item := range history {
+		if item.Height <= 0 {
+			continue
+		}
+		heightIndex[int32(item.Height)] = append(
+			heightIndex[int32(item.Height)], item.Hash,
+		)
+	}
 }
 
 // clearHistoryCache clears the address history cache. Should be called:
@@ -817,87 +803,6 @@ func (c *ChainClient) getHistoryWithCache(ctx context.Context,
 	c.historyCacheMtx.Unlock()
 
 	return history, nil
-}
-
-// filterAddressInBlocks checks if an address has any activity in the given
-// blocks.
-func (c *ChainClient) filterAddressInBlocks(ctx context.Context,
-	addr ltcutil.Address,
-	blocks []wtxmgr.BlockMeta) ([]*wire.MsgTx, uint32, error) {
-
-	pkScript, err := scriptFromAddress(addr, c.chainParams)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	scripthash := ScripthashFromScript(pkScript)
-
-	log.Tracef("filterAddressInBlocks: fetching history for %s", addr.EncodeAddress())
-	history, err := c.getHistoryWithCache(ctx, scripthash)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	log.Tracef("filterAddressInBlocks: got %d history items for %s",
-		len(history), addr.EncodeAddress())
-
-	var (
-		relevantTxns []*wire.MsgTx
-		batchIdx     uint32 = ^uint32(0)
-	)
-
-	// Build map of block heights for faster lookup
-	blockHeights := make(map[int32]int)
-	for i, block := range blocks {
-		blockHeights[block.Height] = i
-	}
-
-	// Collect heights we'll need for header caching
-	var neededHeights []int32
-
-	for _, histItem := range history {
-		if histItem.Height <= 0 {
-			continue
-		}
-
-		// Check if this height is in our target blocks
-		if idx, ok := blockHeights[int32(histItem.Height)]; ok {
-			neededHeights = append(neededHeights, int32(histItem.Height))
-
-			txHash, err := chainhash.NewHashFromStr(
-				histItem.Hash,
-			)
-			if err != nil {
-				continue
-			}
-
-			// Fetch the transaction.
-			tx, err := c.client.GetTransactionMsgTx(
-				ctx, txHash,
-			)
-			if err != nil {
-				log.Warnf("Failed to get tx %s: %v",
-					histItem.Hash, err)
-				continue
-			}
-
-			relevantTxns = append(relevantTxns, tx)
-
-			if uint32(idx) < batchIdx {
-				batchIdx = uint32(idx)
-			}
-		}
-	}
-
-	// Pre-cache headers for all needed heights
-	if len(neededHeights) > 0 {
-		c.ensureHeadersCached(ctx, neededHeights)
-	}
-
-	log.Tracef("filterAddressInBlocks: found %d relevant txns for %s",
-		len(relevantTxns), addr.EncodeAddress())
-
-	return relevantTxns, batchIdx, nil
 }
 
 // BlockStamp returns the latest block notified by the client.
@@ -1223,11 +1128,13 @@ func (c *ChainClient) collectAddressHistory(ctx context.Context,
 			continue
 		}
 
-		// Get block hash for this height (should be cached now).
-		blockHash, err := c.GetBlockHash(int64(histItem.Height))
+		height := int32(histItem.Height)
+
+		// Get block hash for this height.
+		blockHash, err := c.GetBlockHash(int64(height))
 		if err != nil {
 			log.Warnf("Failed to get block hash for height %d: %v",
-				histItem.Height, err)
+				height, err)
 			continue
 		}
 
@@ -1240,7 +1147,7 @@ func (c *ChainClient) collectAddressHistory(ctx context.Context,
 		}
 
 		log.Debugf("Collected tx %s at height %d for address %s",
-			txHash, histItem.Height, addr.EncodeAddress())
+			txHash, height, addr.EncodeAddress())
 
 		result = append(result, &collectedTx{
 			txRecord: &wtxmgr.TxRecord{
@@ -1248,7 +1155,7 @@ func (c *ChainClient) collectAddressHistory(ctx context.Context,
 				Hash:     *txHash,
 				Received: blockHeader.Timestamp,
 			},
-			height:    int32(histItem.Height),
+			height:    height,
 			blockHash: *blockHash,
 			blockTime: blockHeader.Timestamp,
 		})
@@ -1550,7 +1457,10 @@ func (c *ChainClient) handleScripthashNotif(notif *SubscribeNotif) {
 	c.scripthashHistory[scripthash] = newStatus
 	c.scripthashHistMtx.Unlock()
 
-	// Process each transaction in the history.
+	log.Debugf("Scripthash notification for %s: %d history items",
+		addrStr, len(history))
+
+	// Process all transactions in the history.
 	var confirmed []*collectedTx
 	for _, histItem := range history {
 		txHash, err := chainhash.NewHashFromStr(histItem.Hash)
@@ -1581,13 +1491,13 @@ func (c *ChainClient) handleScripthashNotif(notif *SubscribeNotif) {
 				Block:    nil,
 			})
 		} else {
-			// Confirmed transaction - collect for batch sending.
-			blockHash, err := c.GetBlockHash(
-				int64(histItem.Height),
-			)
+			// Confirmed transaction — collect for batch sending.
+			height := int32(histItem.Height)
+
+			blockHash, err := c.GetBlockHash(int64(height))
 			if err != nil {
 				log.Warnf("Failed to get block hash for "+
-					"height %d: %v", histItem.Height, err)
+					"height %d: %v", height, err)
 				continue
 			}
 
@@ -1605,7 +1515,7 @@ func (c *ChainClient) handleScripthashNotif(notif *SubscribeNotif) {
 			}
 			confirmed = append(confirmed, &collectedTx{
 				txRecord:  rec,
-				height:    int32(histItem.Height),
+				height:    height,
 				blockHash: *blockHash,
 				blockTime: blockHeader.Timestamp,
 			})

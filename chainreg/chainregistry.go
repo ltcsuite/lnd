@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -726,9 +727,16 @@ func NewPartialChainControl(cfg *Config) (*PartialChainControl, func(), error) {
 
 		// Create the chain client for wallet integration.
 		log.Debug("Creating Electrum chain client")
+		dataDir := filepath.Join(
+			homeChainConfig.ChainDir,
+			lncfg.NormalizeNetwork(
+				cfg.ActiveNetParams.Name,
+			),
+		)
 		chainClient := electrum.NewChainClient(
 			electrumClient, cfg.ActiveNetParams.Params,
-			electrumMode.RESTURL,
+			electrumMode.RESTURL, dataDir,
+			electrumMode.MwebP2PPeers,
 		)
 		cc.ChainSource = chainClient
 		log.Debug("Electrum chain client created")

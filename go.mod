@@ -43,6 +43,7 @@ require (
 	github.com/ltcsuite/ltcwallet/wallet/txrules v1.2.0
 	github.com/ltcsuite/ltcwallet/walletdb v1.3.5
 	github.com/ltcsuite/ltcwallet/wtxmgr v1.5.1
+	github.com/ltcsuite/mwebsync v0.0.0-00010101000000-000000000000
 	github.com/ltcsuite/neutrino v0.16.0
 	github.com/ltcsuite/neutrino/cache v1.1.0
 	github.com/miekg/dns v1.1.43

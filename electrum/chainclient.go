@@ -16,7 +16,10 @@ import (
 	"github.com/ltcsuite/ltcwallet/chain"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
+	"github.com/ltcsuite/neutrino/query"
 	"github.com/checksum0/go-electrum/electrum"
+
+	"github.com/ltcsuite/lnd/electrum/mwebp2p"
 )
 
 const (
@@ -225,8 +228,30 @@ type ChainClient struct {
 	scripthashHistMtx sync.RWMutex
 	scripthashHistory map[string]string
 
+	// dataDir is the directory for storing MWEB data (mweb.db).
+	dataDir string
+
+	// mwebP2PPeers is an optional list of explicit P2P peers for MWEB sync.
+	// If empty, DNS seeds are used for peer discovery.
+	mwebP2PPeers []string
+
+	// p2pService manages lightweight P2P connections for MWEB queries.
+	p2pService *mwebp2p.Service
+
+	// workManager dispatches MWEB queries to P2P peers.
+	workManager query.WorkManager
+
+	// mwebSyncer is the mwebsync syncer that handles MWEB synchronization.
+	mwebSyncer mwebSyncer
+
 	quit chan struct{}
 	wg   sync.WaitGroup
+}
+
+// mwebSyncer is an interface for the mwebsync syncer, used for testability.
+type mwebSyncer interface {
+	Start() error
+	Stop() error
 }
 
 // Compile time check to ensure ChainClient implements chain.Interface.
@@ -235,8 +260,10 @@ var _ chain.Interface = (*ChainClient)(nil)
 // NewChainClient creates a new Electrum chain client.
 // If restURL is provided, the client will be able to fetch full blocks
 // via the mempool/electrs REST API.
+// dataDir is the directory for storing MWEB data.
+// mwebP2PPeers is an optional list of explicit P2P peers for MWEB sync.
 func NewChainClient(client *Client, chainParams *chaincfg.Params,
-	restURL string) *ChainClient {
+	restURL string, dataDir string, mwebP2PPeers []string) *ChainClient {
 
 	var restClient *RESTClient
 	if restURL != "" {
@@ -255,6 +282,8 @@ func NewChainClient(client *Client, chainParams *chaincfg.Params,
 		watchedOutpoints:  make(map[wire.OutPoint]ltcutil.Address),
 		historyCache:      make(map[string][]*electrum.GetMempoolResult),
 		scripthashHistory: make(map[string]string),
+		dataDir:           dataDir,
+		mwebP2PPeers:      mwebP2PPeers,
 		quit:              make(chan struct{}),
 	}
 }
@@ -346,6 +375,12 @@ func (c *ChainClient) Start() error {
 
 		c.wg.Add(1)
 		go c.scripthashHandler()
+	}
+
+	// Start MWEB sync in a background goroutine.
+	if c.dataDir != "" {
+		c.wg.Add(1)
+		go c.startMwebSync()
 	}
 
 	// Send ClientConnected notification. This triggers the wallet to

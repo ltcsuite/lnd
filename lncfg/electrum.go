@@ -72,6 +72,10 @@ type Electrum struct {
 
 	// MaxRetries is the maximum number of times to retry a failed request.
 	MaxRetries int `long:"maxretries" description:"Maximum number of times to retry a failed request."`
+
+	// MwebP2PPeers is an optional list of Litecoin P2P peers for MWEB sync.
+	// If empty, DNS seeds are used for peer discovery.
+	MwebP2PPeers []string `long:"mwebp2ppeer" description:"Litecoin P2P peer for MWEB sync (host:port). Can be specified multiple times."`
 }
 
 // DefaultElectrumConfig returns a new Electrum config with default values

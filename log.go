@@ -17,6 +17,7 @@ import (
 	"github.com/ltcsuite/lnd/contractcourt"
 	"github.com/ltcsuite/lnd/discovery"
 	"github.com/ltcsuite/lnd/electrum"
+	"github.com/ltcsuite/lnd/electrum/mwebp2p"
 	"github.com/ltcsuite/lnd/funding"
 	"github.com/ltcsuite/lnd/healthcheck"
 	"github.com/ltcsuite/lnd/htlcswitch"
@@ -183,6 +184,7 @@ func SetupLoggers(root *build.RotatingLogWriter, interceptor signal.Interceptor)
 	AddSubLogger(root, peersrpc.Subsystem, interceptor, peersrpc.UseLogger)
 	AddSubLogger(root, "ELEC", interceptor, electrum.UseLogger)
 	AddSubLogger(root, "ELNF", interceptor, electrumnotify.UseLogger)
+	AddSubLogger(root, "MWBP", interceptor, mwebp2p.UseLogger)
 }
 
 // AddSubLogger is a helper method to conveniently create and register the

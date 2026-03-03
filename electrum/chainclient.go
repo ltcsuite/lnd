@@ -651,29 +651,68 @@ func (c *ChainClient) IsCurrent() bool {
 func (c *ChainClient) FilterBlocks(
 	req *chain.FilterBlocksRequest) (*chain.FilterBlocksResponse, error) {
 
-	totalAddrs := len(req.ExternalAddrs) + len(req.InternalAddrs)
-	log.Infof("FilterBlocks: scanning %d blocks for %d addresses",
-		len(req.Blocks), totalAddrs)
+	// Only scan BIP84 (native segwit P2WPKH) addresses via Electrum.
+	// Other address types are either unsupported by the Electrum protocol
+	// (MWEB), handled by a separate sync mechanism (mwebsync), or not
+	// relevant for on-chain recovery (LND lightning keys, BIP49Plus
+	// change-only P2WPKH that can't be discovered without the
+	// corresponding P2SH external addresses).
+	var p2wpkhAddrs []ltcutil.Address
+	for si, addr := range req.ExternalAddrs {
+		if si.Scope == waddrmgr.KeyScopeBIP0084 {
+			p2wpkhAddrs = append(p2wpkhAddrs, addr)
+		}
+	}
+	for si, addr := range req.InternalAddrs {
+		if si.Scope == waddrmgr.KeyScopeBIP0084 {
+			p2wpkhAddrs = append(p2wpkhAddrs, addr)
+		}
+	}
+
+	log.Infof("FilterBlocks: scanning %d blocks for %d BIP84 addresses "+
+		"(of %d total)", len(req.Blocks), len(p2wpkhAddrs),
+		len(req.ExternalAddrs)+len(req.InternalAddrs))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
-	// Phase 1: Collect all address histories (cached, no extra RPCs on
-	// repeat calls) and build an index of tx hashes by block height.
-	heightIndex := make(map[int32][]string)
+	// Phase 1: Collect all address histories concurrently and build an
+	// index of tx hashes by block height.
+	var (
+		heightMu    sync.Mutex
+		heightIndex = make(map[int32][]string)
+		scanned     int64
+		total       = int64(len(p2wpkhAddrs))
+	)
 
-	for _, addr := range req.ExternalAddrs {
-		if _, ok := addr.(*ltcutil.AddressWitnessPubKeyHash); !ok {
-			continue
-		}
-		c.indexAddressHistory(ctx, addr, heightIndex)
+	semaphore := make(chan struct{}, addressScanConcurrency)
+	var wg sync.WaitGroup
+
+	for _, addr := range p2wpkhAddrs {
+		wg.Add(1)
+		go func(a ltcutil.Address) {
+			defer wg.Done()
+
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			localIndex := make(map[int32][]string)
+			c.indexAddressHistory(ctx, a, localIndex)
+
+			heightMu.Lock()
+			for h, txs := range localIndex {
+				heightIndex[h] = append(heightIndex[h], txs...)
+			}
+			heightMu.Unlock()
+
+			n := atomic.AddInt64(&scanned, 1)
+			if n%500 == 0 || n == total {
+				log.Infof("FilterBlocks: queried %d/%d "+
+					"addresses", n, total)
+			}
+		}(addr)
 	}
-	for _, addr := range req.InternalAddrs {
-		if _, ok := addr.(*ltcutil.AddressWitnessPubKeyHash); !ok {
-			continue
-		}
-		c.indexAddressHistory(ctx, addr, heightIndex)
-	}
+	wg.Wait()
 
 	// Phase 2: Iterate blocks in order, return on first match.
 	blockFilterer := chain.NewBlockFilterer(c.chainParams, req)

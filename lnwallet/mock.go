@@ -125,7 +125,8 @@ func (w *mockWalletController) ListAddresses(string,
 
 // ImportAccount currently returns a dummy value.
 func (w *mockWalletController) ImportAccount(string, *hdkeychain.ExtendedKey,
-	uint32, *waddrmgr.AddressType, bool) (*waddrmgr.AccountProperties,
+	uint32, *waddrmgr.AddressType, bool, int32,
+	uint32) (*waddrmgr.AccountProperties,
 	[]ltcutil.Address, []ltcutil.Address, error) {
 
 	return nil, nil, nil, nil

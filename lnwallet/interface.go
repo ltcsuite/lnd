@@ -320,8 +320,9 @@ type WalletController interface {
 	// (nested pubkeys externally, witness pubkeys internally).
 	ImportAccount(name string, accountPubKey *hdkeychain.ExtendedKey,
 		masterKeyFingerprint uint32, addrType *waddrmgr.AddressType,
-		dryRun bool) (*waddrmgr.AccountProperties, []ltcutil.Address,
-		[]ltcutil.Address, error)
+		dryRun bool, birthdayHeight int32,
+		recoveryWindow uint32) (*waddrmgr.AccountProperties,
+		[]ltcutil.Address, []ltcutil.Address, error)
 
 	// ImportPublicKey imports a single derived public key into the wallet.
 	// The address type can usually be inferred from the key's version, but

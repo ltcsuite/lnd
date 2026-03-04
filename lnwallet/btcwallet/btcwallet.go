@@ -868,7 +868,8 @@ func (b *BtcWallet) ListAddresses(name string,
 // This is a part of the WalletController interface.
 func (b *BtcWallet) ImportAccount(name string, accountPubKey *hdkeychain.ExtendedKey,
 	masterKeyFingerprint uint32, addrType *waddrmgr.AddressType,
-	dryRun bool) (*waddrmgr.AccountProperties, []ltcutil.Address,
+	dryRun bool, birthdayHeight int32,
+	recoveryWindow uint32) (*waddrmgr.AccountProperties, []ltcutil.Address,
 	[]ltcutil.Address, error) {
 
 	// For custom accounts, we first check if there is no existing account
@@ -888,6 +889,19 @@ func (b *BtcWallet) ImportAccount(name string, accountPubKey *hdkeychain.Extende
 	}
 
 	if !dryRun {
+		// If a birthday height is specified, import with rescan to
+		// discover historical transactions.
+		if birthdayHeight > 0 {
+			accountProps, err := b.wallet.ImportAccountWithRescan(
+				name, accountPubKey, masterKeyFingerprint,
+				addrType, birthdayHeight, recoveryWindow,
+			)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			return accountProps, nil, nil, nil
+		}
+
 		accountProps, err := b.wallet.ImportAccount(
 			name, accountPubKey, masterKeyFingerprint, addrType,
 		)

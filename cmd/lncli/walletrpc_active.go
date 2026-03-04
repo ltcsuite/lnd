@@ -1464,8 +1464,8 @@ var importAccountCommand = cli.Command{
 	pubkeys externally, witness pubkeys internally).
 
 	NOTE: Events (deposits/spends) for keys derived from an account will
-	only be detected by lnd if they happen after the import. Rescans to
-	detect past events will be supported later on.
+	only be detected by lnd if they happen after the import, unless a
+	birthday_height is specified to trigger a historical rescan.
 	`,
 	Flags: []cli.Flag{
 		cli.StringFlag{
@@ -1483,6 +1483,20 @@ var importAccountCommand = cli.Command{
 			Name:  "dry_run",
 			Usage: "(optional) perform a dry run",
 		},
+		cli.Int64Flag{
+			Name: "birthday_height",
+			Usage: "(optional) the block height from which to " +
+				"start rescanning for historical " +
+				"transactions. If set, a background rescan " +
+				"will discover past deposits and spends",
+		},
+		cli.Uint64Flag{
+			Name: "recovery_window",
+			Usage: "(optional) the number of consecutive unused " +
+				"addresses to derive before stopping " +
+				"address discovery during rescan " +
+				"(default: 250)",
+		},
 	},
 	Action: actionDecorator(importAccount),
 }
@@ -1492,7 +1506,7 @@ func importAccount(ctx *cli.Context) error {
 
 	// Display the command's help message if we do not have the expected
 	// number of arguments/flags.
-	if ctx.NArg() != 2 || ctx.NumFlags() > 3 {
+	if ctx.NArg() != 2 || ctx.NumFlags() > 5 {
 		return cli.ShowCommandHelp(ctx, "import")
 	}
 
@@ -1521,6 +1535,8 @@ func importAccount(ctx *cli.Context) error {
 		MasterKeyFingerprint: mkfpBytes,
 		AddressType:          addrType,
 		DryRun:               dryRun,
+		BirthdayHeight:       int32(ctx.Int64("birthday_height")),
+		RecoveryWindow:       uint32(ctx.Uint64("recovery_window")),
 	}
 	resp, err := walletClient.ImportAccount(ctxc, req)
 	if err != nil {

@@ -1933,8 +1933,32 @@ func (w *WalletKit) ImportAccount(_ context.Context,
 		return nil, err
 	}
 
+	// Validate that dry_run and birthday_height are mutually exclusive.
+	if req.DryRun && req.BirthdayHeight > 0 {
+		return nil, errors.New("dry_run and birthday_height are " +
+			"mutually exclusive")
+	}
+
+	// Validate birthday_height is non-negative.
+	if req.BirthdayHeight < 0 {
+		return nil, errors.New("birthday_height must be " +
+			"non-negative")
+	}
+
+	// Default recovery_window to 250 if birthday_height is set but
+	// recovery_window is not.
+	recoveryWindow := req.RecoveryWindow
+	if req.BirthdayHeight > 0 && recoveryWindow == 0 {
+		recoveryWindow = 250
+	}
+
+	log.Infof("ImportAccount: name=%q birthday_height=%d "+
+		"recovery_window=%d dry_run=%v",
+		req.Name, req.BirthdayHeight, recoveryWindow, req.DryRun)
+
 	accountProps, extAddrs, intAddrs, err := w.cfg.Wallet.ImportAccount(
 		req.Name, accountPubKey, mkfp, addrType, req.DryRun,
+		req.BirthdayHeight, recoveryWindow,
 	)
 	if err != nil {
 		return nil, err

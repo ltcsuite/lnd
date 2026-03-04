@@ -609,6 +609,26 @@ message ImportAccountRequest {
     import the account as is.
     */
     bool dry_run = 5;
+
+    /*
+    The block height from which to start rescanning for historical transactions
+    relevant to the imported account. If set to a value greater than 0, a
+    background rescan will be initiated from this height after the account is
+    imported. This should be set to the height at or before the account's first
+    transaction. If not set or 0, no rescan is performed and only future
+    transactions will be detected.
+
+    NOTE: This field is mutually exclusive with dry_run.
+    */
+    int32 birthday_height = 6;
+
+    /*
+    The number of consecutive unused address indexes to derive before stopping
+    address discovery during a rescan. This acts as the gap limit for
+    BIP44-style address discovery. Higher values are more thorough but slower.
+    Defaults to 250 if not set or 0. Only relevant when birthday_height is set.
+    */
+    uint32 recovery_window = 7;
 }
 message ImportAccountResponse {
     // The details of the imported account.

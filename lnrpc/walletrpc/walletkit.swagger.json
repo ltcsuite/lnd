@@ -1513,6 +1513,16 @@
         "dry_run": {
           "type": "boolean",
           "description": "Whether a dry run should be attempted when importing the account. This\nserves as a way to confirm whether the account is being imported correctly\nby returning the first N addresses for the external and internal branches of\nthe account. If these addresses match as expected, then it should be safe to\nimport the account as is."
+        },
+        "birthday_height": {
+          "type": "integer",
+          "format": "int32",
+          "description": "The block height from which to start rescanning for historical transactions\nrelevant to the imported account. If set to a value greater than 0, a\nbackground rescan will be initiated from this height after the account is\nimported. This should be set to the height at or before the account's first\ntransaction. If not set or 0, no rescan is performed and only future\ntransactions will be detected.\n\nNOTE: This field is mutually exclusive with dry_run."
+        },
+        "recovery_window": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The number of consecutive unused address indexes to derive before stopping\naddress discovery during a rescan. This acts as the gap limit for\nBIP44-style address discovery. Higher values are more thorough but slower.\nDefaults to 250 if not set or 0. Only relevant when birthday_height is set."
         }
       }
     },

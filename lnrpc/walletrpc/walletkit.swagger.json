@@ -53,7 +53,8 @@
               "WITNESS_PUBKEY_HASH",
               "NESTED_WITNESS_PUBKEY_HASH",
               "HYBRID_NESTED_WITNESS_PUBKEY_HASH",
-              "TAPROOT_PUBKEY"
+              "TAPROOT_PUBKEY",
+              "MWEB"
             ],
             "default": "UNKNOWN"
           }
@@ -89,6 +90,40 @@
             "required": true,
             "schema": {
               "$ref": "#/definitions/walletrpcImportAccountRequest"
+            }
+          }
+        ],
+        "tags": [
+          "WalletKit"
+        ]
+      }
+    },
+    "/v2/wallet/accounts/import-mweb-scan-key": {
+      "post": {
+        "summary": "ImportMwebScanKey imports a raw MWEB scan key for watch-only output\ndetection, creating a new account in the standard MWEB key scope\n({0, 100}). This enables hardware wallet integration where the scan\nsecret is exported from the device but the spend private key remains\non-device for PSBT signing.",
+        "description": "Security: The scan secret reveals all incoming MWEB transaction\namounts and addresses. It is encrypted at rest with the wallet's\npublic passphrase.",
+        "operationId": "WalletKit_ImportMwebScanKey",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/walletrpcImportMwebScanKeyResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/walletrpcImportMwebScanKeyRequest"
             }
           }
         ],
@@ -1343,7 +1378,8 @@
         "WITNESS_PUBKEY_HASH",
         "NESTED_WITNESS_PUBKEY_HASH",
         "HYBRID_NESTED_WITNESS_PUBKEY_HASH",
-        "TAPROOT_PUBKEY"
+        "TAPROOT_PUBKEY",
+        "MWEB"
       ],
       "default": "UNKNOWN"
     },
@@ -1546,6 +1582,48 @@
             "type": "string"
           },
           "description": "The first N addresses that belong to the internal branch of the account.\nThe internal branch is typically used for change addresses. These are only\nreturned if a dry run was specified within the request."
+        }
+      }
+    },
+    "walletrpcImportMwebScanKeyRequest": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "A name to identify the account (e.g., \"hw-mweb\")."
+        },
+        "scan_secret": {
+          "type": "string",
+          "format": "byte",
+          "description": "The raw 32-byte MWEB scan secret key, exported from the hardware\nwallet. Derived at m/0'/100'/0'."
+        },
+        "spend_pub_key": {
+          "type": "string",
+          "format": "byte",
+          "description": "The 33-byte compressed spend public key at m/0'/100'/1'."
+        },
+        "master_key_fingerprint": {
+          "type": "string",
+          "format": "byte",
+          "description": "REQUIRED. The 4-byte fingerprint of the master key (root key at\npath m/). Hardware wallets validate this during PSBT signing — wrong\nor zero fingerprint causes signing to fail. The bytes are in\nbig-endian order."
+        },
+        "rescan": {
+          "type": "boolean",
+          "description": "If true, trigger a full scan of the current MWEB UTXO set to\ndiscover existing unspent outputs belonging to this scan key.\nThis discovers the current balance, not full transaction history."
+        },
+        "recovery_window": {
+          "type": "integer",
+          "format": "int64",
+          "description": "The number of consecutive unused address indexes to derive for\nthe address lookahead pool. Outputs at indexes beyond this window\nwon't be discovered unless intermediate hits expand the pool.\nDefault: 1000 if unset."
+        }
+      }
+    },
+    "walletrpcImportMwebScanKeyResponse": {
+      "type": "object",
+      "properties": {
+        "account": {
+          "$ref": "#/definitions/walletrpcAccount",
+          "description": "The account that was created."
         }
       }
     },

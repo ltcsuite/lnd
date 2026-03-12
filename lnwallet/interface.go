@@ -324,6 +324,14 @@ type WalletController interface {
 		recoveryWindow uint32) (*waddrmgr.AccountProperties,
 		[]ltcutil.Address, []ltcutil.Address, error)
 
+	// ImportMwebScanKey imports a raw MWEB scan key for watch-only output
+	// detection. This enables hardware wallet integration where the scan
+	// secret is exported but the spend key remains on-device.
+	ImportMwebScanKey(name string, scanSecret [32]byte,
+		spendPubKey [33]byte, masterKeyFingerprint uint32,
+		rescan bool,
+		recoveryWindow uint32) (*waddrmgr.AccountProperties, error)
+
 	// ImportPublicKey imports a single derived public key into the wallet.
 	// The address type can usually be inferred from the key's version, but
 	// in the case of legacy versions (xpub, tpub), an address type must be

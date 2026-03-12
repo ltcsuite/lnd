@@ -42,6 +42,7 @@ var (
 			listAccountsCommand,
 			importAccountCommand,
 			importPubKeyCommand,
+			importMwebScanKeyCommand,
 		},
 	}
 
@@ -98,9 +99,12 @@ func parseAddrType(addrTypeStr string) (walletrpc.AddressType, error) {
 		return walletrpc.AddressType_HYBRID_NESTED_WITNESS_PUBKEY_HASH, nil
 	case "p2tr":
 		return walletrpc.AddressType_TAPROOT_PUBKEY, nil
+	case "mweb":
+		return walletrpc.AddressType_MWEB, nil
 	default:
 		return 0, errors.New("invalid address type, supported address " +
-			"types are: p2wkh, p2tr, np2wkh, and np2wkh-p2wkh")
+			"types are: p2wkh, p2tr, np2wkh, np2wkh-p2wkh, " +
+			"and mweb")
 	}
 }
 
@@ -1539,6 +1543,115 @@ func importAccount(ctx *cli.Context) error {
 		RecoveryWindow:       uint32(ctx.Uint64("recovery_window")),
 	}
 	resp, err := walletClient.ImportAccount(ctxc, req)
+	if err != nil {
+		return err
+	}
+
+	printRespJSON(resp)
+	return nil
+}
+
+var importMwebScanKeyCommand = cli.Command{
+	Name:  "import-mweb-scan-key",
+	Usage: "Import an MWEB scan key from a hardware wallet for watch-only output detection.",
+	Description: `
+	Imports a raw MWEB scan key from a hardware wallet to create a
+	watch-only MWEB account. The scan key enables detecting incoming
+	MWEB transactions without the ability to spend them. Spending
+	requires signing PSBTs on the hardware wallet.
+
+	SECURITY: The scan secret reveals all incoming MWEB output amounts
+	and addresses. It is encrypted at rest but provides view-level
+	access to all MWEB activity on this key.
+	`,
+	Flags: []cli.Flag{
+		cli.StringFlag{
+			Name:  "name",
+			Usage: "account name (required)",
+		},
+		cli.StringFlag{
+			Name:  "scan_key",
+			Usage: "32-byte scan secret in hex (required)",
+		},
+		cli.StringFlag{
+			Name:  "spend_pubkey",
+			Usage: "33-byte compressed spend pubkey in hex (required)",
+		},
+		cli.StringFlag{
+			Name: "master_key_fingerprint",
+			Usage: "4-byte root key fingerprint in hex " +
+				"(required)",
+		},
+		cli.BoolFlag{
+			Name: "rescan",
+			Usage: "scan current MWEB UTXO set for " +
+				"existing funds",
+		},
+		cli.Uint64Flag{
+			Name: "recovery_window",
+			Usage: "address lookahead pool size " +
+				"(default: 1000)",
+			Value: 1000,
+		},
+	},
+	Action: actionDecorator(importMwebScanKey),
+}
+
+func importMwebScanKey(ctx *cli.Context) error {
+	ctxc := getContext()
+
+	if ctx.NArg() > 0 || ctx.NumFlags() > 6 {
+		return cli.ShowCommandHelp(ctx, "import-mweb-scan-key")
+	}
+
+	name := ctx.String("name")
+	if name == "" {
+		return fmt.Errorf("name is required")
+	}
+
+	scanKeyHex := ctx.String("scan_key")
+	scanKeyBytes, err := hex.DecodeString(scanKeyHex)
+	if err != nil {
+		return fmt.Errorf("invalid scan_key hex: %v", err)
+	}
+	if len(scanKeyBytes) != 32 {
+		return fmt.Errorf("scan_key must be 32 bytes, got %d",
+			len(scanKeyBytes))
+	}
+
+	spendPubKeyHex := ctx.String("spend_pubkey")
+	spendPubKeyBytes, err := hex.DecodeString(spendPubKeyHex)
+	if err != nil {
+		return fmt.Errorf("invalid spend_pubkey hex: %v", err)
+	}
+	if len(spendPubKeyBytes) != 33 {
+		return fmt.Errorf("spend_pubkey must be 33 bytes, got %d",
+			len(spendPubKeyBytes))
+	}
+
+	mkfpHex := ctx.String("master_key_fingerprint")
+	mkfpBytes, err := hex.DecodeString(mkfpHex)
+	if err != nil {
+		return fmt.Errorf("invalid master_key_fingerprint hex: %v",
+			err)
+	}
+	if len(mkfpBytes) != 4 {
+		return fmt.Errorf("master_key_fingerprint must be 4 bytes, "+
+			"got %d", len(mkfpBytes))
+	}
+
+	walletClient, cleanUp := getWalletClient(ctx)
+	defer cleanUp()
+
+	req := &walletrpc.ImportMwebScanKeyRequest{
+		Name:                 name,
+		ScanSecret:           scanKeyBytes,
+		SpendPubKey:          spendPubKeyBytes,
+		MasterKeyFingerprint: mkfpBytes,
+		Rescan:               ctx.Bool("rescan"),
+		RecoveryWindow:       uint32(ctx.Uint64("recovery_window")),
+	}
+	resp, err := walletClient.ImportMwebScanKey(ctxc, req)
 	if err != nil {
 		return err
 	}

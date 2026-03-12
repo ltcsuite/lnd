@@ -65,6 +65,9 @@ http:
     - selector: walletrpc.WalletKit.ImportAccount
       post: "/v2/wallet/accounts/import"
       body: "*"
+    - selector: walletrpc.WalletKit.ImportMwebScanKey
+      post: "/v2/wallet/accounts/import-mweb-scan-key"
+      body: "*"
     - selector: walletrpc.WalletKit.SignMessageWithAddr
       post: "/v2/wallet/address/signmessage"
       body: "*"

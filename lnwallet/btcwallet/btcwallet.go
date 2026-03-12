@@ -609,10 +609,17 @@ func (b *BtcWallet) ListAccounts(name string,
 	// the existing account matching those.
 	case name != "" && keyScope != nil:
 		account, err := b.wallet.AccountPropertiesByName(*keyScope, name)
-		if err != nil {
+		switch {
+		case waddrmgr.IsError(err, waddrmgr.ErrScopeNotFound):
+			// Scope doesn't exist yet (e.g., MWEB before
+			// migration). Return empty rather than error.
+
+		case err != nil:
 			return nil, err
+
+		default:
+			res = append(res, account)
 		}
-		res = append(res, account)
 
 	// Only the name filter was provided.
 	case name != "" && keyScope == nil:
@@ -629,6 +636,21 @@ func (b *BtcWallet) ListAccounts(name string,
 					return nil, err
 				}
 				res = append(res, a)
+			}
+
+			// Also check standard MWEB scope. Legacy MWEB
+			// scope is wallet-internal only.
+			a, err := b.wallet.AccountPropertiesByName(
+				waddrmgr.KeyScopeMweb, name,
+			)
+			if err == nil {
+				res = append(res, a)
+			} else if !waddrmgr.IsError(
+				err, waddrmgr.ErrAccountNotFound,
+			) && !waddrmgr.IsError(
+				err, waddrmgr.ErrScopeNotFound,
+			) {
+				return nil, err
 			}
 
 			break
@@ -669,6 +691,11 @@ func (b *BtcWallet) ListAccounts(name string,
 	// matching it.
 	case name == "" && keyScope != nil:
 		accounts, err := b.wallet.Accounts(*keyScope)
+		if waddrmgr.IsError(err, waddrmgr.ErrScopeNotFound) {
+			// Scope doesn't exist yet (e.g., MWEB before
+			// migration). Return empty rather than error.
+			break
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -701,6 +728,23 @@ func (b *BtcWallet) ListAccounts(name string,
 		for _, account := range accounts.Accounts {
 			account := account
 			res = append(res, &account.AccountProperties)
+		}
+
+		// Also enumerate standard MWEB scope if it exists.
+		// Legacy MWEB scope is wallet-internal only.
+		mwebAccounts, err := b.wallet.Accounts(
+			waddrmgr.KeyScopeMweb,
+		)
+		if err != nil &&
+			!waddrmgr.IsError(err, waddrmgr.ErrScopeNotFound) {
+
+			return nil, err
+		}
+		if err == nil {
+			for _, a := range mwebAccounts.Accounts {
+				a := a
+				res = append(res, &a.AccountProperties)
+			}
 		}
 	}
 
@@ -933,6 +977,42 @@ func (b *BtcWallet) ImportAccount(name string, accountPubKey *hdkeychain.Extende
 	}
 
 	return accountProps, externalAddrs, internalAddrs, nil
+}
+
+// ImportMwebScanKey imports a raw MWEB scan key for watch-only output
+// detection. This enables hardware wallet integration where the scan
+// secret is exported but the spend key remains on-device.
+//
+// This is a part of the WalletController interface.
+func (b *BtcWallet) ImportMwebScanKey(name string,
+	scanSecret [32]byte, spendPubKey [33]byte,
+	masterKeyFingerprint uint32, rescan bool,
+	recoveryWindow uint32) (*waddrmgr.AccountProperties, error) {
+
+	// Check for duplicate account name across all scopes.
+	if name != lnwallet.DefaultAccountName &&
+		name != waddrmgr.ImportedAddrAccountName {
+
+		_, err := b.ListAccounts(name, nil)
+		if err == nil {
+			return nil, fmt.Errorf("account '%s' already exists",
+				name)
+		}
+		if !waddrmgr.IsError(err, waddrmgr.ErrAccountNotFound) {
+			return nil, err
+		}
+	}
+
+	if rescan {
+		return b.wallet.ImportMwebScanKeyWithRescan(
+			name, scanSecret, spendPubKey,
+			masterKeyFingerprint, recoveryWindow,
+		)
+	}
+	return b.wallet.ImportMwebScanKey(
+		name, scanSecret, spendPubKey,
+		masterKeyFingerprint, recoveryWindow,
+	)
 }
 
 // ImportPublicKey imports a single derived public key into the wallet. The

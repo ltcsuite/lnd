@@ -2,6 +2,7 @@ package electrum
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -9,9 +10,11 @@ import (
 	"github.com/ltcsuite/ltcd/chaincfg"
 	"github.com/ltcsuite/ltcd/chaincfg/chainhash"
 	"github.com/ltcsuite/ltcd/ltcutil"
+	"github.com/ltcsuite/ltcd/ltcutil/mweb"
 	"github.com/ltcsuite/ltcd/wire"
 	"github.com/ltcsuite/ltcwallet/chain"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
+	"github.com/ltcsuite/neutrino/mwebdb"
 	"github.com/stretchr/testify/require"
 )
 
@@ -276,9 +279,12 @@ func TestChainClientNotifyReceived(t *testing.T) {
 
 	chainClient := NewChainClient(client, &chaincfg.MainNetParams, "", "", nil)
 
-	// Create a test address.
+	// NotifyReceived only monitors P2WPKH addresses (other types are
+	// either unsupported by Electrum or handled by mwebsync).
 	pubKeyHash := make([]byte, 20)
-	addr, err := ltcutil.NewAddressPubKeyHash(pubKeyHash, &chaincfg.MainNetParams)
+	addr, err := ltcutil.NewAddressWitnessPubKeyHash(
+		pubKeyHash, &chaincfg.MainNetParams,
+	)
 	require.NoError(t, err)
 
 	err = chainClient.NotifyReceived([]ltcutil.Address{addr})
@@ -686,4 +692,436 @@ func TestSendFilteredBlocksEmpty(t *testing.T) {
 		t.Fatal("unexpected notification")
 	default:
 	}
+}
+
+// --- Mock implementations for MWEB tests ---
+
+// mockCoinDB implements mwebdb.CoinDatabase for testing.
+type mockCoinDB struct {
+	leafset  *mweb.Leafset
+	coins    map[chainhash.Hash]*wire.MwebOutput
+	leaves   map[uint64]*wire.MwebNetUtxo
+	fetchErr error // injected error for FetchCoin/FetchLeaves
+}
+
+func (m *mockCoinDB) GetRollbackHeight() (uint32, error)               { return 0, nil }
+func (m *mockCoinDB) PutRollbackHeight(uint32) error                   { return nil }
+func (m *mockCoinDB) ClearRollbackHeight(uint32) error                 { return nil }
+func (m *mockCoinDB) GetLeavesAtHeight() (map[uint32]uint64, error)    { return nil, nil }
+func (m *mockCoinDB) PutLeavesAtHeight(map[uint32]uint64) error        { return nil }
+func (m *mockCoinDB) RollbackLeavesAtHeight(uint32) error              { return nil }
+func (m *mockCoinDB) PutLeafsetAndPurge(*mweb.Leafset, []uint64) error { return nil }
+func (m *mockCoinDB) PutCoins([]*wire.MwebNetUtxo) error               { return nil }
+func (m *mockCoinDB) PurgeCoins() error                                { return nil }
+
+func (m *mockCoinDB) GetLeafset() (*mweb.Leafset, error) {
+	if m.leafset == nil {
+		return &mweb.Leafset{}, nil
+	}
+	return m.leafset, nil
+}
+
+func (m *mockCoinDB) FetchCoin(hash *chainhash.Hash) (*wire.MwebOutput, error) {
+	if m.fetchErr != nil {
+		return nil, m.fetchErr
+	}
+	if out, ok := m.coins[*hash]; ok {
+		return out, nil
+	}
+	return nil, mwebdb.ErrCoinNotFound
+}
+
+func (m *mockCoinDB) FetchLeaves(indices []uint64) ([]*wire.MwebNetUtxo, error) {
+	if m.fetchErr != nil {
+		return nil, m.fetchErr
+	}
+	var result []*wire.MwebNetUtxo
+	for _, idx := range indices {
+		if utxo, ok := m.leaves[idx]; ok {
+			result = append(result, utxo)
+		}
+	}
+	return result, nil
+}
+
+var _ mwebdb.CoinDatabase = (*mockCoinDB)(nil)
+
+// mockMwebSyncer implements the mwebSyncer interface for testing.
+type mockMwebSyncer struct {
+	synced   bool
+	doneChan chan struct{}
+}
+
+func newMockMwebSyncer(synced bool) *mockMwebSyncer {
+	return &mockMwebSyncer{synced: synced, doneChan: make(chan struct{})}
+}
+
+func (m *mockMwebSyncer) Start() error          { return nil }
+func (m *mockMwebSyncer) Stop() error           { return nil }
+func (m *mockMwebSyncer) IsSynced() bool        { return m.synced }
+func (m *mockMwebSyncer) Done() <-chan struct{} { return m.doneChan }
+
+var _ mwebSyncer = (*mockMwebSyncer)(nil)
+
+// newTestChainClient creates a minimal ChainClient for MWEB tests.
+func newTestChainClient() *ChainClient {
+	cfg := &ClientConfig{
+		Server:            "localhost:50001",
+		UseSSL:            false,
+		ReconnectInterval: 10 * time.Second,
+		RequestTimeout:    30 * time.Second,
+		PingInterval:      60 * time.Second,
+		MaxRetries:        3,
+	}
+	return NewChainClient(
+		NewClient(cfg), &chaincfg.MainNetParams, "", "", nil,
+	)
+}
+
+// TestElectrumMwebInterfaces verifies compile-time interface satisfaction.
+func TestElectrumMwebInterfaces(t *testing.T) {
+	t.Parallel()
+
+	var _ chain.MwebReplayer = (*ChainClient)(nil)
+	var _ chain.MwebUtxoChecker = (*ChainClient)(nil)
+}
+
+// TestElectrumMwebUtxoExists tests the MwebUtxoExists method.
+func TestElectrumMwebUtxoExists(t *testing.T) {
+	t.Parallel()
+
+	knownHash := chainhash.Hash{1, 2, 3}
+	unknownHash := chainhash.Hash{4, 5, 6}
+	knownOutput := &wire.MwebOutput{}
+
+	t.Run("coin exists", func(t *testing.T) {
+		t.Parallel()
+		c := newTestChainClient()
+		c.mwebCoinDB = &mockCoinDB{
+			coins: map[chainhash.Hash]*wire.MwebOutput{
+				knownHash: knownOutput,
+			},
+		}
+
+		exists, err := c.MwebUtxoExists(&knownHash)
+		require.NoError(t, err)
+		require.True(t, exists)
+	})
+
+	t.Run("coin not found", func(t *testing.T) {
+		t.Parallel()
+		c := newTestChainClient()
+		c.mwebCoinDB = &mockCoinDB{
+			coins: map[chainhash.Hash]*wire.MwebOutput{},
+		}
+
+		exists, err := c.MwebUtxoExists(&unknownHash)
+		require.NoError(t, err)
+		require.False(t, exists)
+	})
+
+	t.Run("DB error propagated", func(t *testing.T) {
+		t.Parallel()
+		c := newTestChainClient()
+		dbErr := errors.New("disk I/O error")
+		c.mwebCoinDB = &mockCoinDB{fetchErr: dbErr}
+
+		exists, err := c.MwebUtxoExists(&unknownHash)
+		require.ErrorIs(t, err, dbErr)
+		require.False(t, exists)
+	})
+
+	t.Run("nil coinDB returns error", func(t *testing.T) {
+		t.Parallel()
+		c := newTestChainClient()
+		// mwebCoinDB is nil (MWEB sync not started).
+
+		exists, err := c.MwebUtxoExists(&unknownHash)
+		require.Error(t, err)
+		require.False(t, exists)
+	})
+}
+
+// TestElectrumIsMwebSynced tests the IsMwebSynced method.
+func TestElectrumIsMwebSynced(t *testing.T) {
+	t.Parallel()
+
+	t.Run("startup in progress", func(t *testing.T) {
+		t.Parallel()
+		c := newTestChainClient()
+		// mwebSyncer=nil, mwebStartDone=false → startup still running
+		require.False(t, c.IsMwebSynced())
+	})
+
+	t.Run("startup failed", func(t *testing.T) {
+		t.Parallel()
+		c := newTestChainClient()
+		// mwebSyncer=nil, mwebStartDone=true → startup finished but
+		// failed. Returns true to unblock callers waiting for sync.
+		c.mwebStartDone.Store(true)
+		require.True(t, c.IsMwebSynced())
+	})
+
+	t.Run("syncer not synced", func(t *testing.T) {
+		t.Parallel()
+		c := newTestChainClient()
+		c.mwebSyncer = newMockMwebSyncer(false)
+		require.False(t, c.IsMwebSynced())
+	})
+
+	t.Run("syncer synced", func(t *testing.T) {
+		t.Parallel()
+		c := newTestChainClient()
+		c.mwebSyncer = newMockMwebSyncer(true)
+		require.True(t, c.IsMwebSynced())
+	})
+}
+
+// TestElectrumMwebCoinDBNotPublishedBeforeStartup verifies that mwebCoinDB
+// is nil when startup hasn't completed
+func TestElectrumMwebCoinDBNotPublishedBeforeStartup(t *testing.T) {
+	t.Parallel()
+	c := newTestChainClient()
+
+	// Before startup, mwebCoinDB should be nil.
+	require.Nil(t, c.mwebCoinDB)
+
+	// ReplayMwebUtxos should return a clean error, not use a stale DB.
+	err := c.ReplayMwebUtxos()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not initialized")
+
+	// MwebUtxoExists should return a clean error too.
+	exists, err := c.MwebUtxoExists(&chainhash.Hash{1})
+	require.Error(t, err)
+	require.False(t, exists)
+}
+
+// TestElectrumMwebStartupFailureUnblocksSynced verifies that IsMwebSynced
+// returns true after startup fails, so recoverMwebUtxos doesn't poll forever.
+func TestElectrumMwebStartupFailureUnblocksSynced(t *testing.T) {
+	t.Parallel()
+	c := newTestChainClient()
+
+	// Before startup finishes: IsMwebSynced returns false (wait).
+	require.False(t, c.IsMwebSynced())
+
+	// Simulate startup failure: mwebStartDone becomes true but no syncer.
+	c.mwebStartDone.Store(true)
+
+	// Now IsMwebSynced returns true (unblocks callers).
+	require.True(t, c.IsMwebSynced())
+
+	// But ReplayMwebUtxos returns clean error (coinDB is nil).
+	err := c.ReplayMwebUtxos()
+	require.Error(t, err)
+}
+
+// TestWaitForSyncOrShutdownSyncerDies verifies that when the sync loop
+// exits unexpectedly (syncer.Done() fires), waitForSyncOrShutdown clears
+// mwebSyncer and mwebCoinDB so IsMwebSynced falls through to mwebStartDone.
+func TestWaitForSyncOrShutdownSyncerDies(t *testing.T) {
+	t.Parallel()
+	c := newTestChainClient()
+
+	// Simulate successful startup state.
+	mock := newMockMwebSyncer(false)
+	c.mwebSyncer = mock
+	c.mwebCoinDB = &mockCoinDB{}
+	c.mwebStartDone.Store(false) // will be set by defer in startMwebSync
+
+	// IsMwebSynced should return false (syncer exists, not synced).
+	require.False(t, c.IsMwebSynced())
+
+	// Run waitForSyncOrShutdown in a goroutine, simulating
+	// the tail end of startMwebSync.
+	done := make(chan struct{})
+	go func() {
+		c.waitForSyncOrShutdown(mock)
+		// Simulate the defer in startMwebSync.
+		c.mwebStartDone.Store(true)
+		close(done)
+	}()
+
+	// Simulate sync loop dying.
+	close(mock.doneChan)
+
+	// Wait for cleanup to finish.
+	<-done
+
+	// Verify cleanup: syncer and coinDB both nil.
+	require.Nil(t, c.mwebSyncer)
+	require.Nil(t, c.mwebCoinDB)
+
+	// IsMwebSynced should now return true (mwebStartDone fallback).
+	require.True(t, c.IsMwebSynced())
+
+	// ReplayMwebUtxos returns clean error.
+	err := c.ReplayMwebUtxos()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not initialized")
+}
+
+// TestWaitForSyncOrShutdownNormalStop verifies that on normal shutdown
+// (c.quit fires), waitForSyncOrShutdown calls syncer.Stop() and clears
+// mwebCoinDB, but leaves mwebSyncer intact.
+func TestWaitForSyncOrShutdownNormalStop(t *testing.T) {
+	t.Parallel()
+	c := newTestChainClient()
+
+	mock := newMockMwebSyncer(true)
+	c.mwebSyncer = mock
+	c.mwebCoinDB = &mockCoinDB{}
+
+	done := make(chan struct{})
+	go func() {
+		c.waitForSyncOrShutdown(mock)
+		close(done)
+	}()
+
+	// Normal shutdown.
+	close(c.quit)
+	<-done
+
+	// On normal shutdown, mwebSyncer is NOT cleared (syncer.Stop was
+	// called instead). mwebCoinDB IS cleared (DB is closing).
+	require.NotNil(t, c.mwebSyncer)
+	require.Nil(t, c.mwebCoinDB)
+}
+
+// TestElectrumReplayMwebUtxos tests the ReplayMwebUtxos method.
+func TestElectrumReplayMwebUtxos(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil coinDB returns error", func(t *testing.T) {
+		t.Parallel()
+		c := newTestChainClient()
+		err := c.ReplayMwebUtxos()
+		require.Error(t, err)
+	})
+
+	t.Run("empty leafset sends no notifications", func(t *testing.T) {
+		t.Parallel()
+		c := newTestChainClient()
+		c.mwebCoinDB = &mockCoinDB{
+			leafset: &mweb.Leafset{Size: 0, Bits: []byte{}},
+		}
+
+		err := c.ReplayMwebUtxos()
+		require.NoError(t, err)
+
+		// No notifications should be sent.
+		select {
+		case <-c.notificationChan:
+			t.Fatal("unexpected notification for empty leafset")
+		default:
+		}
+	})
+
+	t.Run("delivers UTXOs through notifications", func(t *testing.T) {
+		t.Parallel()
+		c := newTestChainClient()
+
+		// Create a leafset with 3 leaves: indices 0, 1, 2 all present.
+		// Bits: 0b11100000 = 0xE0 (MSB first per Contains())
+		leafset := &mweb.Leafset{
+			Size: 3,
+			Bits: []byte{0xE0},
+		}
+
+		utxo0 := &wire.MwebNetUtxo{LeafIndex: 0, Height: 100,
+			OutputId: &chainhash.Hash{0xAA}}
+		utxo1 := &wire.MwebNetUtxo{LeafIndex: 1, Height: 101,
+			OutputId: &chainhash.Hash{0xBB}}
+		utxo2 := &wire.MwebNetUtxo{LeafIndex: 2, Height: 102,
+			OutputId: &chainhash.Hash{0xCC}}
+
+		c.mwebCoinDB = &mockCoinDB{
+			leafset: leafset,
+			leaves: map[uint64]*wire.MwebNetUtxo{
+				0: utxo0, 1: utxo1, 2: utxo2,
+			},
+		}
+
+		err := c.ReplayMwebUtxos()
+		require.NoError(t, err)
+
+		// With 3 UTXOs and batchSize=5000, all should be in one batch.
+		notif := <-c.notificationChan
+		mwebNotif, ok := notif.(chain.MwebUtxos)
+		require.True(t, ok)
+		require.Len(t, mwebNotif.Utxos, 3)
+		require.Equal(t, leafset, mwebNotif.Leafset)
+
+		// No more notifications.
+		select {
+		case <-c.notificationChan:
+			t.Fatal("unexpected extra notification")
+		default:
+		}
+	})
+
+	t.Run("batches large UTXO sets", func(t *testing.T) {
+		t.Parallel()
+		c := newTestChainClient()
+
+		// Create a leafset with 7500 leaves (will require 2 batches).
+		numLeaves := uint64(7500)
+		bits := make([]byte, (numLeaves+7)/8)
+		for i := uint64(0); i < numLeaves; i++ {
+			bits[i/8] |= 0x80 >> (i % 8) // set bit
+		}
+		leafset := &mweb.Leafset{
+			Size: numLeaves,
+			Bits: bits,
+		}
+
+		leaves := make(map[uint64]*wire.MwebNetUtxo)
+		for i := uint64(0); i < numLeaves; i++ {
+			leaves[i] = &wire.MwebNetUtxo{
+				LeafIndex: i,
+				Height:    int32(100 + i),
+				OutputId:  &chainhash.Hash{byte(i), byte(i >> 8)},
+			}
+		}
+
+		c.mwebCoinDB = &mockCoinDB{
+			leafset: leafset,
+			leaves:  leaves,
+		}
+
+		err := c.ReplayMwebUtxos()
+		require.NoError(t, err)
+
+		// Should receive 2 notifications: batch of 5000 + batch of 2500.
+		notif1 := <-c.notificationChan
+		mwebNotif1, ok := notif1.(chain.MwebUtxos)
+		require.True(t, ok)
+		require.Len(t, mwebNotif1.Utxos, 5000)
+
+		notif2 := <-c.notificationChan
+		mwebNotif2, ok := notif2.(chain.MwebUtxos)
+		require.True(t, ok)
+		require.Len(t, mwebNotif2.Utxos, 2500)
+
+		// No more notifications.
+		select {
+		case <-c.notificationChan:
+			t.Fatal("unexpected extra notification")
+		default:
+		}
+	})
+
+	t.Run("FetchLeaves error propagated", func(t *testing.T) {
+		t.Parallel()
+		c := newTestChainClient()
+		c.mwebCoinDB = &mockCoinDB{
+			leafset:  &mweb.Leafset{Size: 1, Bits: []byte{0x80}},
+			fetchErr: errors.New("DB read failed"),
+		}
+
+		err := c.ReplayMwebUtxos()
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "DB read failed")
+	})
 }

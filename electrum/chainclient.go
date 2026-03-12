@@ -17,6 +17,7 @@ import (
 	"github.com/ltcsuite/ltcwallet/chain"
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
+	"github.com/ltcsuite/neutrino/mwebdb"
 	"github.com/ltcsuite/neutrino/query"
 
 	"github.com/ltcsuite/lnd/electrum/mwebp2p"
@@ -247,8 +248,23 @@ type ChainClient struct {
 	// workManager dispatches MWEB queries to P2P peers.
 	workManager query.WorkManager
 
+	// mwebMtx protects mwebSyncer and mwebCoinDB, which are written from
+	// the startMwebSync goroutine and read from wallet goroutines via
+	// IsMwebSynced, ReplayMwebUtxos, and MwebUtxoExists.
+	mwebMtx sync.RWMutex
+
 	// mwebSyncer is the mwebsync syncer that handles MWEB synchronization.
 	mwebSyncer mwebSyncer
+
+	// mwebCoinDB is the MWEB coin database, retained from startMwebSync
+	// for replay/spentness checks. Only set after startMwebSync fully
+	// succeeds; cleared before db.Close() on shutdown.
+	mwebCoinDB mwebdb.CoinDatabase
+
+	// mwebStartDone is set to true when startMwebSync exits (whether it
+	// succeeded or failed). This allows IsMwebSynced to distinguish
+	// "startup in progress" (wait) from "startup failed" (don't wait).
+	mwebStartDone atomic.Bool
 
 	quit chan struct{}
 	wg   sync.WaitGroup
@@ -258,10 +274,16 @@ type ChainClient struct {
 type mwebSyncer interface {
 	Start() error
 	Stop() error
+	IsSynced() bool
+	Done() <-chan struct{}
 }
 
-// Compile time check to ensure ChainClient implements chain.Interface.
-var _ chain.Interface = (*ChainClient)(nil)
+// Compile time checks.
+var (
+	_ chain.Interface       = (*ChainClient)(nil)
+	_ chain.MwebReplayer    = (*ChainClient)(nil)
+	_ chain.MwebUtxoChecker = (*ChainClient)(nil)
+)
 
 // NewChainClient creates a new Electrum chain client.
 // If restURL is provided, the client will be able to fetch full blocks
@@ -387,6 +409,10 @@ func (c *ChainClient) Start() error {
 	if c.dataDir != "" {
 		c.wg.Add(1)
 		go c.startMwebSync()
+	} else {
+		// MWEB not configured — signal startup "done" so
+		// IsMwebSynced doesn't block callers indefinitely.
+		c.mwebStartDone.Store(true)
 	}
 
 	// Send ClientConnected notification. This triggers the wallet to
@@ -422,6 +448,92 @@ func (c *ChainClient) Stop() {
 // NOTE: This is part of the chain.Interface interface.
 func (c *ChainClient) WaitForShutdown() {
 	c.wg.Wait()
+}
+
+// ReplayMwebUtxos replays all known MWEB UTXOs through the notification
+// pipeline by reading the leafset and fetching leaves in batches.
+//
+// NOTE: This is part of the chain.MwebReplayer interface.
+func (c *ChainClient) ReplayMwebUtxos() error {
+	c.mwebMtx.RLock()
+	defer c.mwebMtx.RUnlock()
+
+	if c.mwebCoinDB == nil {
+		return fmt.Errorf("MWEB sync not initialized")
+	}
+
+	leafset, err := c.mwebCoinDB.GetLeafset()
+	if err != nil {
+		return err
+	}
+
+	// Batch to avoid memory spikes on large UTXO sets.
+	const batchSize = 5000
+	var batch []uint64
+	for i := uint64(0); i < leafset.Size; i++ {
+		if !leafset.Contains(i) {
+			continue
+		}
+		batch = append(batch, i)
+		if len(batch) >= batchSize {
+			utxos, err := c.mwebCoinDB.FetchLeaves(batch)
+			if err != nil {
+				return err
+			}
+			c.sendNotification(chain.MwebUtxos{
+				Leafset: leafset, Utxos: utxos,
+			})
+			batch = batch[:0]
+		}
+	}
+	if len(batch) > 0 {
+		utxos, err := c.mwebCoinDB.FetchLeaves(batch)
+		if err != nil {
+			return err
+		}
+		c.sendNotification(chain.MwebUtxos{
+			Leafset: leafset, Utxos: utxos,
+		})
+	}
+	return nil
+}
+
+// MwebUtxoExists checks if a MWEB UTXO with the given output ID exists
+// in the coin database.
+//
+// NOTE: This is part of the chain.MwebUtxoChecker interface.
+func (c *ChainClient) MwebUtxoExists(hash *chainhash.Hash) (bool, error) {
+	c.mwebMtx.RLock()
+	defer c.mwebMtx.RUnlock()
+
+	if c.mwebCoinDB == nil {
+		return false, fmt.Errorf("MWEB sync not initialized")
+	}
+	_, err := c.mwebCoinDB.FetchCoin(hash)
+	if err == mwebdb.ErrCoinNotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// IsMwebSynced returns whether MWEB is caught up with the chain tip.
+// If MWEB startup failed or was never configured, returns true once
+// startup is done so callers don't wait forever; they'll get a clear
+// error from ReplayMwebUtxos when they try to use it.
+func (c *ChainClient) IsMwebSynced() bool {
+	c.mwebMtx.RLock()
+	syncer := c.mwebSyncer
+	c.mwebMtx.RUnlock()
+
+	if syncer == nil {
+		// Startup finished but syncer is nil → failed or not configured.
+		// Return true to unblock callers; ReplayMwebUtxos will error.
+		return c.mwebStartDone.Load()
+	}
+	return syncer.IsSynced()
 }
 
 // GetBestBlock returns the hash and height of the best known block.

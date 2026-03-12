@@ -28,7 +28,7 @@ func TestScripthashFromScript(t *testing.T) {
 		},
 		{
 			// P2WPKH script for
-			// bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4.
+			// ltc1qw508d6qejxtdg4y5r3zarvary0c5xw7kgmn4n9.
 			name:        "p2wpkh script",
 			pkScriptHex: "0014751e76e8199196d454941c45d1b3a323f1433bd6",
 			wantScripthash: "9623df75239b5daa7f5f03042d325b51" +
@@ -63,9 +63,10 @@ func TestScripthashFromAddress(t *testing.T) {
 		wantErr        bool
 	}{
 		{
-			// Satoshi's genesis address.
+			// Litecoin P2PKH address (same pubkey hash as
+			// Bitcoin's 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa).
 			name:    "mainnet p2pkh",
-			address: "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+			address: "LUEweDxDA4WhvWiNXXSxjM9CYzHPJv4QQF",
 			params:  &chaincfg.MainNetParams,
 			wantScripthash: "8b01df4e368ea28f8dc0423bcf7a4923" +
 				"e3a12d307c875e47a0cfbf90b5c39161",
@@ -74,7 +75,7 @@ func TestScripthashFromAddress(t *testing.T) {
 		{
 			// Native segwit address.
 			name:    "mainnet p2wpkh",
-			address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+			address: "ltc1qw508d6qejxtdg4y5r3zarvary0c5xw7kgmn4n9",
 			params:  &chaincfg.MainNetParams,
 			wantScripthash: "9623df75239b5daa7f5f03042d325b51" +
 				"498c4bb7059c7748b17049bf96f73888",

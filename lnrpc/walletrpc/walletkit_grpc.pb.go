@@ -114,6 +114,16 @@ type WalletKitClient interface {
 	// detected by lnd if they happen after the import. Rescans to detect past
 	// events will be supported later on.
 	ImportAccount(ctx context.Context, in *ImportAccountRequest, opts ...grpc.CallOption) (*ImportAccountResponse, error)
+	// ImportMwebScanKey imports a raw MWEB scan key for watch-only output
+	// detection, creating a new account in the standard MWEB key scope
+	// ({0, 100}). This enables hardware wallet integration where the scan
+	// secret is exported from the device but the spend private key remains
+	// on-device for PSBT signing.
+	//
+	// Security: The scan secret reveals all incoming MWEB transaction
+	// amounts and addresses. It is encrypted at rest with the wallet's
+	// public passphrase.
+	ImportMwebScanKey(ctx context.Context, in *ImportMwebScanKeyRequest, opts ...grpc.CallOption) (*ImportMwebScanKeyResponse, error)
 	// ImportPublicKey imports a public key as watch-only into the wallet. The
 	// public key is converted into a simple address of the given type and that
 	// address script is watched on chain. For Taproot keys, this will only watch
@@ -363,6 +373,15 @@ func (c *walletKitClient) ImportAccount(ctx context.Context, in *ImportAccountRe
 	return out, nil
 }
 
+func (c *walletKitClient) ImportMwebScanKey(ctx context.Context, in *ImportMwebScanKeyRequest, opts ...grpc.CallOption) (*ImportMwebScanKeyResponse, error) {
+	out := new(ImportMwebScanKeyResponse)
+	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/ImportMwebScanKey", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *walletKitClient) ImportPublicKey(ctx context.Context, in *ImportPublicKeyRequest, opts ...grpc.CallOption) (*ImportPublicKeyResponse, error) {
 	out := new(ImportPublicKeyResponse)
 	err := c.cc.Invoke(ctx, "/walletrpc.WalletKit/ImportPublicKey", in, out, opts...)
@@ -570,6 +589,16 @@ type WalletKitServer interface {
 	// detected by lnd if they happen after the import. Rescans to detect past
 	// events will be supported later on.
 	ImportAccount(context.Context, *ImportAccountRequest) (*ImportAccountResponse, error)
+	// ImportMwebScanKey imports a raw MWEB scan key for watch-only output
+	// detection, creating a new account in the standard MWEB key scope
+	// ({0, 100}). This enables hardware wallet integration where the scan
+	// secret is exported from the device but the spend private key remains
+	// on-device for PSBT signing.
+	//
+	// Security: The scan secret reveals all incoming MWEB transaction
+	// amounts and addresses. It is encrypted at rest with the wallet's
+	// public passphrase.
+	ImportMwebScanKey(context.Context, *ImportMwebScanKeyRequest) (*ImportMwebScanKeyResponse, error)
 	// ImportPublicKey imports a public key as watch-only into the wallet. The
 	// public key is converted into a simple address of the given type and that
 	// address script is watched on chain. For Taproot keys, this will only watch
@@ -737,6 +766,9 @@ func (UnimplementedWalletKitServer) VerifyMessageWithAddr(context.Context, *Veri
 }
 func (UnimplementedWalletKitServer) ImportAccount(context.Context, *ImportAccountRequest) (*ImportAccountResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ImportAccount not implemented")
+}
+func (UnimplementedWalletKitServer) ImportMwebScanKey(context.Context, *ImportMwebScanKeyRequest) (*ImportMwebScanKeyResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ImportMwebScanKey not implemented")
 }
 func (UnimplementedWalletKitServer) ImportPublicKey(context.Context, *ImportPublicKeyRequest) (*ImportPublicKeyResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ImportPublicKey not implemented")
@@ -1021,6 +1053,24 @@ func _WalletKit_ImportAccount_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WalletKit_ImportMwebScanKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ImportMwebScanKeyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletKitServer).ImportMwebScanKey(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/walletrpc.WalletKit/ImportMwebScanKey",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletKitServer).ImportMwebScanKey(ctx, req.(*ImportMwebScanKeyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WalletKit_ImportPublicKey_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ImportPublicKeyRequest)
 	if err := dec(in); err != nil {
@@ -1295,6 +1345,10 @@ var WalletKit_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ImportAccount",
 			Handler:    _WalletKit_ImportAccount_Handler,
+		},
+		{
+			MethodName: "ImportMwebScanKey",
+			Handler:    _WalletKit_ImportMwebScanKey_Handler,
 		},
 		{
 			MethodName: "ImportPublicKey",

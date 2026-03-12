@@ -160,6 +160,10 @@ var (
 			Entity: "onchain",
 			Action: "write",
 		}},
+		"/walletrpc.WalletKit/ImportMwebScanKey": {{
+			Entity: "onchain",
+			Action: "write",
+		}},
 		"/walletrpc.WalletKit/ImportPublicKey": {{
 			Entity: "onchain",
 			Action: "write",
@@ -600,6 +604,9 @@ func (w *WalletKit) NextAddr(ctx context.Context,
 
 	case AddressType_TAPROOT_PUBKEY:
 		addrType = lnwallet.TaprootPubkey
+
+	case AddressType_MWEB:
+		addrType = lnwallet.Mweb
 	}
 
 	addr, err := w.cfg.Wallet.NewAddress(addrType, req.Change, account)
@@ -1479,6 +1486,9 @@ func marshalWalletAccount(internalScope waddrmgr.KeyScope,
 	case internalScope:
 		addrType = AddressType_WITNESS_PUBKEY_HASH
 
+	case waddrmgr.KeyScopeMweb, waddrmgr.KeyScopeMwebLegacy:
+		addrType = AddressType_MWEB
+
 	default:
 		return nil, fmt.Errorf("account %v has unsupported "+
 			"key scope %v", account.AccountName, account.KeyScope)
@@ -1494,9 +1504,9 @@ func marshalWalletAccount(internalScope waddrmgr.KeyScope,
 
 	// The remaining fields can only be done on accounts other than the
 	// default imported one existing within each key scope.
-	if account.AccountName != waddrmgr.ImportedAddrAccountName {
-		nonHardenedIndex := account.AccountPubKey.ChildIndex() -
-			hdkeychain.HardenedKeyStart
+	if account.AccountName != waddrmgr.ImportedAddrAccountName &&
+		account.AccountPubKey != nil {
+
 		rpcAccount.ExtendedPublicKey = account.AccountPubKey.String()
 		if account.MasterKeyFingerprint != 0 {
 			var mkfp [4]byte
@@ -1505,8 +1515,18 @@ func marshalWalletAccount(internalScope waddrmgr.KeyScope,
 			)
 			rpcAccount.MasterKeyFingerprint = mkfp[:]
 		}
-		rpcAccount.DerivationPath = fmt.Sprintf("%v/%v'",
-			account.KeyScope, nonHardenedIndex)
+
+		// For standard MWEB scope, the coin type key IS the
+		// account key (no separate account derivation level),
+		// so the path is just the scope: m/0'/100'.
+		if account.KeyScope == waddrmgr.KeyScopeMweb {
+			rpcAccount.DerivationPath = account.KeyScope.String()
+		} else {
+			nonHardenedIndex := account.AccountPubKey.ChildIndex() -
+				hdkeychain.HardenedKeyStart
+			rpcAccount.DerivationPath = fmt.Sprintf("%v/%v'",
+				account.KeyScope, nonHardenedIndex)
+		}
 	}
 
 	return rpcAccount, nil
@@ -1568,6 +1588,10 @@ func (w *WalletKit) ListAccounts(ctx context.Context,
 
 	case AddressType_TAPROOT_PUBKEY:
 		keyScope := waddrmgr.KeyScopeBIP0086
+		keyScopeFilter = &keyScope
+
+	case AddressType_MWEB:
+		keyScope := waddrmgr.KeyScopeMweb
 		keyScopeFilter = &keyScope
 
 	default:
@@ -1705,6 +1729,10 @@ func parseAddrType(addrType AddressType,
 
 	case AddressType_TAPROOT_PUBKEY:
 		addrTyp := waddrmgr.TaprootPubKey
+		return &addrTyp, nil
+
+	case AddressType_MWEB:
+		addrTyp := waddrmgr.Mweb
 		return &addrTyp, nil
 
 	default:
@@ -1984,6 +2012,66 @@ func (w *WalletKit) ImportAccount(_ context.Context,
 	}
 
 	return resp, nil
+}
+
+// ImportMwebScanKey imports a raw MWEB scan key for watch-only output
+// detection, creating a new account in the standard MWEB key scope.
+func (w *WalletKit) ImportMwebScanKey(_ context.Context,
+	req *ImportMwebScanKeyRequest) (*ImportMwebScanKeyResponse, error) {
+
+	if len(req.ScanSecret) != 32 {
+		return nil, fmt.Errorf("scan_secret must be exactly "+
+			"32 bytes, got %d", len(req.ScanSecret))
+	}
+	if len(req.SpendPubKey) != 33 {
+		return nil, fmt.Errorf("spend_pub_key must be exactly "+
+			"33 bytes, got %d", len(req.SpendPubKey))
+	}
+
+	var mkfp uint32
+	switch len(req.MasterKeyFingerprint) {
+	case 4:
+		mkfp = binary.BigEndian.Uint32(req.MasterKeyFingerprint)
+	default:
+		return nil, fmt.Errorf("master_key_fingerprint must be " +
+			"exactly 4 bytes in big-endian")
+	}
+	if mkfp == 0 {
+		return nil, fmt.Errorf("master_key_fingerprint is required " +
+			"(must be non-zero)")
+	}
+
+	var scanSecret [32]byte
+	copy(scanSecret[:], req.ScanSecret)
+	defer func() {
+		for i := range scanSecret {
+			scanSecret[i] = 0
+		}
+	}()
+
+	var spendPubKey [33]byte
+	copy(spendPubKey[:], req.SpendPubKey)
+
+	recoveryWindow := req.RecoveryWindow
+	if recoveryWindow == 0 {
+		recoveryWindow = 1000
+	}
+
+	accountProps, err := w.cfg.Wallet.ImportMwebScanKey(
+		req.Name, scanSecret, spendPubKey, mkfp,
+		req.Rescan, recoveryWindow,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	rpcAccount, err := marshalWalletAccount(
+		w.internalScope(), accountProps,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &ImportMwebScanKeyResponse{Account: rpcAccount}, nil
 }
 
 // ImportPublicKey imports a single derived public key into the wallet. The

@@ -148,6 +148,20 @@ service WalletKit {
     rpc ImportAccount (ImportAccountRequest) returns (ImportAccountResponse);
 
     /*
+    ImportMwebScanKey imports a raw MWEB scan key for watch-only output
+    detection, creating a new account in the standard MWEB key scope
+    ({0, 100}). This enables hardware wallet integration where the scan
+    secret is exported from the device but the spend private key remains
+    on-device for PSBT signing.
+
+    Security: The scan secret reveals all incoming MWEB transaction
+    amounts and addresses. It is encrypted at rest with the wallet's
+    public passphrase.
+    */
+    rpc ImportMwebScanKey (ImportMwebScanKeyRequest)
+        returns (ImportMwebScanKeyResponse);
+
+    /*
     ImportPublicKey imports a public key as watch-only into the wallet. The
     public key is converted into a simple address of the given type and that
     address script is watched on chain. For Taproot keys, this will only watch
@@ -411,6 +425,7 @@ enum AddressType {
     NESTED_WITNESS_PUBKEY_HASH = 2;
     HYBRID_NESTED_WITNESS_PUBKEY_HASH = 3;
     TAPROOT_PUBKEY = 4;
+    MWEB = 5;
 }
 message Account {
     // The name used to identify the account.
@@ -647,6 +662,44 @@ message ImportAccountResponse {
     returned if a dry run was specified within the request.
     */
     repeated string dry_run_internal_addrs = 3;
+}
+
+message ImportMwebScanKeyRequest {
+    // A name to identify the account (e.g., "hw-mweb").
+    string name = 1;
+
+    // The raw 32-byte MWEB scan secret key, exported from the hardware
+    // wallet. Derived at m/0'/100'/0'.
+    bytes scan_secret = 2;
+
+    // The 33-byte compressed spend public key at m/0'/100'/1'.
+    bytes spend_pub_key = 3;
+
+    /*
+    REQUIRED. The 4-byte fingerprint of the master key (root key at
+    path m/). Hardware wallets validate this during PSBT signing — wrong
+    or zero fingerprint causes signing to fail. The bytes are in
+    big-endian order.
+    */
+    bytes master_key_fingerprint = 4;
+
+    // If true, trigger a full scan of the current MWEB UTXO set to
+    // discover existing unspent outputs belonging to this scan key.
+    // This discovers the current balance, not full transaction history.
+    bool rescan = 5;
+
+    /*
+    The number of consecutive unused address indexes to derive for
+    the address lookahead pool. Outputs at indexes beyond this window
+    won't be discovered unless intermediate hits expand the pool.
+    Default: 1000 if unset.
+    */
+    uint32 recovery_window = 6;
+}
+
+message ImportMwebScanKeyResponse {
+    // The account that was created.
+    Account account = 1;
 }
 
 message ImportPublicKeyRequest {

@@ -132,6 +132,13 @@ func (w *mockWalletController) ImportAccount(string, *hdkeychain.ExtendedKey,
 	return nil, nil, nil, nil
 }
 
+// ImportMwebScanKey currently returns a dummy value.
+func (w *mockWalletController) ImportMwebScanKey(string, [32]byte, [33]byte,
+	uint32, bool, uint32) (*waddrmgr.AccountProperties, error) {
+
+	return nil, nil
+}
+
 // ImportPublicKey currently returns a dummy value.
 func (w *mockWalletController) ImportPublicKey(*btcec.PublicKey,
 	waddrmgr.AddressType) error {

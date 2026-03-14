@@ -442,7 +442,7 @@ var listUnspentCommand = cli.Command{
 	Name:      "listunspent",
 	Category:  "On-chain",
 	Usage:     "List utxos available for spending.",
-	ArgsUsage: "[min-confs [max-confs]] [--unconfirmed_only]",
+	ArgsUsage: "[min-confs [max-confs]] [--unconfirmed_only] [--account]",
 	Description: `
 	For each spendable utxo currently in the wallet, with at least min_confs
 	confirmations, and at most max_confs confirmations, lists the txid,
@@ -453,6 +453,9 @@ var listUnspentCommand = cli.Command{
 	coins, no arguments are required. To see only unconfirmed coins, use
 	'--unconfirmed_only' with '--min_confs' and '--max_confs' set to zero or
 	not present.
+
+	Use '--account' to filter UTXOs by a specific account name (e.g.
+	'--account=default'). If not set, UTXOs from all accounts are returned.
 	`,
 	Flags: []cli.Flag{
 		cli.Int64Flag{
@@ -471,6 +474,11 @@ var listUnspentCommand = cli.Command{
 				"zero. An error is returned if the value is " +
 				"true and both min_confs and max_confs are " +
 				"non-zero. (default: false)",
+		},
+		cli.StringFlag{
+			Name: "account",
+			Usage: "(optional) only include UTXOs belonging " +
+				"to this account",
 		},
 	},
 	Action: actionDecorator(listUnspent),
@@ -535,6 +543,7 @@ func listUnspent(ctx *cli.Context) error {
 	req := &lnrpc.ListUnspentRequest{
 		MinConfs: int32(minConfirms),
 		MaxConfs: int32(maxConfirms),
+		Account:  ctx.String("account"),
 	}
 	resp, err := client.ListUnspent(ctxc, req)
 	if err != nil {

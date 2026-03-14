@@ -1250,7 +1250,7 @@ func (b *BtcWallet) ReleaseOutput(id wtxmgr.LockID, op wire.OutPoint) error {
 func (b *BtcWallet) ListUnspentWitness(minConfs, maxConfs int32,
 	accountFilter string) ([]*lnwallet.Utxo, error) {
 
-	// First, grab all the unfiltered currently unspent outputs.
+	// First, grab all the filtered currently unspent outputs.
 	unspentOutputs, err := b.wallet.ListUnspent(
 		minConfs, maxConfs, accountFilter,
 	)

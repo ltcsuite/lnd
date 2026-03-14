@@ -1879,6 +1879,11 @@ var listChainTxnsCommand = cli.Command{
 				"until the chain tip, including unconfirmed, " +
 				"set this value to -1",
 		},
+		cli.StringFlag{
+			Name: "account",
+			Usage: "(optional) only include transactions " +
+				"relevant to this account",
+		},
 	},
 	Description: `
 	List all transactions an address of the wallet was involved in.
@@ -1892,6 +1897,11 @@ var listChainTxnsCommand = cli.Command{
 	transactions (identifiable with BlockHeight=0), set end_height to -1.
 	By default, this call will get all transactions our wallet was involved
 	in, including unconfirmed transactions.
+
+	Use '--account' to filter transactions by a specific account name
+	(e.g. '--account=default'). When set, amounts reflect only the
+	credits and debits belonging to that account. If not set, all
+	wallet transactions are returned.
 `,
 	Action: actionDecorator(listChainTxns),
 }
@@ -1901,7 +1911,9 @@ func listChainTxns(ctx *cli.Context) error {
 	client, cleanUp := getClient(ctx)
 	defer cleanUp()
 
-	req := &lnrpc.GetTransactionsRequest{}
+	req := &lnrpc.GetTransactionsRequest{
+		Account: ctx.String("account"),
+	}
 
 	if ctx.IsSet("start_height") {
 		req.StartHeight = int32(ctx.Int64("start_height"))

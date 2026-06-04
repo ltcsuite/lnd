@@ -40,6 +40,14 @@ const (
 	// INITIAL_CONCURRENT limit, providing 8-10x speedup while respecting
 	// server rate limits.
 	addressScanConcurrency = 10
+
+	// reorgSafetyDepth is how many blocks below the synced height the
+	// scripthash replay filter leaves in scope. Skipping confirmed history
+	// the wallet already holds speeds up restarts, but a reorg can
+	// re-confirm a transaction near the synced tip; keeping this many
+	// recent blocks unfiltered ensures such a transaction is still
+	// delivered, at the cost of redundantly replaying a few recent blocks.
+	reorgSafetyDepth = 100
 )
 
 var (
@@ -234,6 +242,11 @@ type ChainClient struct {
 	// status, we know there are new transactions to fetch.
 	scripthashHistMtx sync.RWMutex
 	scripthashHistory map[string]string
+
+	// rescanStartHeight is the wallet's last synced height, captured when
+	// Rescan begins. Scripthash notifications skip confirmed transactions
+	// below it because the wallet already holds them.
+	rescanStartHeight atomic.Int32
 
 	// dataDir is the directory for storing MWEB data (mweb.db).
 	dataDir string
@@ -1078,16 +1091,8 @@ func (c *ChainClient) Rescan(startHash *chainhash.Hash,
 	}
 	c.watchedOutpointsMtx.Unlock()
 
-	// Subscribe to scripthash notifications for real-time monitoring.
-	// This sets up persistent subscriptions that will fire whenever an
-	// address receives a new transaction (confirmed or unconfirmed).
-	ctx, cancelSub := context.WithTimeout(
-		context.Background(), 5*time.Minute,
-	)
-	c.subscribeAddresses(ctx, addrs)
-	cancelSub()
-
-	// Get the start height from the hash.
+	// Resolve the rescan start height before subscribing so scripthash
+	// notifications can skip confirmed transactions the wallet already has.
 	startHeader, err := c.GetBlockHeader(startHash)
 	if err != nil {
 		return fmt.Errorf("failed to get start block header: %w", err)
@@ -1095,14 +1100,27 @@ func (c *ChainClient) Rescan(startHash *chainhash.Hash,
 
 	// Get start height by searching for the hash.
 	startHeight := int32(0)
+	resolved := false
 	c.heightToHashMtx.RLock()
 	for height, hash := range c.heightToHash {
 		if hash.IsEqual(startHash) {
 			startHeight = height
+			resolved = true
 			break
 		}
 	}
 	c.heightToHashMtx.RUnlock()
+
+	// Only bound the scripthash replay when the synced height was resolved
+	// exactly. The timestamp estimate below can land above the wallet's
+	// true synced height, so when the hash is unresolved leave the bound at
+	// 0 (replay everything) rather than risk skipping transactions the
+	// wallet still needs.
+	if resolved {
+		c.rescanStartHeight.Store(startHeight)
+	} else {
+		c.rescanStartHeight.Store(0)
+	}
 
 	// If we didn't find it, estimate from timestamp.
 	if startHeight == 0 && startHeader != nil {
@@ -1119,6 +1137,15 @@ func (c *ChainClient) Rescan(startHash *chainhash.Hash,
 			startHeight = 0
 		}
 	}
+
+	// Subscribe to scripthash notifications for real-time monitoring.
+	// This sets up persistent subscriptions that will fire whenever an
+	// address receives a new transaction (confirmed or unconfirmed).
+	ctx, cancelSub := context.WithTimeout(
+		context.Background(), 5*time.Minute,
+	)
+	c.subscribeAddresses(ctx, addrs)
+	cancelSub()
 
 	// CRITICAL: Run rescan asynchronously to prevent deadlock.
 	// The wallet expects Rescan() to return immediately and will read
@@ -1633,9 +1660,23 @@ func (c *ChainClient) handleScripthashNotif(notif *SubscribeNotif) {
 	log.Debugf("Scripthash notification for %s: %d history items",
 		addrStr, len(history))
 
-	// Process all transactions in the history.
+	// Process all transactions in the history. Confirmed transactions well
+	// below the rescan start height are skipped because the wallet already
+	// holds them; a reorg-safety margin keeps recent blocks in scope so a
+	// reorg that re-confirms a transaction there is still delivered.
+	skipBelow := c.rescanStartHeight.Load()
+	if skipBelow > reorgSafetyDepth {
+		skipBelow -= reorgSafetyDepth
+	} else {
+		skipBelow = 0
+	}
+
 	var confirmed []*collectedTx
 	for _, histItem := range history {
+		if histItem.Height > 0 && int32(histItem.Height) < skipBelow {
+			continue
+		}
+
 		txHash, err := chainhash.NewHashFromStr(histItem.Hash)
 		if err != nil {
 			continue

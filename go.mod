@@ -220,6 +220,8 @@ replace google.golang.org/protobuf => github.com/lightninglabs/protobuf-go-hex-d
 
 replace github.com/lightningnetwork/lnd/tor => ./tor
 
+replace github.com/checksum0/go-electrum => ../go-electrum
+
 // If you change this please also update .github/pull_request_template.md and
 // docs/INSTALL.md.
 go 1.24.2

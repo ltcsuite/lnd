@@ -40,14 +40,6 @@ const (
 	// INITIAL_CONCURRENT limit, providing 8-10x speedup while respecting
 	// server rate limits.
 	addressScanConcurrency = 10
-
-	// reorgSafetyDepth is how many blocks below the synced height the
-	// scripthash replay filter leaves in scope. Skipping confirmed history
-	// the wallet already holds speeds up restarts, but a reorg can
-	// re-confirm a transaction near the synced tip; keeping this many
-	// recent blocks unfiltered ensures such a transaction is still
-	// delivered, at the cost of redundantly replaying a few recent blocks.
-	reorgSafetyDepth = 100
 )
 
 var (
@@ -238,15 +230,11 @@ type ChainClient struct {
 	scripthashNotif <-chan *SubscribeNotif
 
 	// scripthashHistory tracks the last known status hash for each
-	// subscribed scripthash. When a notification arrives with a different
-	// status, we know there are new transactions to fetch.
+	// subscribed scripthash. It is seeded at sync start from the wallet's
+	// committed history (see SeedAddressHistory), so an address whose
+	// notification carries the same status has nothing new to fetch.
 	scripthashHistMtx sync.RWMutex
 	scripthashHistory map[string]string
-
-	// rescanStartHeight is the wallet's last synced height, captured when
-	// Rescan begins. Scripthash notifications skip confirmed transactions
-	// below it because the wallet already holds them.
-	rescanStartHeight atomic.Int32
 
 	// dataDir is the directory for storing MWEB data (mweb.db).
 	dataDir string
@@ -1091,149 +1079,39 @@ func (c *ChainClient) Rescan(startHash *chainhash.Hash,
 	}
 	c.watchedOutpointsMtx.Unlock()
 
-	// Resolve the rescan start height before subscribing so scripthash
-	// notifications can skip confirmed transactions the wallet already has.
-	startHeader, err := c.GetBlockHeader(startHash)
-	if err != nil {
+	// Confirm the wallet's synced block is reachable before subscribing.
+	if _, err := c.GetBlockHeader(startHash); err != nil {
 		return fmt.Errorf("failed to get start block header: %w", err)
 	}
 
-	// Get start height by searching for the hash.
-	startHeight := int32(0)
-	resolved := false
-	c.heightToHashMtx.RLock()
-	for height, hash := range c.heightToHash {
-		if hash.IsEqual(startHash) {
-			startHeight = height
-			resolved = true
-			break
-		}
-	}
-	c.heightToHashMtx.RUnlock()
-
-	// Only bound the scripthash replay when the synced height was resolved
-	// exactly. The timestamp estimate below can land above the wallet's
-	// true synced height, so when the hash is unresolved leave the bound at
-	// 0 (replay everything) rather than risk skipping transactions the
-	// wallet still needs.
-	if resolved {
-		c.rescanStartHeight.Store(startHeight)
-	} else {
-		c.rescanStartHeight.Store(0)
-	}
-
-	// If we didn't find it, estimate from timestamp.
-	if startHeight == 0 && startHeader != nil {
-		c.bestBlockMtx.RLock()
-		bestHeight := c.bestBlock.Height
-		bestTime := c.bestBlock.Timestamp
-		c.bestBlockMtx.RUnlock()
-
-		// Rough estimate: 10 minutes per block.
-		timeDiff := bestTime.Sub(startHeader.Timestamp)
-		blockDiff := int32(timeDiff.Minutes() / 10)
-		startHeight = bestHeight - blockDiff
-		if startHeight < 0 {
-			startHeight = 0
-		}
-	}
-
-	// Subscribe to scripthash notifications for real-time monitoring.
-	// This sets up persistent subscriptions that will fire whenever an
-	// address receives a new transaction (confirmed or unconfirmed).
+	// Subscribe to scripthash notifications for real-time monitoring. The
+	// wallet has already seeded each address's status from its committed
+	// history, so an unchanged address short-circuits without re-fetching and
+	// a changed one delivers its new transactions as it subscribes.
 	ctx, cancelSub := context.WithTimeout(
 		context.Background(), 5*time.Minute,
 	)
-	c.subscribeAddresses(ctx, addrs)
+	unsubscribed := c.subscribeAddresses(ctx, addrs)
 	cancelSub()
 
-	// CRITICAL: Run rescan asynchronously to prevent deadlock.
-	// The wallet expects Rescan() to return immediately and will read
-	// notifications asynchronously. If we block here, we create a deadlock:
-	// - This function tries to send notifications
-	// - Channel fills up
-	// - Wallet is waiting for this function to return before reading notifications
-	// - Classic producer-consumer deadlock
+	// Any address the subscription could not cover receives no notifications,
+	// so fall back to scanning its history directly, the same path a newly
+	// watched address takes, to recover its transactions.
+	if len(unsubscribed) > 0 {
+		log.Warnf("Falling back to a history scan for %d unsubscribed "+
+			"addresses", len(unsubscribed))
+		if err := c.NotifyReceived(unsubscribed); err != nil {
+			log.Warnf("Failed to scan unsubscribed addresses: %v", err)
+		}
+	}
+
+	// Signal completion from a separate goroutine so this call returns
+	// promptly; the subscription bootstrap above already delivered any new
+	// transactions.
 	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		defer cancel()
-
-		log.Infof("Rescan goroutine started for %d addresses from "+
-			"height %d (using %d concurrent workers)",
-			len(addrs), startHeight, addressScanConcurrency)
-
-		// Phase 1: Collect transactions from all addresses concurrently.
-		// Using a shared map for automatic deduplication by txid.
-		var (
-			collectedMu sync.Mutex
-			collected   = make(map[chainhash.Hash]*collectedTx)
-		)
-
-		semaphore := make(chan struct{}, addressScanConcurrency)
-		var wg sync.WaitGroup
-
-		for i, addr := range addrs {
-			select {
-			case <-c.quit:
-				log.Info("Rescan aborted due to client shutdown")
-				return
-			default:
-			}
-
-			wg.Add(1)
-			go func(address ltcutil.Address, addrNum int) {
-				defer wg.Done()
-
-				// Acquire semaphore slot.
-				semaphore <- struct{}{}
-				defer func() { <-semaphore }()
-
-				// Log progress periodically.
-				if addrNum%100 == 0 {
-					log.Debugf("Rescan: processing address %d/%d",
-						addrNum, len(addrs))
-				}
-
-				txs, err := c.collectAddressHistory(
-					ctx, address, startHeight,
-				)
-				if err != nil {
-					log.Warnf("Failed to scan address %s: %v",
-						address, err)
-					return
-				}
-
-				collectedMu.Lock()
-				for _, tx := range txs {
-					collected[tx.txRecord.Hash] = tx
-				}
-				collectedMu.Unlock()
-			}(addr, i)
-		}
-
-		// Wait for all address scans to complete.
-		wg.Wait()
-
-		// Phase 2: Sort topologically and send as
-		// FilteredBlockConnected notifications. This ensures funding
-		// transactions are processed before spending transactions,
-		// which is required for ltcwallet to properly track credits
-		// and debits (and thus calculate correct amounts/fees).
-		allTxs := make([]*collectedTx, 0, len(collected))
-		for _, tx := range collected {
-			allTxs = append(allTxs, tx)
-		}
-
-		log.Infof("Rescan collected %d unique transactions, "+
-			"sorting and sending", len(allTxs))
-
-		sorted := sortAndGroupTxs(allTxs)
-		c.sendFilteredBlocks(sorted)
-
-		// Send rescan finished notification.
 		c.bestBlockMtx.RLock()
 		bestBlock := c.bestBlock
 		c.bestBlockMtx.RUnlock()
@@ -1245,8 +1123,6 @@ func (c *ChainClient) Rescan(startHash *chainhash.Hash,
 			Height: bestBlock.Height,
 			Time:   bestBlock.Timestamp,
 		})
-
-		log.Infof("Rescan goroutine finished")
 	}()
 
 	// Return immediately so wallet can start reading notifications.
@@ -1358,9 +1234,9 @@ func (c *ChainClient) collectAddressHistory(ctx context.Context,
 // FilteredBlockConnected notification per block. This ensures that ltcwallet
 // processes all transactions in a block atomically and in the correct causal
 // order, matching the behavior of the bitcoind and neutrino backends.
-func (c *ChainClient) sendFilteredBlocks(txs []*collectedTx) {
+func (c *ChainClient) sendFilteredBlocks(txs []*collectedTx) bool {
 	if len(txs) == 0 {
-		return
+		return true
 	}
 
 	log.Infof("Sending %d transactions as FilteredBlockConnected "+
@@ -1391,12 +1267,14 @@ func (c *ChainClient) sendFilteredBlocks(txs []*collectedTx) {
 				Block:       block,
 				RelevantTxs: records,
 			}) {
-				return
+				return false
 			}
 
 			groupStart = i
 		}
 	}
+
+	return true
 }
 
 // NotifyReceived marks the addresses to be monitored for incoming transactions.
@@ -1652,33 +1530,19 @@ func (c *ChainClient) handleScripthashNotif(notif *SubscribeNotif) {
 		return
 	}
 
-	// Update the stored status.
-	c.scripthashHistMtx.Lock()
-	c.scripthashHistory[scripthash] = newStatus
-	c.scripthashHistMtx.Unlock()
-
 	log.Debugf("Scripthash notification for %s: %d history items",
 		addrStr, len(history))
 
-	// Process all transactions in the history. Confirmed transactions well
-	// below the rescan start height are skipped because the wallet already
-	// holds them; a reorg-safety margin keeps recent blocks in scope so a
-	// reorg that re-confirms a transaction there is still delivered.
-	skipBelow := c.rescanStartHeight.Load()
-	if skipBelow > reorgSafetyDepth {
-		skipBelow -= reorgSafetyDepth
-	} else {
-		skipBelow = 0
-	}
-
+	// Process every transaction in the history. Ones the wallet already holds
+	// are de-duplicated downstream, so delivering the full history is a no-op
+	// that also recovers any transaction a crash left uncommitted, at any
+	// height.
+	delivered := true
 	var confirmed []*collectedTx
 	for _, histItem := range history {
-		if histItem.Height > 0 && int32(histItem.Height) < skipBelow {
-			continue
-		}
-
 		txHash, err := chainhash.NewHashFromStr(histItem.Hash)
 		if err != nil {
+			delivered = false
 			continue
 		}
 
@@ -1686,6 +1550,7 @@ func (c *ChainClient) handleScripthashNotif(notif *SubscribeNotif) {
 		if err != nil {
 			log.Warnf("Failed to get transaction %s: %v",
 				histItem.Hash, err)
+			delivered = false
 			continue
 		}
 
@@ -1700,10 +1565,12 @@ func (c *ChainClient) handleScripthashNotif(notif *SubscribeNotif) {
 				Hash:     *txHash,
 				Received: time.Now(),
 			}
-			c.sendNotification(chain.RelevantTx{
+			if !c.sendNotification(chain.RelevantTx{
 				TxRecord: rec,
 				Block:    nil,
-			})
+			}) {
+				delivered = false
+			}
 		} else {
 			// Confirmed transaction — collect for batch sending.
 			height := int32(histItem.Height)
@@ -1712,6 +1579,7 @@ func (c *ChainClient) handleScripthashNotif(notif *SubscribeNotif) {
 			if err != nil {
 				log.Warnf("Failed to get block hash for "+
 					"height %d: %v", height, err)
+				delivered = false
 				continue
 			}
 
@@ -1719,6 +1587,7 @@ func (c *ChainClient) handleScripthashNotif(notif *SubscribeNotif) {
 			if err != nil {
 				log.Warnf("Failed to get block header "+
 					"for %s: %v", blockHash, err)
+				delivered = false
 				continue
 			}
 
@@ -1739,8 +1608,22 @@ func (c *ChainClient) handleScripthashNotif(notif *SubscribeNotif) {
 	// Send confirmed transactions as FilteredBlockConnected.
 	if len(confirmed) > 0 {
 		sorted := sortAndGroupTxs(confirmed)
-		c.sendFilteredBlocks(sorted)
+		if !c.sendFilteredBlocks(sorted) {
+			delivered = false
+		}
 	}
+
+	// Update the in-memory status only after every transaction was
+	// delivered, so a transient failure forces a re-scan on the next
+	// notification rather than silently skipping one. Nothing is persisted;
+	// the map is re-seeded from the wallet's committed history on restart.
+	if !delivered {
+		return
+	}
+
+	c.scripthashHistMtx.Lock()
+	c.scripthashHistory[scripthash] = newStatus
+	c.scripthashHistMtx.Unlock()
 }
 
 // ensureHeadersCached ensures that headers for the given heights are cached.
@@ -2104,19 +1987,50 @@ func (c *ChainClient) cacheHeader(height int32, hash *chainhash.Hash,
 	c.heightToHashMtx.Unlock()
 }
 
-// subscribeAddresses subscribes to scripthash notifications for the given
-// addresses. Only P2WPKH addresses are subscribed since the Electrum server
-// only indexes standard address types for Litecoin.
-func (c *ChainClient) subscribeAddresses(ctx context.Context,
-	addrs []ltcutil.Address) {
+// SeedAddressHistory derives each watched scripthash's baseline status from the
+// wallet's committed per-address history, so an address with no new activity
+// short-circuits on the next subscription without re-fetching from the server.
+// The history map is keyed by encoded address.
+//
+// It replaces any previous baseline rather than merging, so a status advanced
+// in-memory for a transaction a crash left uncommitted cannot linger and
+// wrongly short-circuit; that address simply re-fetches on the next
+// subscription.
+//
+// NOTE: This is part of the chain.HistorySeeder interface.
+func (c *ChainClient) SeedAddressHistory(history map[string][]chain.AddressTx) {
+	c.scripthashHistMtx.Lock()
+	defer c.scripthashHistMtx.Unlock()
 
-	if c.scripthashSub == nil {
-		return
+	c.scripthashHistory = make(map[string]string, len(history))
+	for addr, txs := range history {
+		scripthash, err := ScripthashFromAddress(addr, c.chainParams)
+		if err != nil {
+			continue
+		}
+		c.scripthashHistory[scripthash] = electrumStatus(txs)
 	}
+}
 
+// subscribeAddresses subscribes to scripthash notifications for the given
+// addresses and returns the P2WPKH addresses it could not subscribe, because
+// the subscription is unavailable or the subscribe RPC failed, so the caller
+// can fall back to scanning their history. Only P2WPKH addresses are subscribed
+// since the Electrum server only indexes standard address types for Litecoin.
+func (c *ChainClient) subscribeAddresses(ctx context.Context,
+	addrs []ltcutil.Address) []ltcutil.Address {
+
+	var unsubscribed []ltcutil.Address
 	for _, addr := range addrs {
 		// Only subscribe P2WPKH addresses.
 		if _, ok := addr.(*ltcutil.AddressWitnessPubKeyHash); !ok {
+			continue
+		}
+
+		// Without a subscription nothing can be monitored in real time,
+		// so report every address for a history scan instead.
+		if c.scripthashSub == nil {
+			unsubscribed = append(unsubscribed, addr)
 			continue
 		}
 
@@ -2134,12 +2048,15 @@ func (c *ChainClient) subscribeAddresses(ctx context.Context,
 		if err != nil {
 			log.Warnf("Failed to subscribe to scripthash for "+
 				"%s: %v", addr.EncodeAddress(), err)
+			unsubscribed = append(unsubscribed, addr)
 			continue
 		}
 
 		log.Tracef("Subscribed to scripthash for address %s",
 			addr.EncodeAddress())
 	}
+
+	return unsubscribed
 }
 
 // scriptFromAddress creates a pkScript from an address.

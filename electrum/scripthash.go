@@ -4,10 +4,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 
-	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/chaincfg"
+	"github.com/ltcsuite/ltcd/ltcutil"
 	"github.com/ltcsuite/ltcd/txscript"
+	"github.com/ltcsuite/ltcwallet/chain"
 )
 
 // ScripthashFromScript converts a pkScript (output script) to an Electrum
@@ -83,4 +87,52 @@ func ReversedHash(hash []byte) []byte {
 		reversed[i] = hash[len(hash)-1-i]
 	}
 	return reversed
+}
+
+// electrumStatus computes the Electrum status for the set of transactions
+// touching an address, matching the value an ElectrumX server reports for
+// blockchain.scripthash.subscribe: the lowercase-hex SHA256 over
+// "<txid>:<height>:" for each transaction, ordered by block height ascending
+// with unconfirmed transactions last. An empty set yields the empty string,
+// mirroring the server's null status for an address with no history.
+//
+// Unconfirmed transactions are emitted at height 0 (the committed history does
+// not record the server's 0-vs-(-1) parent distinction), and same-block
+// transactions keep the caller's order. Either divergence only costs a
+// redundant fetch, never a missed transaction.
+func electrumStatus(txs []chain.AddressTx) string {
+	if len(txs) == 0 {
+		return ""
+	}
+
+	ordered := make([]chain.AddressTx, len(txs))
+	copy(ordered, txs)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return statusOrder(ordered[i].Height) < statusOrder(ordered[j].Height)
+	})
+
+	var sb strings.Builder
+	for _, tx := range ordered {
+		height := tx.Height
+		if height < 0 {
+			height = 0
+		}
+		sb.WriteString(tx.TxID.String())
+		sb.WriteByte(':')
+		sb.WriteString(strconv.Itoa(int(height)))
+		sb.WriteByte(':')
+	}
+
+	sum := sha256.Sum256([]byte(sb.String()))
+	return hex.EncodeToString(sum[:])
+}
+
+// statusOrder maps a transaction height to its sort position within an Electrum
+// status string. Confirmed transactions ascend by height; unconfirmed ones
+// (height <= 0) sort after every confirmed one.
+func statusOrder(height int32) int64 {
+	if height > 0 {
+		return int64(height)
+	}
+	return 1 << 40
 }

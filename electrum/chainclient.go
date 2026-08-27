@@ -18,9 +18,6 @@ import (
 	"github.com/ltcsuite/ltcwallet/waddrmgr"
 	"github.com/ltcsuite/ltcwallet/wtxmgr"
 	"github.com/ltcsuite/neutrino/mwebdb"
-	"github.com/ltcsuite/neutrino/query"
-
-	"github.com/ltcsuite/lnd/electrum/mwebp2p"
 )
 
 const (
@@ -242,12 +239,6 @@ type ChainClient struct {
 	// mwebP2PPeers is an optional list of explicit P2P peers for MWEB sync.
 	// If empty, DNS seeds are used for peer discovery.
 	mwebP2PPeers []string
-
-	// p2pService manages lightweight P2P connections for MWEB queries.
-	p2pService *mwebp2p.Service
-
-	// workManager dispatches MWEB queries to P2P peers.
-	workManager query.WorkManager
 
 	// mwebMtx protects mwebSyncer and mwebCoinDB, which are written from
 	// the startMwebSync goroutine and read from wallet goroutines via

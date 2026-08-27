@@ -15,9 +15,6 @@ import (
 	"github.com/ltcsuite/mwebsync/electrumadapter"
 	"github.com/ltcsuite/neutrino/banman"
 	"github.com/ltcsuite/neutrino/mwebdb"
-	"github.com/ltcsuite/neutrino/query"
-
-	"github.com/ltcsuite/lnd/electrum/mwebp2p"
 )
 
 // startMwebSync initializes and starts the mwebsync syncer for MWEB support.
@@ -50,39 +47,14 @@ func (c *ChainClient) startMwebSync() {
 		return
 	}
 
-	// 1. Start the P2P service for MWEB queries.
-	p2pCfg := &mwebp2p.Config{
-		ChainParams:  c.chainParams,
-		ConnectPeers: c.mwebP2PPeers,
-	}
-	p2pService := mwebp2p.NewService(p2pCfg)
-	if err := p2pService.Start(); err != nil {
-		log.Errorf("Failed to start MWEB P2P service: %v", err)
+	banStore, err := banman.NewStore(db)
+	if err != nil {
+		log.Errorf("Failed to create MWEB ban store: %v", err)
 		return
 	}
-	c.p2pService = p2pService
 
-	// 2. Create query.WorkManager using the P2P service's peers.
-	workManager := query.NewWorkManager(&query.Config{
-		ConnectedPeers: p2pService.ConnectedPeers,
-		NewWorker:      query.NewWorker,
-		Ranking:        query.NewPeerRanking(),
-		OnPeerMaxRetries: func(peerAddr string) {
-			log.Warnf("MWEB peer %s exhausted retries, "+
-				"banning", peerAddr)
-			p2pService.BanPeer(
-				peerAddr, banman.ExceededBanThreshold,
-			)
-		},
-	})
-	if err := workManager.Start(); err != nil {
-		log.Errorf("Failed to start MWEB query work manager: %v", err)
-		p2pService.Stop()
-		return
-	}
-	c.workManager = workManager
-
-	// 3. Create electrum adapter instances.
+	// Adapt the existing Electrum header backend. mwebsync.Service owns the
+	// Litecoin P2P pool and query scheduler.
 	headerProvider := electrumadapter.NewHeaderProvider(c)
 
 	syncNotifier := electrumadapter.NewSyncNotifier(
@@ -105,45 +77,37 @@ func (c *ChainClient) startMwebSync() {
 		},
 	)
 
-	peerProvider := electrumadapter.NewPeerProvider(p2pService)
 	mwebLogger := electrumadapter.NewLogger(log)
 
-	// 4. Create mwebsync configuration.
-	mwebCfg := &mwebsync.Config{
-		HeaderProvider:  headerProvider,
-		SyncNotifier:    syncNotifier,
-		QueryDispatcher: workManager,
-		PeerProvider:    peerProvider,
-		ChainParams:     c.chainParams,
-		CoinDatabase:    coinDB,
-		Logger:          mwebLogger,
+	service, err := mwebsync.NewService(&mwebsync.ServiceConfig{
+		HeaderProvider: headerProvider,
+		SyncNotifier:   syncNotifier,
+		ChainParams:    c.chainParams,
+		CoinDatabase:   coinDB,
+		DataDir:        c.dataDir,
+		StaticPeers:    c.mwebP2PPeers,
+		BanStore:       banStore,
+		Logger:         mwebLogger,
 		OnUtxosAdded: func(leafset *mweb.Leafset, utxos []*wire.MwebNetUtxo) {
 			c.sendNotification(chain.MwebUtxos{
 				Leafset: leafset,
 				Utxos:   utxos,
 			})
 		},
-	}
-
-	// 5. Create and start the syncer.
-	syncer, err := mwebsync.New(mwebCfg)
+	})
 	if err != nil {
-		log.Errorf("Failed to create mwebsync: %v", err)
-		workManager.Stop()
-		p2pService.Stop()
+		log.Errorf("Failed to create MWEB service: %v", err)
 		return
 	}
 	c.mwebMtx.Lock()
-	c.mwebSyncer = syncer
+	c.mwebSyncer = service
 	c.mwebMtx.Unlock()
 
-	if err := syncer.Start(); err != nil {
-		log.Errorf("Failed to start mwebsync: %v", err)
+	if err := service.Start(); err != nil {
+		log.Errorf("Failed to start MWEB service: %v", err)
 		c.mwebMtx.Lock()
 		c.mwebSyncer = nil
 		c.mwebMtx.Unlock()
-		workManager.Stop()
-		p2pService.Stop()
 		return
 	}
 
@@ -158,10 +122,7 @@ func (c *ChainClient) startMwebSync() {
 
 	log.Info("MWEB sync started successfully")
 
-	c.waitForSyncOrShutdown(syncer)
-
-	workManager.Stop()
-	p2pService.Stop()
+	c.waitForSyncOrShutdown(service)
 }
 
 // waitForSyncOrShutdown blocks until either the client is stopped or the
